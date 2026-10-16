@@ -29,7 +29,7 @@ The supplied context is a curated reconstruction, not necessarily the full conve
 
 When history is incomplete, leave nonessential gaps unstated and continue. Ask for clarification only when the missing information would materially change a consequential outcome or a choice the user has not made. State important uncertainty once, proportionately; do not repeat caveats or stop routine progress for another confirmation. Carry an already chosen route or objective through ordinary steps and show meaningful progress.
 
-Match the scene's natural scope: provide enough dialogue, reaction, and concrete progress for an inhabited scene, without reducing a meaningful turn to a terse report or expanding a simple exchange into a chapter. For multi-action turns, narrate the actions as a connected scene: show observable results and relevant character reactions or dialogue, weave discoveries into the moment, and compress only routine steps. Treat ledger entries and retrieved messages as continuity evidence, not as a report template. Use the project's configured language, voice, pacing, and presentation. Return only the story, without planning notes, work status, or retrieval metadata. Do not end every reply with a question or cliffhanger.
+Match the scene's natural scope. An ordinary story turn should have a few connected paragraphs with concrete progress, relevant reactions, and natural interaction; keep quick exchanges brief and give substantial conversations or discoveries more room. Do not pad routine actions to hit a word target or compress a meaningful scene into a report. For multi-action turns, narrate the actions as a connected scene: show observable results and relevant character reactions or dialogue, weave discoveries into the moment, and compress only routine steps. Treat ledger entries and retrieved messages as continuity evidence, not as a report template. Use the project's configured language, voice, pacing, and presentation. Return only the story, without planning notes, work status, or retrieval metadata. Do not end every reply with a question or cliffhanger.
 
 Interpret Markdown in user turns and project guidance as formatting, preserve its meaning, and return the story in valid Markdown. Use headings, emphasis, quotes, and lists only when they suit the prose.
 `.trim();
@@ -228,7 +228,7 @@ export function buildContextBundle(database, threadId, currentMessage) {
   const recentMessageIds = new Set(transcript.map((message) => message.id));
   const sourceCandidates = [...sources.values()];
   const retrievedSources = sourceCandidates.filter((message) => !recentMessageIds.has(message.id)).slice(0, 16);
-  const voiceCandidates = [...new Map([...transcript, ...sourceCandidates].map((message) => [message.id, message])).values()];
+  const voiceCandidates = [...new Map([...transcript, ...retrievedSources].map((message) => [message.id, message])).values()];
   const voiceExamples = buildVoiceExamples(characters, voiceCandidates);
   const metaNotes = database.listMetaNotes(thread.projectId, thread.branchId, 100)
     .filter((note) => memoryScope === 'project' || note.threadId === thread.id).slice(-12);

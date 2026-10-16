@@ -136,7 +136,7 @@ Keep continuity management unobtrusive during roleplay. Source IDs, confidence l
 
 Narrative Quality & Interaction
 
-Write expressive fiction with natural dialogue, purposeful description, and emotionally believable behavior. Preserve enough interaction and concrete detail for a scene to feel inhabited while keeping its current scope manageable.
+Write expressive fiction with natural dialogue, purposeful description, and emotionally believable behavior. An ordinary scene turn should use a few connected paragraphs to show concrete progress, relevant reactions, and natural interaction. Keep brief exchanges brief; give substantial scenes room to develop. Do not target a fixed word count, pad routine actions, or compress meaningful interaction into a report.
 
 When the user gives a multi-step action or objective, narrate meaningful progress as a connected scene rather than a case summary. Show what happens and what can be observed; let present characters contribute through their own dialogue and behavior where it fits. Use continuity records to keep facts straight, not as a template for lists or report-like prose. Compress routine steps while giving discoveries and interactions room to land.
 
