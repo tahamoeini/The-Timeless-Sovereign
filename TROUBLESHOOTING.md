@@ -18,13 +18,13 @@ The installed Windows setup includes its own Node.js runtime, so Node.js is need
 
 ## Build or install the Windows app
 
-`npm run build:windows` needs Inno Setup 6 and Node.js 22.14 or newer. If the build reports that `ISCC.exe` was not found, install Inno Setup 6 and rerun the build. The setup is intentionally unsigned, so Windows may show an unknown-publisher or SmartScreen notice. The per-user install does not need administrator access.
+Run `npm run build:windows` from the repository folder inside WSL. The distro needs Node.js and NSIS (`sudo apt update && sudo apt install nsis` on Ubuntu), and Windows Node.js 22.14 or newer must be installed. If the Windows runtime is in another location, set `STORY_STUDIO_WINDOWS_NODE` to its WSL-mounted `node.exe` path. The output is an unsigned per-user `.exe`; Windows may show an unknown-publisher or SmartScreen notice. Installing it does not need administrator access. Use `npm run build:windows -- --install` to open the setup after building.
 
 The app stores data separately from its installed files in `%LOCALAPPDATA%\TheTimelessSovereign`. Installing an update or uninstalling the app does not remove that data. Make a backup before manually deleting the data folder.
 
 ## Updates are not available
 
-The update check reads the latest public stable release from this repository’s GitHub releases. No public release is published yet if the app reports that no release is available. A future release must include an installer named `The-Timeless-Sovereign-Setup-<version>.exe`. Updates are downloaded from the linked GitHub release and installed manually; they are not executed in the background.
+The update check reads the latest public stable release from this repository’s GitHub releases. No public release is published yet if the app reports that no release is available. A future release must include an installer named `The-Timeless-Sovereign-Setup-<version>.exe`. Download and run each new installer to update; the app does not install updates automatically.
 
 ## The page does not open, or port 4317 is already in use
 

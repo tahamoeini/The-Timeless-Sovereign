@@ -9,7 +9,11 @@ const state = {
   payload: null,
   authorization: { state: 'not_signed_in', message: 'Not connected.' },
   database: null,
-  appSettings: { theme: 'system' },
+  appSettings: { theme: 'system', reasoningEffort: '' },
+  selectedModel: '',
+  models: [],
+  modelsLoaded: false,
+  transcriptRevision: 0,
   appVersion: '1.1.0',
   view: 'narrative',
   sendBusy: false,
@@ -94,6 +98,7 @@ async function initialize() {
     state.authorization = bootstrap.authorization;
     state.database = bootstrap.database;
     state.appSettings = bootstrap.appSettings ?? { theme: 'system' };
+    state.selectedModel = bootstrap.selectedModel ?? '';
     state.appVersion = bootstrap.appVersion ?? '1.1.0';
     applyTheme(state.appSettings.theme);
     renderProjectList();
@@ -175,6 +180,7 @@ async function selectBranch(branchId) {
 async function openThread(threadId, preserveBranch = false) {
   const payload = await api(`/api/threads/${encodeURIComponent(threadId)}`);
   state.payload = payload;
+  state.transcriptRevision = payload.transcriptRevision ?? payload.transcript?.at(-1)?.sequence ?? 0;
   state.thread = payload.thread;
   state.project = payload.project;
   state.branch = payload.branches.find((item) => item.id === payload.thread.branchId) ?? null;
@@ -189,18 +195,24 @@ async function refreshCurrentThread({ keepScroll = true } = {}) {
   if (!state.thread) return;
   const list = $('#messageList');
   const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 100;
-  const payload = await api(`/api/threads/${encodeURIComponent(state.thread.id)}`);
-  state.payload = payload;
+  const payload = await api(`/api/threads/${encodeURIComponent(state.thread.id)}/snapshot?after=${encodeURIComponent(state.transcriptRevision)}`);
+  const transcript = state.payload?.transcript ?? [];
+  const byId = new Map(transcript.map((message) => [message.id, message]));
+  for (const message of payload.delta ?? []) byId.set(message.id, message);
+  const updatedTranscript = [...byId.values()].sort((left, right) => left.sequence - right.sequence);
+  const transcriptChanged = updatedTranscript.length !== transcript.length || (payload.delta?.length ?? 0) > 0;
+  state.transcriptRevision = payload.transcriptRevision ?? state.transcriptRevision;
+  state.payload = { ...payload, transcript: updatedTranscript };
   state.thread = payload.thread;
   state.project = payload.project;
   state.branch = payload.branches.find((item) => item.id === payload.thread.branchId) ?? state.branch;
   state.branches = payload.branches;
   state.threads = payload.threads;
-  renderWorkspace();
+  renderWorkspace({ renderTranscript: transcriptChanged });
   if (keepScroll && wasNearBottom) list.scrollTop = list.scrollHeight;
 }
 
-function renderWorkspace() {
+function renderWorkspace({ renderTranscript: shouldRenderTranscript = true } = {}) {
   if (!state.project || !state.thread || !state.payload) return showEmptyState();
   $('#emptyState').hidden = true;
   $('#messageList').hidden = false;
@@ -218,7 +230,7 @@ function renderWorkspace() {
   renderProjectList();
   renderBranchSelect();
   renderThreads();
-  renderTranscript();
+  if (shouldRenderTranscript) renderTranscript();
   renderContinuity();
   renderConnection();
   setView(state.view);
@@ -764,7 +776,14 @@ function openSettings() {
   $('#settingsProjectName').value = project?.name ?? '';
   $('#settingsProjectInstructions').value = project?.instructions ?? '';
   $('#settingsProjectStyle').value = project?.style ?? '';
+  $('#memoryScopeSelect').value = project?.memoryScope === 'thread' ? 'thread' : 'project';
   $('#themeSelect').value = state.appSettings.theme;
+  state.modelsLoaded = false;
+  $('#modelSelect').replaceChildren(new Option(state.selectedModel ? `${state.selectedModel} · connect to change` : 'Connect with ChatGPT to choose a model', state.selectedModel));
+  $('#modelSelect').value = state.selectedModel;
+  $('#modelSelect').disabled = true;
+  $('#reasoningEffortSelect').disabled = true;
+  $('#reasoningEffortSelect').replaceChildren(new Option('Connect to load model options', ''));
   $('#updateStatus').textContent = `Version ${state.appVersion} · updates checked manually`;
   $('#updateDownload').hidden = true;
   $('#updateDetails').hidden = true;
@@ -786,7 +805,7 @@ function openSettings() {
 async function loadModels() {
   const select = $('#modelSelect');
   try {
-    const { models, selectedModel } = await api('/api/models');
+    const { models, selectedModel, reasoningEffort } = await api('/api/models');
     select.replaceChildren();
     const defaultOption = document.createElement('option');
     defaultOption.value = '';
@@ -800,10 +819,38 @@ async function loadModels() {
     }
     select.value = selectedModel ?? '';
     state.models = models;
+    state.selectedModel = selectedModel ?? '';
+    state.appSettings.reasoningEffort = reasoningEffort ?? '';
+    state.modelsLoaded = true;
+    select.disabled = false;
+    renderReasoningOptions(state.appSettings.reasoningEffort);
   } catch (error) {
     if (error.message) showToast(error.message);
     select.replaceChildren(new Option('Codex model catalog unavailable', ''));
+    select.disabled = true;
+    $('#reasoningEffortSelect').replaceChildren(new Option('Model options unavailable', ''));
+    $('#reasoningEffortSelect').disabled = true;
   }
+}
+
+function renderReasoningOptions(preferred = '') {
+  const select = $('#reasoningEffortSelect');
+  const selected = state.models.find((model) => model.id === $('#modelSelect').value) ?? state.models.find((model) => model.isDefault);
+  select.replaceChildren();
+  if (!selected) {
+    select.append(new Option('No default model is available', ''));
+    select.disabled = true;
+    $('#reasoningEffortHelp').textContent = 'Connect with ChatGPT to load the current model catalog.';
+    return;
+  }
+  const defaultEffort = selected.defaultReasoningEffort;
+  select.append(new Option(defaultEffort ? `Use model default (${defaultEffort})` : 'Use model default', ''));
+  for (const effort of selected.reasoning) select.append(new Option(effort, effort));
+  select.value = selected.reasoning.includes(preferred) ? preferred : '';
+  select.disabled = !selected.reasoning.length;
+  $('#reasoningEffortHelp').textContent = preferred && !selected.reasoning.includes(preferred)
+    ? `${selected.name} does not offer the saved level. Its model default will be used.`
+    : 'Only levels advertised for the selected model are shown.';
 }
 
 function openImportDialog(mode) {
@@ -1152,13 +1199,25 @@ async function saveSettings() {
   if (!state.project) return;
   try {
     const project = await api(`/api/projects/${encodeURIComponent(state.project.id)}`, {
-      method: 'PATCH', body: jsonBody({ name: $('#settingsProjectName').value, instructions: $('#settingsProjectInstructions').value, style: $('#settingsProjectStyle').value })
+      method: 'PATCH', body: jsonBody({
+        name: $('#settingsProjectName').value,
+        instructions: $('#settingsProjectInstructions').value,
+        style: $('#settingsProjectStyle').value,
+        memoryScope: $('#memoryScopeSelect').value
+      })
     });
     state.project = project;
-    await api('/api/settings/model', { method: 'PATCH', body: jsonBody({ model: $('#modelSelect').value }) });
+    if (state.modelsLoaded) {
+      const model = await api('/api/settings/model', {
+        method: 'PATCH',
+        body: jsonBody({ model: $('#modelSelect').value, reasoningEffort: $('#reasoningEffortSelect').value })
+      });
+      state.selectedModel = model.selectedModel;
+      state.appSettings.reasoningEffort = model.reasoningEffort;
+    }
     await refreshProjects();
     await refreshCurrentThread();
-    showToast('Project instructions, style, and model preference saved.');
+    showToast('Project instructions, memory scope, style, and model preferences saved.');
   } catch (error) { showNotice('Settings were not saved', error.message); }
 }
 
@@ -1271,6 +1330,7 @@ function bindEvents() {
   $('#searchForm').addEventListener('submit', (event) => { event.preventDefault(); void runSearch(); });
   $('#saveSettings').addEventListener('click', () => void saveSettings());
   $('#saveAppearance').addEventListener('click', () => void saveAppearance());
+  $('#modelSelect').addEventListener('change', () => renderReasoningOptions(state.appSettings.reasoningEffort));
   $('#checkUpdates').addEventListener('click', () => void checkForUpdates());
   $('#exportProject').addEventListener('click', async () => {
     try { await downloadResponse(`/api/projects/${encodeURIComponent(state.project.id)}/export`, 'story.story.json'); }

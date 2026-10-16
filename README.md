@@ -30,17 +30,17 @@ Optional environment settings:
 
 The installer bundles Node.js, installs per user without administrator access, and adds a Start Menu shortcut. It opens the local Story Studio page in your browser. The installed app does not set `STORY_STUDIO_DATA_DIR`; its SQLite database, backups, isolated Codex home, and Windows-protected credentials stay under `%LOCALAPPDATA%\TheTimelessSovereign` through app updates and uninstallation.
 
-To build the unsigned installer on Windows, install Node.js 22.14 or newer and Inno Setup 6, then run:
+Build the unsigned Windows installer from WSL. The WSL distro needs Node.js, the Windows Node.js runtime must be installed, and NSIS must be available (`sudo apt update && sudo apt install nsis` on Ubuntu). From the repository folder inside WSL, run:
 
-```powershell
+```bash
 npm run build:windows
 ```
 
-The installer is written to `dist\windows\The-Timeless-Sovereign-Setup-1.1.0.exe`. You can stage the runtime and app files without compiling the setup by running `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-Windows.ps1 -StageOnly`.
+The installer is written to `dist/windows/The-Timeless-Sovereign-Setup-<version>.exe`. To build it and open the installer immediately, run `npm run build:windows -- --install`. The build bundles the Windows Node.js runtime and uses NSIS from WSL to create a per-user setup executable.
 
 This installer is intentionally unsigned. Windows may show an unknown-publisher or SmartScreen notice. Review the source and download the installer only from a release location you trust.
 
-To publish an update later, increase `version` in `package.json`, build the installer, and attach the matching `The-Timeless-Sovereign-Setup-<version>.exe` file to a **public stable GitHub release** in this repository. In the app, open **Settings → Check for updates**, download the linked setup, close Story Studio, and run the installer. The installer uses a stable application ID and replaces the installed app without touching `%LOCALAPPDATA%\TheTimelessSovereign`. Updates are user-confirmed; the app does not silently download or execute installers. A public GitHub release is required for the in-app update check.
+To publish an update later, increase `version` in `package.json`, build the installer, and attach the matching `The-Timeless-Sovereign-Setup-<version>.exe` file to a **public stable GitHub release** in this repository. In the app, open **Settings → Check for updates**, download the linked setup, and run it. It replaces the installed app while preserving `%LOCALAPPDATA%\TheTimelessSovereign`; no updater runs installers in the background. A public GitHub release is required for the in-app update check.
 
 ## Connect Codex
 
@@ -51,7 +51,8 @@ The story database and project exports do not contain credentials. Back up the w
 ## Use projects, chats, and branches
 
 - Each project has its own instructions, style, canon, and story threads.
-- New chats in the same project retrieve shared project and branch continuity.
+- New chats in the same project retrieve shared project and branch continuity by default. Project settings can limit retrieval to the current conversation; projects remain isolated either way.
+- Thinking level is chosen from the levels advertised by the selected Codex model. Use the model default when you do not want to override it.
 - A branch starts at its fork point and develops an independent timeline. Later events on the main branch are not visible to it.
 - The Narrative view is designed for reading; Transcript shows the conventional saved message sequence. Search covers the full saved conversation. Persian and Arabic text is detected and rendered right-to-left.
 - Appearance follows a neutral ChatGPT-style palette with light, dark, and system options saved in the local database.
@@ -98,5 +99,5 @@ Run `npm test` to exercise storage recovery, commands, branch and project isolat
 - `ARCHITECTURE.md` records the implementation and protocol decisions.
 - `TROUBLESHOOTING.md` covers common startup, connection, and recovery issues.
 - `START.ps1` launches the local app on Windows.
-- `scripts\Build-Windows.ps1` stages the bundled runtime and compiles the unsigned per-user installer with Inno Setup 6.
-- `scripts\windows-installer.iss` defines the setup and same-ID in-place upgrade behavior.
+- `scripts/build-windows.sh` stages the Windows runtime and builds the unsigned installer from WSL with NSIS.
+- `scripts/windows-installer.nsi` defines the per-user setup, shutdown-before-update behavior, and data-preserving uninstall.

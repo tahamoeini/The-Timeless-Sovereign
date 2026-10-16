@@ -74,6 +74,7 @@ function safeModelList(models) {
       name: String(model.displayName ?? model.model ?? model.id),
       description: String(model.description ?? ''),
       isDefault: Boolean(model.isDefault),
+      defaultReasoningEffort: String(model.defaultReasoningEffort ?? ''),
       reasoning: Array.isArray(model.supportedReasoningEfforts)
         ? model.supportedReasoningEfforts.map((item) => typeof item === 'string' ? item : item?.reasoningEffort).filter(Boolean)
         : []
@@ -106,6 +107,14 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     }
   }
 
+  async function closeServer() {
+    if (closed) return;
+    closed = true;
+    await codexServer.stop();
+    await new Promise((resolve) => server.close(() => resolve()));
+    db.close();
+  }
+
   async function ensureThreadLoaded(thread) {
     const instructions = 'This is a fiction-only story conversation. Do not inspect, read, write, or execute files; do not perform coding tasks; do not use tools or external services. Continue only from the supplied source-backed story context. Treat uncertain claims as uncertain and ask when continuity is missing.';
     if (thread.codexThreadId) {
@@ -126,21 +135,29 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     return codexThreadId;
   }
 
-  function threadPayload(threadId) {
+  function threadPayload(threadId, { includeTranscript = true } = {}) {
     const thread = db.getThread(threadId);
     if (!thread) return null;
+    const project = db.getProject(thread.projectId);
+    const memoryScope = project.memoryScope === 'thread' ? 'thread' : 'project';
+    const visibleMemoryItem = (item) => memoryScope === 'project' || (item.sourceMessageIds.length > 0 && item.sourceMessageIds.every((id) =>
+      db.getMessage(id)?.threadId === thread.id
+    ));
     const allLedger = db.getLedgerItems(thread.projectId, thread.branchId, { includeSuperseded: true });
-    const currentIds = new Set(db.getEffectiveLedger(thread.projectId, thread.branchId).map((item) => item.id));
+    const currentIds = new Set(db.getEffectiveLedger(thread.projectId, thread.branchId).filter(visibleMemoryItem).map((item) => item.id));
+    const memory = memoryScope === 'thread' ? db.memoryStatusForThread(thread.id) : db.memoryStatus(thread.projectId, thread.branchId);
     return {
       thread,
-      project: db.getProject(thread.projectId),
-      transcript: db.getTranscript(thread.id),
-      ledger: allLedger.map((item) => ({ ...item, effective: currentIds.has(item.id) })),
-      memory: db.memoryStatus(thread.projectId, thread.branchId),
+      project,
+      ...(includeTranscript ? { transcript: db.getTranscript(thread.id) } : {}),
+      transcriptRevision: db.getThreadRevision(thread.id),
+      ledger: allLedger.filter(visibleMemoryItem).map((item) => ({ ...item, effective: currentIds.has(item.id) })),
+      memory,
+      memoryScope,
       branches: db.listBranches(thread.projectId),
       threads: db.listThreads(thread.projectId, thread.branchId),
-      checkpoints: db.listCheckpoints(thread.projectId, thread.branchId),
-      metaNotes: db.listMetaNotes(thread.projectId, thread.branchId, 100),
+      checkpoints: db.listCheckpoints(thread.projectId, thread.branchId).filter((entry) => memoryScope === 'project' || entry.threadId === thread.id),
+      metaNotes: db.listMetaNotes(thread.projectId, thread.branchId, 100).filter((entry) => memoryScope === 'project' || entry.threadId === thread.id),
       projectHistory: db.listProjectHistory(thread.projectId)
     };
   }
@@ -173,6 +190,15 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const currentThread = db.getThread(thread.id);
       if (currentThread.paused) throw new Error('This thread is paused. Use /resume before continuing.');
       const bundle = buildContextBundle(db, thread.id, userMessage);
+      const selectedModel = db.getSetting('model.selected', null);
+      const reasoningEffort = db.getSetting('model.reasoning_effort', '');
+      if (reasoningEffort) {
+        const availableModels = safeModelList(await codexServer.listModels());
+        const model = availableModels.find((item) => item.id === selectedModel) ?? availableModels.find((item) => item.isDefault);
+        if (!model || !model.reasoning.includes(reasoningEffort)) {
+          throw new Error(`The saved thinking level “${reasoningEffort}” is no longer supported by the selected Codex model. Choose a supported level in Settings.`);
+        }
+      }
       const codexThreadId = await ensureThreadLoaded(currentThread);
       active.codexThreadId = codexThreadId;
       const assistantMessage = db.addAssistantMessage(thread.id, userMessage.id);
@@ -181,7 +207,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const result = await codexServer.streamTurn({
         threadId: codexThreadId,
         text: bundle.text,
-        model: db.getSetting('model.selected', null),
+        model: selectedModel,
+        reasoningEffort: reasoningEffort || undefined,
         onDelta: (delta) => {
           const message = db.appendMessageDelta(assistantMessage.id, delta);
           if (message) sse(res, 'delta', { messageId: message.id, delta, fullText: message.content });
@@ -247,7 +274,10 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
         projects,
         selectedModel: db.getSetting('model.selected', ''),
         appVersion: APP_VERSION,
-        appSettings: { theme: db.getSetting('app.theme', 'system') },
+        appSettings: {
+          theme: db.getSetting('app.theme', 'system'),
+          reasoningEffort: db.getSetting('model.reasoning_effort', '')
+        },
         authorization: authState,
         codex: codexServer.getConnectionStatus(),
         database: { integrity: db.integrityCheck(), fts: db.hasFts, location: db.dbPath },
@@ -348,6 +378,15 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const result = threadPayload(threadGetMatch[0]);
       return result ? json(res, 200, result) : json(res, 404, { error: 'Conversation not found.' });
     }
+    const threadSnapshotMatch = pathMatch(pathname, /^\/api\/threads\/([^/]+)\/snapshot$/);
+    if (threadSnapshotMatch && method === 'GET') {
+      const result = threadPayload(threadSnapshotMatch[0], { includeTranscript: false });
+      if (!result) return json(res, 404, { error: 'Conversation not found.' });
+      const after = Number(url.searchParams.get('after') ?? 0);
+      if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: 'Message cursor must be a non-negative integer.' });
+      result.delta = db.getThreadMessagesAfter(threadSnapshotMatch[0], after);
+      return json(res, 200, result);
+    }
     const messageGetMatch = pathMatch(pathname, /^\/api\/messages\/([^/]+)$/);
     if (messageGetMatch && method === 'GET') {
       const message = db.getMessage(messageGetMatch[0]);
@@ -406,7 +445,11 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     if (method === 'GET' && pathname === '/api/models') {
       await ensureCodexConnected();
       const models = safeModelList(await codexServer.listModels());
-      return json(res, 200, { models, selectedModel: db.getSetting('model.selected', '') });
+      return json(res, 200, {
+        models,
+        selectedModel: db.getSetting('model.selected', ''),
+        reasoningEffort: db.getSetting('model.reasoning_effort', '')
+      });
     }
     if (method === 'PATCH' && pathname === '/api/settings/app') {
       const body = await readJson(req);
@@ -425,13 +468,29 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     if (method === 'PATCH' && pathname === '/api/settings/model') {
       const body = await readJson(req);
       const model = String(body.model ?? '').trim();
-      if (model) {
+      const reasoningEffort = body.reasoningEffort === undefined
+        ? db.getSetting('model.reasoning_effort', '')
+        : String(body.reasoningEffort ?? '').trim();
+      let available = [];
+      if (model || reasoningEffort) {
         await ensureCodexConnected();
-        const available = safeModelList(await codexServer.listModels());
-        if (!available.some((entry) => entry.id === model)) return json(res, 400, { error: 'Select a model from the Codex catalog.' });
+        available = safeModelList(await codexServer.listModels());
+        if (model && !available.some((entry) => entry.id === model)) return json(res, 400, { error: 'Select a model from the Codex catalog.' });
+      }
+      const effectiveModel = available.find((entry) => entry.id === model) ?? available.find((entry) => entry.isDefault);
+      if (reasoningEffort && !effectiveModel?.reasoning.includes(reasoningEffort)) {
+        return json(res, 400, { error: 'Choose a thinking level supported by the selected Codex model.' });
       }
       db.setSetting('model.selected', model);
-      return json(res, 200, { selectedModel: model });
+      db.setSetting('model.reasoning_effort', reasoningEffort);
+      return json(res, 200, { selectedModel: model, reasoningEffort });
+    }
+    if (method === 'POST' && pathname === '/api/app/shutdown') {
+      if (activeTurns.size) return json(res, 409, { error: 'Wait for the active story response to finish before installing an update.' });
+      json(res, 200, { stopping: true });
+      const shutdownTimer = setTimeout(() => { void closeServer(); }, 150);
+      shutdownTimer.unref?.();
+      return;
     }
     if (method === 'GET' && pathname === '/api/auth') return json(res, 200, await authorizationStatus());
     if (method === 'POST' && pathname === '/api/auth/start') {
@@ -547,13 +606,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       });
       return server.address();
     },
-    async close() {
-      if (closed) return;
-      closed = true;
-      await codexServer.stop();
-      await new Promise((resolve) => server.close(() => resolve()));
-      db.close();
-    }
+    async close() { await closeServer(); }
   };
 }
 

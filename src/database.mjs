@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const MIGRATION_VERSION = 1;
+const MIGRATION_VERSION = 2;
 const MAX_SEQUENCE = 9223372036854775807;
 
 const SCHEMA = `
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   instructions TEXT NOT NULL DEFAULT '',
   style TEXT NOT NULL DEFAULT '',
+  memory_scope TEXT NOT NULL DEFAULT 'project' CHECK(memory_scope IN ('thread', 'project')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -253,6 +254,10 @@ export function openDatabase(dataDirectory) {
     db.exec(SCHEMA);
     const applied = db.prepare('SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1').get();
     if (!applied || applied.version < MIGRATION_VERSION) {
+      const projectColumns = new Set(db.prepare('PRAGMA table_info(projects)').all().map((column) => column.name));
+      if (!projectColumns.has('memory_scope')) {
+        db.exec("ALTER TABLE projects ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'project' CHECK(memory_scope IN ('thread', 'project'))");
+      }
       db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)').run(MIGRATION_VERSION, now());
     }
     db.exec('COMMIT;');
@@ -283,6 +288,8 @@ export function openDatabase(dataDirectory) {
     setCodexThreadId,
     createBranch,
     getTranscript,
+    getThreadRevision,
+    getThreadMessagesAfter,
     addUserMessage,
     addCommandMessage,
     addAssistantMessage,
@@ -307,6 +314,7 @@ export function openDatabase(dataDirectory) {
     markMemoryJobError,
     retryMemoryJobs,
     memoryStatus,
+    memoryStatusForThread,
     addMetaNote,
     listMetaNotes,
     addCheckpoint,
@@ -392,6 +400,7 @@ export function openDatabase(dataDirectory) {
       name: row.name,
       instructions: row.instructions,
       style: row.style,
+      memoryScope: row.memory_scope === 'thread' ? 'thread' : 'project',
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -426,12 +435,14 @@ export function openDatabase(dataDirectory) {
     if (!nextName) throw new Error('Project name is required.');
     const nextInstructions = values.instructions === undefined ? previous.instructions : String(values.instructions);
     const nextStyle = values.style === undefined ? previous.style : String(values.style);
+    const nextMemoryScope = values.memoryScope === undefined ? previous.memoryScope : String(values.memoryScope);
+    if (!['thread', 'project'].includes(nextMemoryScope)) throw new Error('Memory scope must be conversation-local or shared across this project.');
     const updatedAt = now();
     transaction(() => {
-      db.prepare('UPDATE projects SET name = ?, instructions = ?, style = ?, updated_at = ? WHERE id = ?')
-        .run(nextName, nextInstructions, nextStyle, updatedAt, projectId);
+      db.prepare('UPDATE projects SET name = ?, instructions = ?, style = ?, memory_scope = ?, updated_at = ? WHERE id = ?')
+        .run(nextName, nextInstructions, nextStyle, nextMemoryScope, updatedAt, projectId);
       addProjectHistory(projectId, 'project_updated', previous, {
-        id: projectId, name: nextName, instructions: nextInstructions, style: nextStyle, updatedAt
+        id: projectId, name: nextName, instructions: nextInstructions, style: nextStyle, memoryScope: nextMemoryScope, updatedAt
       }, sourceMessageId);
     });
     return getProject(projectId);
@@ -546,6 +557,16 @@ export function openDatabase(dataDirectory) {
     }
     const local = db.prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY sequence').all(threadId).map(normalizeMessage);
     return [...inherited, ...local];
+  }
+
+  function getThreadRevision(threadId) {
+    return db.prepare('SELECT COALESCE(MAX(sequence), 0) AS revision FROM messages WHERE thread_id = ?').get(threadId)?.revision ?? 0;
+  }
+
+  function getThreadMessagesAfter(threadId, sequence = 0) {
+    const after = Number.isSafeInteger(Number(sequence)) ? Math.max(0, Number(sequence)) : 0;
+    return db.prepare('SELECT * FROM messages WHERE thread_id = ? AND sequence > ? ORDER BY sequence')
+      .all(threadId, after).map(normalizeMessage);
   }
 
   function addUserMessage(threadId, content, { allowPaused = false } = {}) {
@@ -914,6 +935,21 @@ export function openDatabase(dataDirectory) {
       FROM memory_jobs j JOIN messages m ON m.id = j.message_id
       WHERE j.project_id = ? ORDER BY m.sequence
     `).all(projectId).filter((job) => lineage.has(job.branch_id) && job.sequence <= lineage.get(job.branch_id));
+    return summarizeMemoryJobs(jobs);
+  }
+
+  function memoryStatusForThread(threadId) {
+    const thread = getThread(threadId);
+    if (!thread) return { state: 'current', counts: {}, lastIndexed: null, error: null };
+    const jobs = db.prepare(`
+      SELECT j.*, m.sequence, m.id AS source_id, m.created_at AS source_created_at
+      FROM memory_jobs j JOIN messages m ON m.id = j.message_id
+      WHERE j.thread_id = ? ORDER BY m.sequence
+    `).all(threadId);
+    return summarizeMemoryJobs(jobs);
+  }
+
+  function summarizeMemoryJobs(jobs) {
     const statusCounts = {};
     for (const job of jobs) statusCounts[job.status] = (statusCounts[job.status] ?? 0) + 1;
     const lastIndexedJob = [...jobs].reverse().find((job) => job.status === 'indexed');
@@ -1121,8 +1157,9 @@ export function openDatabase(dataDirectory) {
     const mapValue = (map, value) => value == null ? null : map.get(value) ?? null;
     const importTime = now();
     transaction(() => {
-      db.prepare('INSERT INTO projects(id, name, instructions, style, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')
-        .run(projectId, data.project.name, data.project.instructions ?? '', data.project.style ?? '', importTime, importTime);
+      const memoryScope = data.project.memoryScope === 'thread' ? 'thread' : 'project';
+      db.prepare('INSERT INTO projects(id, name, instructions, style, memory_scope, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+        .run(projectId, data.project.name, data.project.instructions ?? '', data.project.style ?? '', memoryScope, importTime, importTime);
       for (const row of data.branches) {
         db.prepare(`INSERT INTO branches(id, project_id, name, parent_branch_id, fork_message_id, fork_sequence, fork_thread_id, created_at)
           VALUES(?, ?, ?, ?, ?, ?, ?, ?)`)

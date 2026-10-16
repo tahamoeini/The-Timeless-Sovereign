@@ -128,10 +128,12 @@
           <label>Project name<input id="settingsProjectName" maxlength="100"></label>
           <label>Project instructions<textarea id="settingsProjectInstructions" rows="5" placeholder="Setting, point of view, boundaries, and narrator guidance"></textarea></label>
           <label>Style preferences<textarea id="settingsProjectStyle" rows="4" placeholder="Pacing, tone, prose preferences…"></textarea></label>
+          <label>Memory used for replies<select id="memoryScopeSelect"><option value="project">All chats in this project</option><option value="thread">This conversation only</option></select><small>All story data stays on this PC. Projects always remain separate.</small></label>
           </section>
           <section class="settings-section">
             <span class="eyebrow">MODEL</span>
           <label>Codex model<select id="modelSelect"><option value="">Use the Codex default</option></select><small>Available models depend on your ChatGPT account and plan.</small></label>
+          <label>Thinking level<select id="reasoningEffortSelect" disabled><option value="">Connect to load model options</option></select><small id="reasoningEffortHelp">Only levels supported by the selected model are shown.</small></label>
           <div class="data-actions"><button id="saveSettings" class="primary-button" type="button">Save project settings</button><button id="exportProject" class="quiet-button" type="button">Export this project</button><button id="backupButton" class="quiet-button" type="button">Create local backup</button><button id="downloadBackupButton" class="quiet-button" type="button">Download full backup</button><button id="restoreButton" class="quiet-button" type="button">Restore from backup</button></div>
           </section>
         </div>

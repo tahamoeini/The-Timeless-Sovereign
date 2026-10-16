@@ -83,7 +83,8 @@ export class CommandProcessor {
     const note = String(args).trim();
     if (!note) throw new Error('Add the out-of-story note you want the next response to follow.');
     this.database.addMetaNote(thread.id, userMessage.id, note);
-    return `Meta note saved for this project branch. It will be included in the next story response.\nSource message: ${userMessage.id}`;
+    const scope = this.database.getProject(thread.projectId).memoryScope;
+    return `Meta note saved ${scope === 'thread' ? 'to this conversation' : 'for this project branch'}. It will be included in the next story response.\nSource message: ${userMessage.id}`;
   }
 
   command_pause(thread, _userMessage, args) {
@@ -100,8 +101,8 @@ export class CommandProcessor {
 
   command_status(thread, _userMessage, args) {
     this.requireNoArgs(args, '/status');
-    const ledger = this.database.getEffectiveLedger(thread.projectId, thread.branchId);
-    const memory = this.database.memoryStatus(thread.projectId, thread.branchId);
+    const ledger = this.visibleLedger(thread);
+    const memory = this.visibleMemoryStatus(thread);
     const scene = ledger.find((item) => item.type === 'scene');
     const characters = ledger.filter((item) => item.type === 'character');
     const openThreads = ledger.filter((item) => item.type === 'thread' && ['current', 'uncertain'].includes(item.status));
@@ -110,6 +111,7 @@ export class CommandProcessor {
       `Project: ${thread.projectName}`,
       `Thread: ${thread.title}`,
       `Branch: ${thread.branchName}${thread.paused ? ' (paused)' : ''}`,
+      `Memory scope: ${this.memoryScope(thread) === 'thread' ? 'this conversation' : 'all chats in this project'}`,
       `Memory: ${memory.state}${memory.lastIndexed ? ` · last indexed source ${memory.lastIndexed.id}` : ''}${memory.error ? ` · ${memory.error}` : ''}`,
       `Scene: ${scene ? `${scene.content} [${scene.sourceMessageIds.join(', ')}]` : 'not recorded'}`,
       `Characters: ${characters.length ? characters.map((item) => item.subject).join(', ') : 'none recorded'}`,
@@ -120,7 +122,7 @@ export class CommandProcessor {
 
   command_recap(thread, _userMessage, args) {
     this.requireNoArgs(args, '/recap');
-    const ledger = this.database.getEffectiveLedger(thread.projectId, thread.branchId);
+    const ledger = this.visibleLedger(thread);
     const certain = ledger.filter((item) => item.status === 'current');
     const uncertain = ledger.filter((item) => item.status === 'uncertain');
     const recent = this.database.getTranscript(thread.id).filter((message) => message.kind === 'story').slice(-6);
@@ -177,6 +179,9 @@ export class CommandProcessor {
     if (!match) throw new Error('A ledger record ID and correction are required.');
     const correction = match[2].trim();
     if (!correction) throw new Error('The correction text cannot be empty.');
+    if (!this.visibleLedger(thread, { includeSuperseded: true }).some((item) => item.id === match[1])) {
+      throw new Error('That continuity record is outside this conversation’s memory scope or branch timeline.');
+    }
     const result = this.database.retconLedgerItem(thread.projectId, thread.branchId, match[1], correction, userMessage.id);
     return `Correction recorded. The earlier record remains in the audit history and is superseded on this branch.\nEarlier record: ${match[1]}\nNew record: ${result.item.id}\nSource message: ${userMessage.id}`;
   }
@@ -184,7 +189,7 @@ export class CommandProcessor {
   command_scene(thread, userMessage, args) {
     const tokens = tokenize(args);
     const action = (tokens[0] ?? 'show').toLowerCase();
-    const current = this.database.getEffectiveLedger(thread.projectId, thread.branchId).find((item) => item.type === 'scene');
+    const current = this.visibleLedger(thread).find((item) => item.type === 'scene');
     if (action === 'show') {
       if (tokens.length > 1) throw new Error('/scene show does not take additional arguments.');
       return current ? `Current scene\n${formatEntry(current)}\nDetails: ${JSON.stringify(current.details)}` : 'No current scene has been recorded.';
@@ -212,12 +217,12 @@ export class CommandProcessor {
   command_checkpoint(thread, userMessage, args) {
     this.requireNoArgs(args, '/checkpoint');
     const project = this.database.getProject(thread.projectId);
-    const ledger = this.database.getEffectiveLedger(thread.projectId, thread.branchId);
+    const ledger = this.visibleLedger(thread);
     const payload = {
       format: 'timeless-sovereign-checkpoint',
       version: 1,
       createdAt: new Date().toISOString(),
-      project: { name: project.name, instructions: project.instructions, preferences: { style: project.style } },
+      project: { name: project.name, instructions: project.instructions, preferences: { style: project.style, memoryScope: project.memoryScope } },
       branch: { id: thread.branchId, name: thread.branchName, parentBranchId: thread.parentBranchId, forkMessageId: thread.forkMessageId },
       currentScene: ledger.find((item) => item.type === 'scene') ?? null,
       canon: ledger.filter((item) => item.status === 'current'),
@@ -227,7 +232,7 @@ export class CommandProcessor {
       unresolvedObligations: ledger.filter((item) => item.type === 'obligation' && ['current', 'uncertain'].includes(item.status)),
       unknowns: ledger.filter((item) => item.status === 'uncertain').map((item) => ({ subject: item.subject, content: item.content, sources: item.sourceMessageIds })),
       sourceMessageIds: [...new Set(ledger.flatMap((item) => item.sourceMessageIds))],
-      memoryStatus: this.database.memoryStatus(thread.projectId, thread.branchId)
+      memoryStatus: this.visibleMemoryStatus(thread)
     };
     this.database.addCheckpoint(thread.id, userMessage.id, payload);
     return `Checkpoint created · ${payload.createdAt}\nCopy or export this portable record:\n\n${JSON.stringify(payload, null, 2)}`;
@@ -235,10 +240,30 @@ export class CommandProcessor {
 
   findCharacter(thread, name) {
     const key = String(name).toLocaleLowerCase();
-    return this.database.getEffectiveLedger(thread.projectId, thread.branchId)
+    return this.visibleLedger(thread)
       .find((item) => item.type === 'character' && (item.subject.toLocaleLowerCase() === key ||
         (Array.isArray(item.details.aliases) ? item.details.aliases : String(item.details.aliases ?? '').split(/[,|]/))
           .some((alias) => String(alias).trim().toLocaleLowerCase() === key))) ?? null;
+  }
+
+  memoryScope(thread) {
+    return this.database.getProject(thread.projectId)?.memoryScope === 'thread' ? 'thread' : 'project';
+  }
+
+  visibleLedger(thread, { includeSuperseded = false } = {}) {
+    const rows = includeSuperseded
+      ? this.database.getLedgerItems(thread.projectId, thread.branchId, { includeSuperseded: true })
+      : this.database.getEffectiveLedger(thread.projectId, thread.branchId);
+    if (this.memoryScope(thread) === 'project') return rows;
+    return rows.filter((item) => item.sourceMessageIds.length > 0 && item.sourceMessageIds.every((id) =>
+      this.database.getMessage(id)?.threadId === thread.id
+    ));
+  }
+
+  visibleMemoryStatus(thread) {
+    return this.memoryScope(thread) === 'thread'
+      ? this.database.memoryStatusForThread(thread.id)
+      : this.database.memoryStatus(thread.projectId, thread.branchId);
   }
 
   requireNoArgs(args, command) {

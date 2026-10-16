@@ -13,6 +13,6 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test",
-    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/Build-Windows.ps1"
+    "build:windows": "bash ./scripts/build-windows.sh"
   }
 }

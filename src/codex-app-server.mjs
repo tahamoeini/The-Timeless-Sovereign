@@ -219,7 +219,7 @@ export class CodexAppServer extends EventEmitter {
     return response.data ?? [];
   }
 
-  async streamTurn({ threadId, text, model, outputSchema, onDelta = () => {}, onActivity = () => {} }) {
+  async streamTurn({ threadId, text, model, reasoningEffort, outputSchema, onDelta = () => {}, onActivity = () => {} }) {
     this.requireConnected();
     if (this.activeTurns.has(threadId)) throw new Error('A Codex turn is already running for this thread.');
     const record = {
@@ -241,6 +241,7 @@ export class CodexAppServer extends EventEmitter {
         threadId,
         input: [{ type: 'text', text }],
         model: model || undefined,
+        effort: reasoningEffort || undefined,
         approvalPolicy: 'on-request',
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
         cwd: path.join(this.dataDirectory, 'empty-workspace'),
@@ -343,7 +344,12 @@ export class CodexAppServer extends EventEmitter {
       return;
     }
     if (method === 'error' || method === 'turn/error') {
-      this.finishTurn(record, new Error(params.message ?? 'Codex turn failed.'));
+      const errorMessage = params.error?.message ?? params.message ?? 'Codex turn failed.';
+      if (params.willRetry === true) {
+        record.onActivity({ type: 'retrying', message: String(errorMessage) });
+        return;
+      }
+      this.finishTurn(record, new Error(String(errorMessage)));
     }
   }
 

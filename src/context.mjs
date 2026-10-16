@@ -42,7 +42,15 @@ export function buildContextBundle(database, threadId, currentMessage) {
   if (!thread) throw new Error('Thread not found.');
   const project = database.getProject(thread.projectId);
   const terms = termsFor(currentMessage.content);
-  const ledger = database.getEffectiveLedger(thread.projectId, thread.branchId);
+  const memoryScope = project.memoryScope === 'thread' ? 'thread' : 'project';
+  const sourceMessages = new Map();
+  const sourceMessage = (id) => {
+    if (!sourceMessages.has(id)) sourceMessages.set(id, database.getMessage(id));
+    return sourceMessages.get(id);
+  };
+  const ledger = database.getEffectiveLedger(thread.projectId, thread.branchId).filter((item) =>
+    memoryScope === 'project' || (item.sourceMessageIds.length > 0 && item.sourceMessageIds.every((id) => sourceMessage(id)?.threadId === thread.id))
+  );
   const ordered = ledger
     .map((item) => ({ item, score: relevanceScore(item, terms) }))
     .sort((a, b) => b.score - a.score || b.item.sourceSequence - a.item.sourceSequence);
@@ -55,7 +63,7 @@ export function buildContextBundle(database, threadId, currentMessage) {
   const relevantIds = new Set([...sceneItems, ...characters, ...rules, ...openThreads, ...relevant].map((item) => item.id));
   const selectedLedger = ledger.filter((item) => relevantIds.has(item.id));
   const searchHits = database.searchMessages(thread.projectId, thread.branchId, currentMessage.content, MAX_SEARCH_RESULTS)
-    .filter((message) => message.kind === 'story' && message.id !== currentMessage.id);
+    .filter((message) => message.kind === 'story' && message.id !== currentMessage.id && (memoryScope === 'project' || message.threadId === thread.id));
   const transcript = database.getTranscript(threadId)
     .filter((message) => message.kind === 'story' && message.role !== 'system' && message.id !== currentMessage.id)
     .slice(-MAX_RECENT_TURNS);
@@ -71,15 +79,18 @@ export function buildContextBundle(database, threadId, currentMessage) {
     }
   }
   const retrievedSources = [...sources.values()].slice(0, 16);
-  const metaNotes = database.listMetaNotes(thread.projectId, thread.branchId, 12);
-  const memory = database.memoryStatus(thread.projectId, thread.branchId);
+  const metaNotes = database.listMetaNotes(thread.projectId, thread.branchId, 100)
+    .filter((note) => memoryScope === 'project' || note.threadId === thread.id).slice(-12);
+  const memory = memoryScope === 'thread'
+    ? database.memoryStatusForThread(thread.id)
+    : database.memoryStatus(thread.projectId, thread.branchId);
   const currentScene = sceneItems[0] ?? null;
 
   const sections = [
     '# Story context bundle',
     'This is a fiction-only conversation. Do not inspect files, run commands, invoke tools, or switch to coding work. Treat this bundle as the authoritative continuity context for this turn. Do not claim that a character knows or witnessed something unless a source-linked record establishes it. If retrieved history does not support a detail, say you are uncertain or ask the user.',
     `\n## Project: ${project.name}\nProject instructions:\n${cleanText(project.instructions) || '(none)'}\nStyle preferences:\n${cleanText(project.style) || '(none)'}`,
-    `\n## Branch and thread\nBranch: ${thread.branchName} (${thread.branchId})\nThread: ${thread.title} (${thread.id})\nIndex state: ${memory.state}${memory.lastIndexed ? ` · last indexed source ${memory.lastIndexed.id}` : ''}`,
+    `\n## Branch and thread\nBranch: ${thread.branchName} (${thread.branchId})\nThread: ${thread.title} (${thread.id})\nMemory scope: ${memoryScope === 'thread' ? 'this conversation only' : 'all conversations in this project'}\nIndex state: ${memory.state}${memory.lastIndexed ? ` · last indexed source ${memory.lastIndexed.id}` : ''}`,
     `\n## Latest scene state\n${currentScene ? formatLedger(currentScene) : 'No source-backed scene state is recorded yet.'}`,
     `\n## Relevant canon and knowledge boundaries\n${selectedLedger.length ? selectedLedger.map(formatLedger).join('\n') : 'No relevant ledger entries were retrieved.'}`,
     `\n## Retrieved source messages\n${retrievedSources.length ? retrievedSources.map((message) => formatSource(message, terms)).join('\n\n') : 'No matching historical source message was found. Do not invent an earlier event.'}`,
@@ -92,6 +103,7 @@ export function buildContextBundle(database, threadId, currentMessage) {
     sourceMessageIds: retrievedSources.map((message) => message.id),
     ledgerItemIds: selectedLedger.map((item) => item.id),
     memoryState: memory.state,
+    memoryScope,
     currentScene
   };
 }
