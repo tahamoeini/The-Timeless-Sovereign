@@ -99,7 +99,8 @@ export class CodexAppServer extends EventEmitter {
   async start(accessToken) {
     if (!this.executable) throw new Error('Codex app-server executable was not found. Install Codex CLI or set CODEX_EXECUTABLE.');
     if (!accessToken) throw new Error('ChatGPT-plan authorization is not available. Sign in with ChatGPT first.');
-    if (this.status === 'connected') await this.stop();
+    if (this.status === 'connected') return this.getConnectionStatus();
+    if (this.process) await this.stop();
     fs.mkdirSync(this.dataDirectory, { recursive: true });
     const codexHome = path.join(this.dataDirectory, 'codex-home');
     const workingDirectory = path.join(this.dataDirectory, 'empty-workspace');
@@ -265,12 +266,17 @@ export class CodexAppServer extends EventEmitter {
 
   async stop() {
     const child = this.process;
+    const rpc = this.rpc;
     this.process = null;
-    this.rpc?.close(new Error('Codex app-server stopped.'));
     this.rpc = null;
+    this.status = 'disconnected';
+    this.lastError = null;
     this.loadedThreads.clear();
+    const stoppedError = new Error('Codex app-server stopped.');
+    for (const record of [...this.activeTurns.values()]) this.finishTurn(record, stoppedError);
+    rpc?.close(stoppedError);
     if (!child || child.exitCode !== null) {
-      this.status = 'disconnected';
+      this.emit('status', this.getConnectionStatus());
       return;
     }
     child.stdin.end();
@@ -287,6 +293,10 @@ export class CodexAppServer extends EventEmitter {
 
   requireConnected() {
     if (this.status !== 'connected' || !this.rpc || this.rpc.closed) throw new Error('Codex app-server is not connected. Sign in with ChatGPT and reconnect.');
+  }
+
+  hasActiveTurns() {
+    return this.activeTurns.size > 0;
   }
 
   async handleServerRequest(method) {

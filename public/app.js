@@ -1173,11 +1173,9 @@ async function restoreBackup() {
 async function retryMemory() {
   if (!state.project) return;
   try {
-    await api('/api/memory/retry', { method: 'POST', body: jsonBody({ projectId: state.project.id }) });
+    const result = await api('/api/memory/retry', { method: 'POST', body: jsonBody({ projectId: state.project.id }) });
     await refreshCurrentThread();
-    showToast(state.authorization.state === 'connected'
-      ? 'Pending memory records were queued for processing.'
-      : 'Memory jobs are saved as pending. Connect with ChatGPT to process them.');
+    showToast(result.message ?? 'Memory status refreshed.');
   } catch (error) { showToast(error.message); }
 }
 

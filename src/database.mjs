@@ -335,6 +335,7 @@ export function openDatabase(dataDirectory) {
     markMemoryJobProcessing,
     markMemoryJobIndexed,
     markMemoryJobError,
+    markMemoryJobPending,
     retryMemoryJobs,
     memoryStatus,
     memoryStatusForThread,
@@ -1032,15 +1033,23 @@ export function openDatabase(dataDirectory) {
       .run(String(errorMessage).slice(0, 500), now(), jobId);
   }
 
+  function markMemoryJobPending(jobId) {
+    db.prepare(`UPDATE memory_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE id = ?`)
+      .run(now(), jobId);
+  }
+
   function retryMemoryJobs(projectId = null) {
+    let update;
     if (projectId) {
-      db.prepare(`UPDATE memory_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE project_id = ? AND status IN ('error', 'processing')`)
+      update = db.prepare(`UPDATE memory_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE project_id = ? AND status = 'error'`)
         .run(now(), projectId);
     } else {
-      db.prepare(`UPDATE memory_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE status IN ('error', 'processing')`)
+      update = db.prepare(`UPDATE memory_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE status = 'error'`)
         .run(now());
     }
-    return listMemoryJobs(projectId, null, true);
+    const counts = { pending: 0, processing: 0, error: 0 };
+    for (const job of listMemoryJobs(projectId, null, true)) counts[job.status] += 1;
+    return { requeued: Number(update.changes), counts };
   }
 
   function memoryStatus(projectId, branchId) {
