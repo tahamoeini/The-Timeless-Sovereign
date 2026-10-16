@@ -127,6 +127,39 @@ test('local app persists a disconnected user turn, rejects cross-origin writes, 
   assert.equal(JSON.parse(stillThere.body).project.name, 'Saved locally');
 });
 
+test('appearance preferences persist in SQLite across a server restart and update status is local API data', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-settings-test-'));
+  const updateChecker = async ({ currentVersion }) => ({
+    state: 'update_available', currentVersion, latestVersion: '1.2.0', updateAvailable: true,
+    downloadUrl: 'https://github.com/tahamoeini/The-Timeless-Sovereign/releases/download/v1.2.0/The-Timeless-Sovereign-Setup-1.2.0.exe'
+  });
+  let app = createStoryStudioServer({ dataDirectory, port: 0, updateChecker });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+
+  const initial = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  assert.equal(initial.appSettings.theme, 'system');
+  assert.equal(initial.appVersion, '1.1.0');
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const saved = await invoke(app, 'PATCH', '/api/settings/app', { theme: 'dark' }, { origin: base, csrfToken: initial.csrfToken });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(JSON.parse(saved.body), { theme: 'dark' });
+  const invalid = await invoke(app, 'PATCH', '/api/settings/app', { theme: 'sepia' }, { origin: base, csrfToken: initial.csrfToken });
+  assert.equal(invalid.status, 400);
+
+  await app.close();
+  app = createStoryStudioServer({ dataDirectory, port: 0, updateChecker });
+  await app.listen();
+  const restored = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  assert.equal(restored.appSettings.theme, 'dark');
+  const update = await invoke(app, 'GET', '/api/updates');
+  assert.equal(update.status, 200);
+  assert.equal(JSON.parse(update.body).latestVersion, '1.2.0');
+});
+
 test('retry reconnects Codex and resumes pending continuity jobs after restart', async (t) => {
   const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-memory-retry-test-'));
   const calls = { starts: 0, indexThreads: 0, indexTurns: 0 };

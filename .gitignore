@@ -11,3 +11,4 @@ credentials.dpapi
 credentials.dpapi.*.slot
 codex-home/
 empty-workspace/
+dist/

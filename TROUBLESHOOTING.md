@@ -14,6 +14,18 @@ This bypass applies to this launch only; it does not change the machine’s exec
 
 Install Node.js 22.14 or newer, reopen PowerShell, and run `node --version`. The app uses Node’s built-in SQLite module and has no npm package dependencies.
 
+The installed Windows setup includes its own Node.js runtime, so Node.js is needed only for running from source or building a new installer.
+
+## Build or install the Windows app
+
+`npm run build:windows` needs Inno Setup 6 and Node.js 22.14 or newer. If the build reports that `ISCC.exe` was not found, install Inno Setup 6 and rerun the build. The setup is intentionally unsigned, so Windows may show an unknown-publisher or SmartScreen notice. The per-user install does not need administrator access.
+
+The app stores data separately from its installed files in `%LOCALAPPDATA%\TheTimelessSovereign`. Installing an update or uninstalling the app does not remove that data. Make a backup before manually deleting the data folder.
+
+## Updates are not available
+
+The update check reads the latest public stable release from this repository’s GitHub releases. No public release is published yet if the app reports that no release is available. A future release must include an installer named `The-Timeless-Sovereign-Setup-<version>.exe`. Updates are downloaded from the linked GitHub release and installed manually; they are not executed in the background.
+
 ## The page does not open, or port 4317 is already in use
 
 The app prints its local address when it starts. If another app owns port 4317, close it or choose a different port before launching:

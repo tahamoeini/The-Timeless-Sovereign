@@ -26,6 +26,22 @@ Optional environment settings:
 - `STORY_STUDIO_OPEN_BROWSER=0` prevents automatic browser launch.
 - `CODEX_EXECUTABLE` sets the full path to `codex.exe` if it is not on `PATH`.
 
+## Installable Windows app
+
+The installer bundles Node.js, installs per user without administrator access, and adds a Start Menu shortcut. It opens the local Story Studio page in your browser. The installed app does not set `STORY_STUDIO_DATA_DIR`; its SQLite database, backups, isolated Codex home, and Windows-protected credentials stay under `%LOCALAPPDATA%\TheTimelessSovereign` through app updates and uninstallation.
+
+To build the unsigned installer on Windows, install Node.js 22.14 or newer and Inno Setup 6, then run:
+
+```powershell
+npm run build:windows
+```
+
+The installer is written to `dist\windows\The-Timeless-Sovereign-Setup-1.1.0.exe`. You can stage the runtime and app files without compiling the setup by running `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-Windows.ps1 -StageOnly`.
+
+This installer is intentionally unsigned. Windows may show an unknown-publisher or SmartScreen notice. Review the source and download the installer only from a release location you trust.
+
+To publish an update later, increase `version` in `package.json`, build the installer, and attach the matching `The-Timeless-Sovereign-Setup-<version>.exe` file to a **public stable GitHub release** in this repository. In the app, open **Settings → Check for updates**, download the linked setup, close Story Studio, and run the installer. The installer uses a stable application ID and replaces the installed app without touching `%LOCALAPPDATA%\TheTimelessSovereign`. Updates are user-confirmed; the app does not silently download or execute installers. A public GitHub release is required for the in-app update check.
+
 ## Connect Codex
 
 Choose **Sign in with ChatGPT** in the app and complete the official browser sign-in. Tokens are stored separately in Windows DPAPI-protected files under the local data directory; the browser does not receive tokens. The app-server uses an isolated empty workspace, disables non-chat capabilities, and uses a read-only sandbox. If sign-in is denied, unavailable, or missing required scopes, the app stays disconnected and still saves your story turns locally. It never switches to API-key billing or another model provider.
@@ -38,6 +54,7 @@ The story database and project exports do not contain credentials. Back up the w
 - New chats in the same project retrieve shared project and branch continuity.
 - A branch starts at its fork point and develops an independent timeline. Later events on the main branch are not visible to it.
 - The Narrative view is designed for reading; Transcript shows the conventional saved message sequence. Search covers the full saved conversation. Persian and Arabic text is detected and rendered right-to-left.
+- Appearance follows a neutral ChatGPT-style palette with light, dark, and system options saved in the local database.
 - Every user turn is saved before generation begins. Assistant output is saved as it streams. If generation fails or the app closes, the source messages remain and interrupted/pending work is visible for recovery.
 - Continuity indexing runs separately. A pending/error badge does not mean the transcript was lost; use **Retry memory processing** when available.
 
@@ -69,6 +86,7 @@ Invalid or incomplete command arguments produce an explanation and do not become
 - **Export this project** downloads complete messages, branches, source-linked ledger records, corrections, and audit history. OAuth credentials are excluded.
 - **Create local backup** makes a consistent SQLite backup under the local data directory’s `backups` folder. **Download full backup** downloads the complete database snapshot; keep it private because it includes all projects and archives.
 - **Restore from backup** replaces the current story database after creating a pre-restore snapshot. A restore does not replace the protected credential store.
+- Installed-app updates do not remove local projects or settings. The uninstaller removes app files, not the local story database or protected credentials.
 - Project deletion requires typing the project name and `DELETE PROJECT`. It removes that project’s chats, branches, messages, ledger, audit history, checkpoints, and imported archives from the local database.
 
 ## Verify
@@ -80,3 +98,5 @@ Run `npm test` to exercise storage recovery, commands, branch and project isolat
 - `ARCHITECTURE.md` records the implementation and protocol decisions.
 - `TROUBLESHOOTING.md` covers common startup, connection, and recovery issues.
 - `START.ps1` launches the local app on Windows.
+- `scripts\Build-Windows.ps1` stages the bundled runtime and compiles the unsigned per-user installer with Inno Setup 6.
+- `scripts\windows-installer.iss` defines the setup and same-ID in-place upgrade behavior.
