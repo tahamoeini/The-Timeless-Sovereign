@@ -32,12 +32,12 @@ The update check reads the latest public stable release from this repository’s
 
 Run `npm run setup:git-hooks` once in the repository. The setup points this clone's Git hooks at `.githooks`; it does not replace an existing custom hook folder. Use a conventional commit header such as `feat: add scene search` or `fix(memory): retry failed indexing`. If `package.json` has unstaged changes, stage those edits first so the hook can safely add only the version change.
 
-## The page does not open, or port 4317 is already in use
+## The page does not open, or a local port is already in use
 
-The app prints its local address when it starts. If another app owns port 4317, close it or choose a different port before launching:
+The installed app uses port 4318 so it can run alongside a source-run app on port 4317. If another app owns either address, choose an unused port before launching the source-run app:
 
 ```powershell
-$env:STORY_STUDIO_PORT = '4318'
+$env:STORY_STUDIO_PORT = '4319'
 & .\START.ps1
 ```
 
@@ -45,7 +45,7 @@ Use the printed `http://127.0.0.1:<port>/` address. The app binds to loopback on
 
 Only one app process can open a data directory. If Story Studio says the directory is already in use, close the other instance first. A lock left by a crashed process is cleared automatically the next time the app starts.
 
-The installed launcher reuses only the server process from the same installation. If another Story Studio instance is using port 4317, close the source-run or other installed instance, then launch the installed app again. If the installed app does not start, the launcher shows the paths to its local logs. Open `Story-Studio-launcher.log` and `Story-Studio-startup.log` under `%LOCALAPPDATA%\TheTimelessSovereign\logs` and use the last error in `Story-Studio-startup.log` to identify the startup failure. If the logs are unavailable there, check `%TEMP%` for the same filenames.
+The installed launcher reuses only the server process from the same installation on port 4318. It leaves a source-run server on port 4317 alone. If the installed app does not start, the launcher shows the paths to its local logs. Open `Story-Studio-launcher.log` and `Story-Studio-startup.log` under `%LOCALAPPDATA%\TheTimelessSovereign\logs` and use the last error in `Story-Studio-startup.log` to identify the startup failure. If the logs are unavailable there, check `%TEMP%` for the same filenames.
 
 ## Codex app-server executable was not found
 

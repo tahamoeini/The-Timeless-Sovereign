@@ -128,8 +128,8 @@ If Not files.FileExists(launcherPath) Or Not files.FileExists(serverPath) Then
   WScript.Quit 1
 End If
 
-appUrl = "http://127.0.0.1:4317/"
-shell.Environment("Process")("STORY_STUDIO_PORT") = "4317"
+appUrl = "http://127.0.0.1:4318/"
+shell.Environment("Process")("STORY_STUDIO_PORT") = "4318"
 shell.Environment("Process")("STORY_STUDIO_OPEN_BROWSER") = "0"
 shell.CurrentDirectory = appRoot
 
@@ -141,15 +141,15 @@ If Err.Number = 0 And probe.Status = 200 Then
   If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
     packagedServerState = CheckPackagedServerProcess(nodePath, serverPath)
     If packagedServerState = 0 Then
-      RecordLaunchEvent "Port 4317 is serving Story Studio, but its process does not belong to this installation."
-      ShowLaunchFailure "Another Story Studio instance is already using port 4317. Close the other app or source-run server, then launch the installed app again."
+      RecordLaunchEvent "Port 4318 is serving Story Studio, but its process does not belong to this installation."
+      ShowLaunchFailure "Another service is using port 4318. Close it, then launch Story Studio again."
       WScript.Quit 1
     ElseIf packagedServerState < 0 Then
-      RecordLaunchEvent "Port 4317 is serving Story Studio, but Windows could not verify its process owner."
-      ShowLaunchFailure "Story Studio found another server on port 4317 but could not verify which installation owns it. Close other Story Studio instances, then launch again."
+      RecordLaunchEvent "Port 4318 is serving Story Studio, but Windows could not verify its process owner."
+      ShowLaunchFailure "Story Studio found another server on port 4318 but could not verify its process owner. Close it, then launch again."
       WScript.Quit 1
     End If
-    RecordLaunchEvent "Reusing the Story Studio server already responding on port 4317. Opening " & appUrl
+    RecordLaunchEvent "Reusing the Story Studio server already responding on port 4318. Opening " & appUrl
     Err.Clear
     shell.Run appUrl, 1, False
     If Err.Number <> 0 Then
@@ -160,12 +160,12 @@ If Err.Number = 0 And probe.Status = 200 Then
     RecordLaunchEvent "Browser open request accepted for the existing server."
     WScript.Quit 0
   End If
-  RecordLaunchEvent "Port 4317 returned HTTP 200, but the response was not Story Studio."
-  ShowLaunchFailure "Another service is using port 4317. Close it, then launch Story Studio again."
+  RecordLaunchEvent "Port 4318 returned HTTP 200, but the response was not Story Studio."
+  ShowLaunchFailure "Another service is using port 4318. Close it, then launch Story Studio again."
   WScript.Quit 1
 ElseIf Err.Number = 0 Then
-  RecordLaunchEvent "Port 4317 is occupied and returned HTTP " & probe.Status & "."
-  ShowLaunchFailure "Another service is using port 4317. Close it, then launch Story Studio again."
+  RecordLaunchEvent "Port 4318 is occupied and returned HTTP " & probe.Status & "."
+  ShowLaunchFailure "Another service is using port 4318. Close it, then launch Story Studio again."
   WScript.Quit 1
 End If
 If Err.Number <> 0 Then RecordLaunchEvent "No healthy server answered the initial probe; starting the packaged server. Probe detail: " & Err.Description
@@ -187,7 +187,7 @@ For attempt = 1 To 60
   probe.Send
   If Err.Number = 0 And probe.Status = 200 Then
     If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
-      RecordLaunchEvent "Packaged server is ready on port 4317. Opening " & appUrl
+      RecordLaunchEvent "Packaged server is ready on port 4318. Opening " & appUrl
       Err.Clear
       shell.Run appUrl, 1, False
       If Err.Number <> 0 Then
@@ -227,7 +227,7 @@ Function CheckPackagedServerProcess(expectedNodePath, expectedServerPath)
   End If
   Set expression = New RegExp
   expression.IgnoreCase = True
-  expression.Pattern = "^\s*TCP\s+\S+:4317\s+\S+\s+LISTENING\s+([0-9]+)"
+  expression.Pattern = "^\s*TCP\s+\S+:4318\s+\S+\s+LISTENING\s+([0-9]+)"
   ownerPid = ""
   Do Until netstat.StdOut.AtEndOfStream
     outputLine = netstat.StdOut.ReadLine
@@ -285,84 +285,181 @@ VBS
 
 cat > "$payload/Stop-Story-Studio.vbs" <<'VBS'
 Option Explicit
-Dim request, expression, matches, serverPath, service, processes, process, found, attempt
+Dim files, shell, serverPath, appRoot, expectedNodePath, candidatePort, serverState
 On Error Resume Next
 serverPath = ""
 If WScript.Arguments.Count > 0 Then serverPath = WScript.Arguments(0)
-Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
+If serverPath = "" Then WScript.Quit 0
+Set files = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
 If Err.Number <> 0 Then
-  MsgBox "Story Studio could not verify its local server. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+  MsgBox "Story Studio could not check for a running installed server. Close it before installing the update.", vbExclamation, "Story Studio could not close"
   WScript.Quit 1
 End If
-request.SetTimeouts 500, 500, 500, 500
-request.Open "GET", "http://127.0.0.1:4317/api/bootstrap", False
-request.Send
-If Err.Number = 0 Then
-  If request.Status <> 200 Then
-    MsgBox "Another service is using the Story Studio address. Close it before installing the update.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
+appRoot = files.GetParentFolderName(files.GetParentFolderName(serverPath))
+expectedNodePath = appRoot & "\runtime\node.exe"
+
+' 4317 is checked only for an exact match to the old packaged installation.
+For Each candidatePort In Array(4318, 4317)
+  serverState = CheckPackagedServerProcess(candidatePort, expectedNodePath, serverPath)
+  If serverState = 1 Then WScript.Quit StopPackagedServer(candidatePort)
+  If candidatePort = 4318 And serverState < 0 Then
+    If IsStoryStudioResponding(candidatePort) Then
+      MsgBox "Story Studio is responding on port 4318, but Windows could not verify that it belongs to this installation. Close that app before installing the update.", vbExclamation, "Story Studio could not close"
+      WScript.Quit 1
+    End If
+  End If
+Next
+WScript.Quit 0
+
+Function CheckPackagedServerProcess(port, expectedNodePath, expectedServerPath)
+  On Error Resume Next
+  Dim netstat, outputLine, expression, matches, ownerPid
+  Dim service, processes, process, processCommandLine, processSeen, found
+  Err.Clear
+  Set netstat = shell.Exec("cmd.exe /d /c netstat -ano -p tcp")
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  Set expression = New RegExp
+  expression.IgnoreCase = True
+  expression.Pattern = "^\s*TCP\s+\S+:" & CStr(port) & "\s+\S+\s+LISTENING\s+([0-9]+)"
+  ownerPid = ""
+  Do Until netstat.StdOut.AtEndOfStream
+    outputLine = netstat.StdOut.ReadLine
+    Set matches = expression.Execute(Trim(outputLine))
+    If matches.Count > 0 Then
+      ownerPid = matches(0).SubMatches(0)
+      Exit Do
+    End If
+  Loop
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  If ownerPid = "" Then
+    CheckPackagedServerProcess = 0
+    Exit Function
+  End If
+  Set service = GetObject("winmgmts:\\.\root\cimv2")
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  Set processes = service.ExecQuery("SELECT ExecutablePath, CommandLine FROM Win32_Process WHERE ProcessId=" & ownerPid)
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  processSeen = False
+  found = False
+  For Each process In processes
+    processSeen = True
+    If Not IsNull(process.ExecutablePath) And Not IsNull(process.CommandLine) Then
+      If StrComp(CStr(process.ExecutablePath), expectedNodePath, vbTextCompare) = 0 Then
+        processCommandLine = CStr(process.CommandLine)
+        If InStr(1, processCommandLine, expectedServerPath, vbTextCompare) > 0 Then found = True
+      End If
+    End If
+  Next
+  If Err.Number <> 0 Or Not processSeen Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+  ElseIf found Then
+    CheckPackagedServerProcess = 1
+  Else
+    CheckPackagedServerProcess = 0
+  End If
+End Function
+
+Function IsStoryStudioResponding(port)
+  On Error Resume Next
+  Dim request
+  Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
+  If Err.Number <> 0 Then
+    IsStoryStudioResponding = False
+    Err.Clear
+    Exit Function
+  End If
+  request.SetTimeouts 500, 500, 500, 500
+  request.Open "GET", "http://127.0.0.1:" & CStr(port) & "/api/bootstrap", False
+  request.Send
+  IsStoryStudioResponding = False
+  If Err.Number = 0 And request.Status = 200 Then
+    IsStoryStudioResponding = InStr(1, request.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, request.ResponseText, """appVersion""", vbTextCompare) > 0
+  End If
+  Err.Clear
+End Function
+
+Function StopPackagedServer(port)
+  On Error Resume Next
+  Dim request, expression, matches, attempt, address
+  address = "http://127.0.0.1:" & CStr(port)
+  Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
+  If Err.Number <> 0 Then
+    StopPackagedServer = ShowStopFailure("Story Studio could not verify its local server. Close it before installing the update.")
+    Exit Function
+  End If
+  request.SetTimeouts 500, 500, 500, 500
+  request.Open "GET", address & "/api/bootstrap", False
+  request.Send
+  If Err.Number <> 0 Or request.Status <> 200 Then
+    StopPackagedServer = ShowStopFailure("The installed Story Studio server is not responding. Close it before installing the update.")
+    Exit Function
   End If
   Set expression = New RegExp
   expression.Pattern = """csrfToken""\s*:\s*""([^""]+)"""
   Set matches = expression.Execute(request.ResponseText)
   If matches.Count = 0 Then
-    MsgBox "Story Studio could not verify its local server. Close it before installing the update.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
+    StopPackagedServer = ShowStopFailure("Story Studio could not verify its local server. Close it before installing the update.")
+    Exit Function
   End If
-  request.Open "POST", "http://127.0.0.1:4317/api/app/shutdown", False
-  request.SetRequestHeader "Origin", "http://127.0.0.1:4317"
+  request.Open "POST", address & "/api/app/shutdown", False
+  request.SetRequestHeader "Origin", address
   request.SetRequestHeader "X-CSRF-Token", matches(0).SubMatches(0)
   request.SetRequestHeader "Content-Type", "application/json"
   request.Send "{}"
   If Err.Number <> 0 Then
-    MsgBox "Story Studio could not be stopped safely. Close it before installing the update.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
+    StopPackagedServer = ShowStopFailure("Story Studio could not be stopped safely. Close it before installing the update.")
+    Exit Function
   End If
   If request.Status = 409 Then
     MsgBox "A story response is still running. Wait for it to finish, then run the installer again.", vbInformation, "Story Studio is busy"
-    WScript.Quit 1
+    StopPackagedServer = 1
+    Exit Function
   End If
   If request.Status <> 200 Then
-    MsgBox "Story Studio could not be stopped safely. Close it before installing the update.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
+    StopPackagedServer = ShowStopFailure("Story Studio could not be stopped safely. Close it before installing the update.")
+    Exit Function
   End If
   For attempt = 1 To 120
     WScript.Sleep 250
     Err.Clear
     Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
     request.SetTimeouts 500, 500, 500, 500
-    request.Open "GET", "http://127.0.0.1:4317/api/bootstrap", False
+    request.Open "GET", address & "/api/bootstrap", False
     request.Send
-    If Err.Number <> 0 Then WScript.Quit 0
+    If Err.Number <> 0 Then
+      StopPackagedServer = 0
+      Exit Function
+    End If
     If request.Status <> 200 And request.Status <> 503 Then
-      MsgBox "Story Studio stopped responding unexpectedly. Close it and try again.", vbExclamation, "Story Studio could not close"
-      WScript.Quit 1
+      StopPackagedServer = ShowStopFailure("Story Studio stopped responding unexpectedly. Close it and try again.")
+      Exit Function
     End If
   Next
-  MsgBox "Story Studio did not close in time. Close it and try again.", vbExclamation, "Story Studio could not close"
-  WScript.Quit 1
-Else
-  Err.Clear
-  Set service = GetObject("winmgmts:\\.\root\cimv2")
-  If Err.Number <> 0 Then
-    MsgBox "Story Studio could not verify whether its local server is running. Close it before installing the update.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
-  End If
-  Set processes = service.ExecQuery("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='node.exe'")
-  If Err.Number <> 0 Then
-    MsgBox "Story Studio could not verify whether its local server is running. Close it before installing the update.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
-  End If
-  found = False
-  For Each process In processes
-    If InStr(1, LCase(CStr(process.CommandLine)), LCase(serverPath), vbTextCompare) > 0 Then found = True
-  Next
-  If found Then
-    MsgBox "Story Studio is still running but is not responding. Close the app and try again.", vbExclamation, "Story Studio could not close"
-    WScript.Quit 1
-  End If
-End If
-WScript.Quit 0
+  StopPackagedServer = ShowStopFailure("Story Studio did not close in time. Close it and try again.")
+End Function
+
+Function ShowStopFailure(message)
+  MsgBox message, vbExclamation, "Story Studio could not close"
+  ShowStopFailure = 1
+End Function
 VBS
 
 installer="$build_root/The-Timeless-Sovereign-Setup-$package_version.exe"
