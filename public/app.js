@@ -14,12 +14,18 @@ const state = {
   models: [],
   modelsLoaded: false,
   transcriptRevision: 0,
+  cursorVersion: 2,
   appVersion: '1.3.1',
   view: 'narrative',
-  sendBusy: false,
-  activeAbort: null,
+  sendingThreads: new Set(),
   pollTimer: null,
   searchTimer: null,
+  searchRequestSequence: 0,
+  draftTimer: null,
+  navigationSequence: 0,
+  snapshotSequence: 0,
+  contextInspector: null,
+  backupStatus: null,
   importMode: 'archive',
   editMode: null,
   toastTimer: null,
@@ -89,6 +95,41 @@ function saveSelection() {
   localStorage.setItem('tss.view', state.view);
 }
 
+async function saveDraftNow(threadId = state.thread?.id) {
+  clearTimeout(state.draftTimer);
+  state.draftTimer = null;
+  if (!threadId) return true;
+  const content = threadId === state.thread?.id ? $('#composerInput').value : state.payload?.draft?.content ?? '';
+  try {
+    const draft = await api(`/api/threads/${encodeURIComponent(threadId)}/draft`, {
+      method: 'POST', body: jsonBody({ content })
+    });
+    if (state.thread?.id === threadId && state.payload) state.payload.draft = draft;
+    return true;
+  } catch (error) {
+    showToast(`Draft could not be saved: ${error.message}`, 5500);
+    return false;
+  }
+}
+
+function scheduleDraftSave() {
+  clearTimeout(state.draftTimer);
+  const threadId = state.thread?.id;
+  if (!threadId) return;
+  state.draftTimer = setTimeout(() => {
+    if (state.thread?.id === threadId) void saveDraftNow(threadId);
+  }, 450);
+}
+
+async function clearDraftAfterAcknowledgement(threadId) {
+  try {
+    await api(`/api/threads/${encodeURIComponent(threadId)}/draft`, { method: 'DELETE' });
+    if (state.thread?.id === threadId && state.payload) state.payload.draft = { content: '', updatedAt: null };
+  } catch (error) {
+    showToast(`The saved message is safe, but its draft could not be cleared: ${error.message}`, 5500);
+  }
+}
+
 async function initialize() {
   state.view = localStorage.getItem('tss.view') === 'transcript' ? 'transcript' : 'narrative';
   setView(state.view);
@@ -98,10 +139,12 @@ async function initialize() {
     state.projects = bootstrap.projects;
     state.authorization = bootstrap.authorization;
     state.database = bootstrap.database;
+    state.backupStatus = bootstrap.backupStatus ?? null;
     state.appSettings = bootstrap.appSettings ?? { theme: 'system' };
     state.selectedModel = bootstrap.selectedModel ?? '';
     state.appVersion = bootstrap.appVersion ?? '1.3.1';
     applyTheme(state.appSettings.theme);
+    renderBackupStatus(state.backupStatus);
     renderProjectList();
     $('#dbLocationLabel').textContent = 'SQLite · local to this PC';
     const selected = savedSelection();
@@ -121,6 +164,9 @@ async function initialize() {
 }
 
 function showEmptyState() {
+  state.navigationSequence += 1;
+  clearTimeout(state.draftTimer);
+  state.draftTimer = null;
   state.project = null;
   state.branch = null;
   state.thread = null;
@@ -133,6 +179,7 @@ function showEmptyState() {
   $('#messageList').hidden = true;
   $('#emptyState').hidden = false;
   $('#composerInput').disabled = true;
+  $('#composerInput').value = '';
   $('#sendButton').disabled = true;
   $('#composerStatus').textContent = 'Create a project, then connect with ChatGPT to begin.';
   $('#continuityEmpty').hidden = false;
@@ -143,7 +190,10 @@ function showEmptyState() {
 
 async function openProject(projectId, preferredBranchId = '', preferredThreadId = '') {
   if (!projectId) return showEmptyState();
+  const navigation = ++state.navigationSequence;
+  if (state.thread && !(await saveDraftNow(state.thread.id))) return;
   const structure = await api(`/api/projects/${encodeURIComponent(projectId)}`);
+  if (navigation !== state.navigationSequence) return;
   state.project = structure.project;
   state.branches = structure.branches;
   const branch = structure.branches.find((item) => item.id === preferredBranchId) ??
@@ -159,34 +209,46 @@ async function openProject(projectId, preferredBranchId = '', preferredThreadId 
     thread = created.thread;
     state.threads = [thread];
   }
-  await openThread(thread.id, false);
+  await openThread(thread.id, false, navigation);
 }
 
 async function selectBranch(branchId) {
   if (!state.project) return;
+  const navigation = ++state.navigationSequence;
+  if (state.thread && !(await saveDraftNow(state.thread.id))) return;
   const structure = await api(`/api/projects/${encodeURIComponent(state.project.id)}`);
+  if (navigation !== state.navigationSequence) return;
   state.project = structure.project;
   state.branches = structure.branches;
   state.threads = structure.threads;
   const branch = structure.branches.find((item) => item.id === branchId);
   if (!branch) return;
   const thread = structure.threads.find((item) => item.branchId === branch.id);
-  if (thread) return openThread(thread.id);
+  if (thread) return openThread(thread.id, false, navigation);
   const created = await api(`/api/projects/${encodeURIComponent(state.project.id)}/threads`, {
     method: 'POST', body: jsonBody({ branchId: branch.id, title: 'New conversation' })
   });
-  return openThread(created.thread.id);
+  return openThread(created.thread.id, false, navigation);
 }
 
-async function openThread(threadId, preserveBranch = false) {
+async function openThread(threadId, preserveBranch = false, navigation = ++state.navigationSequence) {
+  if (state.thread && state.thread.id !== threadId && !(await saveDraftNow(state.thread.id))) return;
+  if (navigation !== state.navigationSequence) return;
+  stopPolling();
   const payload = await api(`/api/threads/${encodeURIComponent(threadId)}`);
+  if (navigation !== state.navigationSequence) return;
   state.payload = payload;
-  state.transcriptRevision = payload.transcriptRevision ?? payload.transcript?.at(-1)?.sequence ?? 0;
+  state.transcriptRevision = payload.transcriptRevision ?? 0;
+  state.cursorVersion = payload.cursorVersion ?? 0;
   state.thread = payload.thread;
   state.project = payload.project;
   state.branch = payload.branches.find((item) => item.id === payload.thread.branchId) ?? null;
   state.branches = payload.branches;
   state.threads = payload.threads;
+  state.contextInspector = null;
+  $('#turnNotice').hidden = true;
+  $('#inspectContextButton').hidden = true;
+  $('#composerInput').value = payload.draft?.content ?? '';
   if (!preserveBranch) saveSelection();
   renderWorkspace();
   startPolling();
@@ -194,15 +256,21 @@ async function openThread(threadId, preserveBranch = false) {
 
 async function refreshCurrentThread({ keepScroll = true } = {}) {
   if (!state.thread) return;
+  const threadId = state.thread.id;
+  const requestSequence = ++state.snapshotSequence;
+  const revision = state.transcriptRevision;
+  const cursorVersion = state.cursorVersion;
   const list = $('#messageList');
   const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 100;
-  const payload = await api(`/api/threads/${encodeURIComponent(state.thread.id)}/snapshot?after=${encodeURIComponent(state.transcriptRevision)}`);
+  const payload = await api(`/api/threads/${encodeURIComponent(threadId)}/snapshot?after=${encodeURIComponent(revision)}&cursorVersion=${encodeURIComponent(cursorVersion)}`);
+  if (state.thread?.id !== threadId || requestSequence !== state.snapshotSequence) return;
   const transcript = state.payload?.transcript ?? [];
-  const byId = new Map(transcript.map((message) => [message.id, message]));
+  const byId = new Map((payload.resetRequired ? [] : transcript).map((message) => [message.id, message]));
   for (const message of payload.delta ?? []) byId.set(message.id, message);
   const updatedTranscript = [...byId.values()].sort((left, right) => left.sequence - right.sequence);
   const transcriptChanged = updatedTranscript.length !== transcript.length || (payload.delta?.length ?? 0) > 0;
   state.transcriptRevision = payload.transcriptRevision ?? state.transcriptRevision;
+  state.cursorVersion = payload.cursorVersion ?? state.cursorVersion;
   state.payload = { ...payload, transcript: updatedTranscript };
   state.thread = payload.thread;
   state.project = payload.project;
@@ -217,8 +285,10 @@ function renderWorkspace({ renderTranscript: shouldRenderTranscript = true } = {
   if (!state.project || !state.thread || !state.payload) return showEmptyState();
   $('#emptyState').hidden = true;
   $('#messageList').hidden = false;
-  $('#composerInput').disabled = false;
-  $('#sendButton').disabled = !$('#composerInput').value.trim() || state.sendBusy;
+  const sending = state.sendingThreads.has(state.thread.id);
+  $('#composerInput').disabled = sending;
+  $('#sendButton').disabled = !$('#composerInput').value.trim() || sending;
+  $('#cancelTurn').hidden = !sending;
   $('#activeProjectLabel').textContent = state.project.name;
   $('#activeBranchLabel').textContent = state.branch?.name ?? 'Branch';
   $('#threadTitle').textContent = state.thread.title;
@@ -359,6 +429,7 @@ function makeMessageCard(message) {
   const cardKind = message.kind === 'command' ? (message.role === 'user' ? 'command' : 'command-result') : message.kind;
   card.className = `message-card ${message.role}${message.kind === 'status' ? ' status' : ''}${message.kind === 'command' ? ' command' : ''}${message.status === 'failed' || message.status === 'interrupted' ? ' failed' : ''}${message.inherited ? ' inherited' : ''}`;
   card.dataset.messageId = message.id;
+  if (message.sourceMessageId) card.dataset.sourceMessageId = message.sourceMessageId;
   const meta = document.createElement('div');
   meta.className = 'message-meta';
   const role = document.createElement('span');
@@ -396,6 +467,14 @@ function makeMessageCard(message) {
     body.append(content);
   }
   card.append(meta, body);
+  if (message.role === 'assistant' && ['failed', 'interrupted'].includes(message.status) && message.sourceMessageId) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'retry-turn-button';
+    retry.textContent = 'Retry this reply';
+    retry.addEventListener('click', () => void retryTurn(message.sourceMessageId));
+    card.append(retry);
+  }
   return card;
 }
 
@@ -439,7 +518,8 @@ function updateStreamedMessage(messageId, fullText, status = 'streaming') {
   }
   card.classList.toggle('failed', status === 'failed' || status === 'interrupted');
   const statusNode = $('.message-status', card);
-  if (status !== 'complete') {
+  if (status === 'complete') statusNode?.remove();
+  else {
     if (statusNode) statusNode.textContent = status;
     else {
       const label = document.createElement('span');
@@ -669,7 +749,7 @@ function renderConnection() {
   $('#settingsConnectionMessage').textContent = state.authorization?.message ?? 'Sign in with ChatGPT to enable story generation. No API key billing fallback is available.';
   $('#settingsConnect').hidden = connected;
   $('#settingsDisconnect').hidden = !connected;
-  if (!state.sendBusy && state.thread) {
+  if (state.thread && !state.sendingThreads.has(state.thread.id)) {
     $('#composerStatus').textContent = state.thread.paused
       ? 'This chat is paused. Use /resume to continue.'
       : connected ? 'Your turn is saved before it is sent to Codex.' : 'Your message will be saved locally; connect with ChatGPT to generate a story response.';
@@ -687,7 +767,7 @@ function setView(view) {
 function startPolling() {
   stopPolling();
   state.pollTimer = setInterval(() => {
-    if (state.thread && !state.sendBusy) void refreshCurrentThread().catch(() => {});
+    if (state.thread) void refreshCurrentThread().catch(() => {});
   }, 6500);
 }
 
@@ -742,58 +822,164 @@ async function parseSse(response, onEvent) {
   }
 }
 
-async function submitMessage(content = $('#composerInput').value) {
-  if (!state.thread || state.sendBusy || !content.trim()) return;
-  state.sendBusy = true;
-  $('#composerInput').disabled = true;
-  $('#sendButton').disabled = true;
-  $('#cancelTurn').hidden = content.startsWith('/');
-  $('#composerStatus').textContent = content.startsWith('/') ? 'Saving command locally…' : 'Saving your turn, then building story context…';
-  $('#turnNotice').hidden = true;
-  if (content === $('#composerInput').value) $('#composerInput').value = '';
-  let assistantId = null;
+async function streamGeneration({ threadId, url, body, submittedContent = null, clearComposerOnAck = false }) {
+  if (state.sendingThreads.has(threadId)) return;
+  state.sendingThreads.add(threadId);
+  const current = () => state.thread?.id === threadId;
+  if (current()) {
+    state.contextInspector = null;
+    $('#composerInput').disabled = true;
+    $('#sendButton').disabled = true;
+    $('#cancelTurn').hidden = String(submittedContent ?? '').startsWith('/');
+    $('#composerStatus').textContent = String(submittedContent ?? '').startsWith('/') ? 'Saving command locally…' : 'Saving your turn, then building story context…';
+    $('#turnNotice').hidden = true;
+    $('#inspectContextButton').hidden = true;
+  }
+  let acknowledged = false;
   try {
-    const response = await fetch(`/api/threads/${encodeURIComponent(state.thread.id)}/send`, {
-      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken }, body: jsonBody({ content })
+    const response = await fetch(url, {
+      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken }, body: jsonBody(body)
     });
     await parseSse(response, (event, data) => {
       if (event === 'saved') {
-        updateSavedMessage(data.message);
-        state.threadSubline = state.thread?.title;
-        $('#messageList').scrollTop = $('#messageList').scrollHeight;
+        acknowledged = true;
+        if (clearComposerOnAck && current() && $('#composerInput').value === submittedContent) $('#composerInput').value = '';
+        if (clearComposerOnAck) void clearDraftAfterAcknowledgement(threadId);
+        if (current()) {
+          state.snapshotSequence += 1;
+          updateSavedMessage(data.message);
+          $('#messageList').scrollTop = $('#messageList').scrollHeight;
+          $('#sendButton').disabled = !$('#composerInput').value.trim();
+        }
       } else if (event === 'assistant-saved') {
-        assistantId = data.message.id;
-        updateSavedMessage(data.message);
-        const count = data.sources?.length ?? 0;
-        $('#turnNotice').textContent = `Retrieved ${count} source message${count === 1 ? '' : 's'} and ${data.ledgerItems?.length ?? 0} continuity record${(data.ledgerItems?.length ?? 0) === 1 ? '' : 's'} for this response.`;
-        $('#turnNotice').hidden = false;
-        $('#composerStatus').textContent = 'Codex is continuing the story…';
-        $('#cancelTurn').hidden = false;
+        if (current()) {
+          state.snapshotSequence += 1;
+          state.contextInspector = data.inspector ?? null;
+          updateSavedMessage(data.message);
+          const count = data.sources?.length ?? 0;
+          $('#turnNoticeText').textContent = `Retrieved ${count} source message${count === 1 ? '' : 's'} and ${data.ledgerItems?.length ?? 0} continuity record${(data.ledgerItems?.length ?? 0) === 1 ? '' : 's'} for this response.`;
+          $('#turnNotice').hidden = false;
+          $('#inspectContextButton').hidden = !state.contextInspector;
+          $('#composerStatus').textContent = 'Codex is continuing the story…';
+          $('#cancelTurn').hidden = false;
+        }
+      } else if (event === 'retry-started') {
+        if (current()) $('#composerStatus').textContent = 'Retrying the saved user turn…';
+      } else if (event === 'retry-existing') {
+        if (current()) {
+          void refreshCurrentThread();
+          showToast(`This retry request already exists (${data.attempt.status}).`);
+        }
       } else if (event === 'delta') {
-        updateStreamedMessage(data.messageId, data.fullText, 'streaming');
+        if (current()) {
+          state.snapshotSequence += 1;
+          updateStreamedMessage(data.messageId, data.fullText, 'streaming');
+        }
       } else if (event === 'complete') {
-        updateStreamedMessage(data.message.id, data.message.content, 'complete');
-        state.payload && (state.payload.memory = data.memory);
-        $('#composerStatus').textContent = 'Reply saved. Continuity indexing is running in the background.';
+        if (data.message && current()) {
+          state.snapshotSequence += 1;
+          updateSavedMessage(data.message);
+          state.payload && (state.payload.memory = data.memory);
+          $('#composerStatus').textContent = 'Reply saved. Continuity indexing is running in the background.';
+        }
+      } else if (event === 'command-complete') {
+        if (current()) {
+          if (data.activity) updateSavedMessage(data.activity);
+          $('#composerStatus').textContent = 'Command completed locally.';
+          if (data.output) showToast(data.output, 6000);
+        }
       } else if (event === 'activity') {
         // Non-story protocol activity is intentionally not shown as narrative.
       } else if (event === 'failure') {
-        if (data.activity) updateSavedMessage(data.activity);
-        $('#composerStatus').textContent = data.message;
-        $('#turnNotice').textContent = data.message;
-        $('#turnNotice').hidden = false;
+        if (current()) {
+          if (data.activity) updateSavedMessage(data.activity);
+          $('#composerStatus').textContent = data.message;
+          $('#turnNoticeText').textContent = data.message;
+          $('#turnNotice').hidden = false;
+          $('#inspectContextButton').hidden = !state.contextInspector;
+        }
       }
     });
   } catch (error) {
-    showToast(error.message, 5500);
-    $('#composerStatus').textContent = 'Your saved conversation can be reloaded. Check the connection and retry.';
+    if (current()) {
+      showToast(error.message, 5500);
+      $('#composerStatus').textContent = 'Your saved conversation can be reloaded. Check the connection and retry.';
+      if (!acknowledged && clearComposerOnAck && !$('#composerInput').value) $('#composerInput').value = submittedContent;
+    }
   } finally {
-    state.sendBusy = false;
-    $('#composerInput').disabled = !state.thread;
-    $('#cancelTurn').hidden = true;
-    $('#sendButton').disabled = !$('#composerInput').value.trim() || !state.thread;
-    if (state.thread) await refreshCurrentThread().catch(() => {});
+    state.sendingThreads.delete(threadId);
+    if (current()) {
+      $('#composerInput').disabled = false;
+      $('#cancelTurn').hidden = true;
+      $('#sendButton').disabled = !$('#composerInput').value.trim();
+      await refreshCurrentThread().catch(() => {});
+    }
   }
+}
+
+async function submitMessage(content = $('#composerInput').value) {
+  const threadId = state.thread?.id;
+  if (!threadId || state.sendingThreads.has(threadId) || !content.trim()) return;
+  const clearComposerOnAck = content === $('#composerInput').value;
+  return streamGeneration({
+    threadId,
+    url: `/api/threads/${encodeURIComponent(threadId)}/send`,
+    body: { content },
+    submittedContent: content,
+    clearComposerOnAck
+  });
+}
+
+async function retryTurn(userMessageId) {
+  const threadId = state.thread?.id;
+  if (!threadId || state.sendingThreads.has(threadId)) return;
+  return streamGeneration({
+    threadId,
+    url: `/api/threads/${encodeURIComponent(threadId)}/retry`,
+    body: { userMessageId, clientRequestId: crypto.randomUUID() }
+  });
+}
+
+function openContextInspector() {
+  const inspector = state.contextInspector;
+  if (!inspector) return;
+  const memory = inspector.memory ?? {};
+  const counts = memory.counts ?? {};
+  const lag = Number(counts.pending ?? 0) + Number(counts.processing ?? 0) + Number(counts.error ?? 0);
+  const last = memory.lastIndexed?.id ? ` Last indexed source: ${memory.lastIndexed.id}.` : ' No messages have completed indexing yet.';
+  $('#contextMemoryStatus').textContent = `Indexing state: ${memory.state ?? 'unknown'}; ${lag} record${lag === 1 ? '' : 's'} pending, processing, or failed.${last}`;
+
+  const canonRoot = $('#contextCanon');
+  canonRoot.replaceChildren();
+  for (const item of inspector.canon ?? []) {
+    const entry = document.createElement('div');
+    entry.className = 'context-entry';
+    entry.textContent = `${item.type} · ${item.subject} · ${item.status}\n${item.content}\nSources: ${(item.sourceMessageIds ?? []).join(', ') || 'none'}`;
+    canonRoot.append(entry);
+  }
+  if (!canonRoot.childElementCount) {
+    const empty = document.createElement('div');
+    empty.className = 'search-placeholder';
+    empty.textContent = 'No continuity records were selected for this reply.';
+    canonRoot.append(empty);
+  }
+
+  const sourcesRoot = $('#contextSources');
+  sourcesRoot.replaceChildren();
+  for (const source of inspector.sources ?? []) {
+    const entry = document.createElement('div');
+    entry.className = 'context-entry';
+    entry.textContent = `${source.role} · ${source.id}\n${source.excerpt}`;
+    entry.dir = isRtl(entry.textContent) ? 'rtl' : 'auto';
+    sourcesRoot.append(entry);
+  }
+  if (!sourcesRoot.childElementCount) {
+    const empty = document.createElement('div');
+    empty.className = 'search-placeholder';
+    empty.textContent = 'No source excerpts were selected for this reply.';
+    sourcesRoot.append(empty);
+  }
+  $('#contextDialog').showModal();
 }
 
 function openProjectDialog() {
@@ -829,6 +1015,7 @@ function openSettings() {
     ? 'Database integrity check: OK'
     : 'Database integrity needs attention.';
   $('#settingsDialog').showModal();
+  void refreshBackupStatus().catch(() => {});
   renderConnection();
   if (state.authorization.state === 'connected') void loadModels();
 }
@@ -922,7 +1109,7 @@ function openEditDialog({ mode, title, help, fields, eyebrow = 'CONTINUITY' }) {
     label.append(input);
     root.append(label);
   }
-  $('#editForm').showModal();
+  $('#editDialog').showModal();
 }
 
 function openEditScene() {
@@ -1057,8 +1244,11 @@ async function runSearch() {
     $('#searchResults').innerHTML = '<div class="search-placeholder">Search the complete saved conversation on the selected branch.</div>';
     return;
   }
+  const threadId = state.thread?.id;
+  const requestSequence = ++state.searchRequestSequence;
   try {
-    const data = await api(`/api/search?projectId=${encodeURIComponent(state.project.id)}&branchId=${encodeURIComponent(state.branch.id)}&q=${encodeURIComponent(query)}`);
+    const data = await api(`/api/search?projectId=${encodeURIComponent(state.project.id)}&branchId=${encodeURIComponent(state.branch.id)}&threadId=${encodeURIComponent(threadId ?? '')}&q=${encodeURIComponent(query)}`);
+    if (requestSequence !== state.searchRequestSequence || state.thread?.id !== threadId) return;
     const root = $('#searchResults');
     root.replaceChildren();
     if (!data.results.length) {
@@ -1100,7 +1290,12 @@ async function runSearch() {
 }
 
 async function downloadResponse(url, fallbackName) {
-  const response = await api(url);
+  const response = await fetch(url, { method: 'GET', cache: 'no-store' });
+  if (!response.ok) {
+    let message = `The download failed (${response.status}).`;
+    try { message = (await response.json()).error ?? message; } catch { /* keep the download error */ }
+    throw new Error(message);
+  }
   const blob = await response.blob();
   const disposition = response.headers.get('content-disposition') ?? '';
   const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallbackName;
@@ -1160,7 +1355,32 @@ async function refreshProjects() {
   state.csrfToken = data.csrfToken;
   state.projects = data.projects;
   state.database = data.database;
+  state.appSettings = data.appSettings ?? state.appSettings;
+  state.selectedModel = data.selectedModel ?? state.selectedModel;
+  state.backupStatus = data.backupStatus ?? state.backupStatus;
+  applyTheme(state.appSettings.theme);
+  renderBackupStatus(state.backupStatus);
   renderProjectList();
+}
+
+function renderBackupStatus(status) {
+  state.backupStatus = status;
+  const node = $('#backupStatusText');
+  if (!node) return;
+  if (status?.error) {
+    node.textContent = `Automatic backup failed: ${status.error} Check available disk space, then create a local snapshot to retry.`;
+  } else if (status?.latest) {
+    const date = new Date(status.latest.createdAt);
+    node.textContent = `Latest successful backup: ${date.toLocaleString()} · ${status.latest.kind} snapshot.`;
+  } else {
+    node.textContent = 'No successful backup is recorded yet. Story Studio will create one automatically while it runs.';
+  }
+}
+
+async function refreshBackupStatus() {
+  const result = await api('/api/backups');
+  renderBackupStatus(result.status);
+  return result;
 }
 
 async function restoreBackup() {
@@ -1176,15 +1396,61 @@ async function restoreBackup() {
       const confirmation = window.prompt(`This replaces all ${state.projects.length} local projects. The app first makes a recovery copy of the current SQLite database. Type RESTORE ALL to continue.`);
       if (confirmation !== 'RESTORE ALL') return;
       const result = await api('/api/backup/restore', { method: 'POST', body: jsonBody({ document, confirmation }) });
-      state.projects = result.projects;
+      state.thread = null;
+      state.project = null;
+      state.payload = null;
       await refreshProjects();
       if (state.projects.length) await openProject(state.projects[0].id);
       else showEmptyState();
       closeDialog('settingsDialog');
-      showNotice('Backup restored', `All local story projects were restored. A pre-restore recovery database was saved at ${result.recoveryBackup}.`);
+      showNotice('Backup restored', `All local story projects were restored. A pre-restore recovery snapshot is available as ${result.recoveryBackupId}.`);
     } catch (error) { showNotice('Backup could not be restored', error.message); }
   }, { once: true });
   input.click();
+}
+
+async function openLocalBackupDialog() {
+  try {
+    const data = await api('/api/backups');
+    const select = $('#localBackupSelect');
+    select.replaceChildren();
+    $('#localBackupConfirmation').value = '';
+    for (const backup of data.backups) {
+      const date = new Date(backup.createdAt).toLocaleString();
+      const size = `${(backup.size / (1024 * 1024)).toFixed(1)} MB`;
+      select.append(new Option(`${backup.kind} · ${date} · ${size}`, backup.id));
+    }
+    const status = $('#localBackupListStatus');
+    status.textContent = data.backups.length
+      ? `Latest successful backup: ${data.status.latest?.kind ?? 'local'} · ${data.status.latest ? new Date(data.status.latest.createdAt).toLocaleString() : ''}.`
+      : 'No local SQLite snapshots are available yet. Create one from Settings & data.';
+    $('#localBackupForm').querySelector('button[type="submit"]').disabled = !data.backups.length;
+    $('#localBackupDialog').showModal();
+  } catch (error) { showNotice('Local backups could not be listed', error.message); }
+}
+
+async function restoreLocalSnapshot() {
+  const id = $('#localBackupSelect').value;
+  if (!id) return showToast('Choose a local SQLite snapshot.');
+  const confirmation = $('#localBackupConfirmation').value;
+  if (confirmation !== 'RESTORE ALL') {
+    $('#localBackupConfirmation').focus();
+    return showToast('Type RESTORE ALL to replace your local projects.');
+  }
+  try {
+    const result = await api(`/api/backups/${encodeURIComponent(id)}/restore`, {
+      method: 'POST', body: jsonBody({ confirmation })
+    });
+    state.thread = null;
+    state.project = null;
+    state.payload = null;
+    closeDialog('localBackupDialog');
+    closeDialog('settingsDialog');
+    await refreshProjects();
+    if (state.projects.length) await openProject(state.projects[0].id);
+    else showEmptyState();
+    showNotice('Snapshot restored', `The selected SQLite snapshot was restored. A pre-restore recovery snapshot is available as ${result.recoveryBackupId}.`);
+  } catch (error) { showNotice('Snapshot could not be restored', error.message); }
 }
 
 async function retryMemory() {
@@ -1199,7 +1465,8 @@ async function retryMemory() {
 function commandClick(command) {
   $('#composerInput').value = command;
   $('#composerInput').focus();
-  $('#sendButton').disabled = !state.thread;
+  $('#sendButton').disabled = !state.thread || state.sendingThreads.has(state.thread.id);
+  scheduleDraftSave();
   toggleCommandPalette(false);
 }
 
@@ -1375,7 +1642,8 @@ function bindEvents() {
   $('#narrativeView').addEventListener('click', () => setView('narrative'));
   $('#transcriptView').addEventListener('click', () => setView('transcript'));
   $('#composerInput').addEventListener('input', () => {
-    $('#sendButton').disabled = !$('#composerInput').value.trim() || state.sendBusy || !state.thread;
+    $('#sendButton').disabled = !$('#composerInput').value.trim() || !state.thread || state.sendingThreads.has(state.thread.id);
+    scheduleDraftSave();
     if ($('#composerInput').value === '/') toggleCommandPalette(true);
   });
   $('#composerInput').addEventListener('keydown', (event) => {
@@ -1399,6 +1667,7 @@ function bindEvents() {
   $('#importForm').addEventListener('submit', submitImport);
   $('#refreshContinuity').addEventListener('click', () => void refreshCurrentThread().catch((error) => showToast(error.message)));
   $('#retryMemory').addEventListener('click', () => void retryMemory());
+  $('#inspectContextButton').addEventListener('click', openContextInspector);
   $('#editScene').addEventListener('click', openEditScene);
   $('#addCharacter').addEventListener('click', () => openAddCharacter());
   $('#editForm').addEventListener('submit', submitEdit);
@@ -1421,9 +1690,12 @@ function bindEvents() {
   $('#backupButton').addEventListener('click', async () => {
     try {
       const result = await api('/api/backup/snapshot', { method: 'POST', body: jsonBody({}) });
-      showNotice('Local backup created', `A SQLite backup of all story projects was saved at ${result.path}.`);
+      await refreshBackupStatus();
+      showNotice('Local snapshot created', `A SQLite snapshot of all story projects is ready (${result.id}).`);
     } catch (error) { showNotice('Backup could not be created', error.message); }
   });
+  $('#restoreLocalBackupButton').addEventListener('click', () => void openLocalBackupDialog());
+  $('#localBackupForm').addEventListener('submit', (event) => { event.preventDefault(); void restoreLocalSnapshot(); });
   $('#restoreButton').addEventListener('click', () => void restoreBackup());
   $('#deleteProject').addEventListener('click', openDeleteDialog);
   $('#deleteForm').addEventListener('submit', deleteProject);
@@ -1431,6 +1703,7 @@ function bindEvents() {
   $('#emergencyStopButton').addEventListener('click', () => void emergencyStopApp());
   $('#settingsForm').addEventListener('submit', (event) => event.preventDefault());
   $('#commandToggle').title = 'Open the app command palette';
+  window.addEventListener('pagehide', () => { void saveDraftNow(); });
   $('#mobileNav').addEventListener('click', () => {
     state.mobileSidebar = !state.mobileSidebar;
     $('#projectList').closest('.sidebar').classList.toggle('mobile-open', state.mobileSidebar);

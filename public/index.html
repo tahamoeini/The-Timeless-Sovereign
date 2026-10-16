@@ -62,7 +62,7 @@
           <button id="emptyImportProject" class="quiet-button empty-import-button" type="button">Import a project or ChatGPT chat</button>
         </div>
         <div id="messageList" class="message-list" aria-live="polite" aria-relevant="additions text"></div>
-        <div id="turnNotice" class="turn-notice" hidden></div>
+        <div id="turnNotice" class="turn-notice" hidden><span id="turnNoticeText"></span><button id="inspectContextButton" class="text-action" type="button" hidden>Inspect response context</button></div>
         <section class="composer-wrap" aria-label="Write a story message">
           <div class="command-strip">
             <button id="commandToggle" class="command-label" type="button"><span class="slash-mark">/</span> Commands</button>
@@ -137,14 +137,14 @@
             <span class="eyebrow">MODEL</span>
           <label>Codex model<select id="modelSelect"><option value="">Use the Codex default</option></select><small>Available models depend on your ChatGPT account and plan.</small></label>
           <label>Thinking level<select id="reasoningEffortSelect" disabled><option value="">Connect to load model options</option></select><small id="reasoningEffortHelp">Only levels supported by the selected model are shown.</small></label>
-          <div class="data-actions"><button id="saveSettings" class="primary-button" type="button">Save project settings</button><button id="exportProject" class="quiet-button" type="button">Export this project</button><button id="backupButton" class="quiet-button" type="button">Create local backup</button><button id="downloadBackupButton" class="quiet-button" type="button">Download full backup</button><button id="restoreButton" class="quiet-button" type="button">Restore from backup</button></div>
+          <div class="data-actions"><button id="saveSettings" class="primary-button" type="button">Save project settings</button><button id="exportProject" class="quiet-button" type="button">Export this project</button><button id="backupButton" class="quiet-button" type="button">Create local snapshot</button><button id="restoreLocalBackupButton" class="quiet-button" type="button">Restore local snapshot</button><button id="downloadBackupButton" class="quiet-button" type="button">Download full backup</button><button id="restoreButton" class="quiet-button" type="button">Restore full backup file</button></div>
           </section>
         </div>
         <div class="settings-aside">
           <div class="status-card"><span class="eyebrow">APPEARANCE</span><div class="status-card-title">Color theme</div><label for="themeSelect">Choose a theme<select id="themeSelect"><option value="system">Use device setting</option><option value="light">Light</option><option value="dark">Dark</option></select></label><p>The selection is saved in your local Story Studio database.</p><div class="settings-inline"><button id="saveAppearance" class="quiet-button" type="button">Save appearance</button></div></div>
           <div class="status-card"><span class="eyebrow">UPDATES</span><div id="updateStatus" class="status-card-title" role="status" aria-live="polite">Version 1.3.1 · updates checked manually</div><p>Run a downloaded setup to install each update. Your local story database stays in place.</p><div class="settings-inline"><button id="checkUpdates" class="quiet-button" type="button">Check for updates</button><a id="updateDownload" class="update-download" href="#" target="_blank" rel="noreferrer" hidden>Download installer</a></div><details id="updateDetails" class="update-details" hidden><summary>Release notes</summary><p id="updateNotes"></p><small id="updateDigest"></small></details></div>
           <div class="status-card"><span class="eyebrow">CHATGPT CONNECTION</span><div id="settingsConnectionState" class="status-card-title">Not connected</div><p id="settingsConnectionMessage">Sign in with ChatGPT to enable story generation. No API key billing fallback is available.</p><div class="settings-inline"><button id="settingsConnect" class="primary-button" type="button">Sign in with ChatGPT</button><button id="settingsDisconnect" class="quiet-button" type="button" hidden>Disconnect</button></div></div>
-          <div class="status-card"><span class="eyebrow">LOCAL STORAGE</span><div class="status-card-title">On this PC</div><p id="settingsStorageLocation">Story data uses a local SQLite database. Credentials are kept separately using Windows protection.</p><div id="integrityStatus" class="integrity-status"></div></div>
+          <div class="status-card"><span class="eyebrow">LOCAL STORAGE</span><div class="status-card-title">On this PC</div><p id="settingsStorageLocation">Story data uses a local SQLite database. Credentials are kept separately using Windows protection.</p><p id="backupStatusText" class="backup-status-text">Automatic backups are checked while Story Studio is running.</p><div id="integrityStatus" class="integrity-status"></div></div>
           <button id="deleteProject" class="danger-link" type="button">Delete this project and its complete story record</button>
         </div>
       </div>
@@ -156,6 +156,27 @@
       <div class="modal-heading"><div><span class="eyebrow">SOURCE HISTORY</span><h2>Search this story</h2></div><button class="modal-close" type="button" data-close="searchDialog" aria-label="Close">×</button></div>
       <label>Search messages<input id="searchInput" type="search" placeholder="A name, place, promise, or phrase…" autocomplete="off"></label>
       <div id="searchResults" class="search-results"><div class="search-placeholder">Search the complete saved conversation on the selected branch.</div></div>
+    </form>
+  </dialog>
+
+  <dialog id="contextDialog" class="modal-dialog wide-dialog">
+    <div class="modal-card">
+      <div class="modal-heading"><div><span class="eyebrow">RESPONSE CONTEXT</span><h2>Sources used for this reply</h2></div><button class="modal-close" type="button" data-close="contextDialog" aria-label="Close">×</button></div>
+      <p id="contextMemoryStatus" class="modal-intro"></p>
+      <section class="context-section"><h3>Selected canon</h3><div id="contextCanon" class="context-list"></div></section>
+      <section class="context-section"><h3>Source excerpts</h3><div id="contextSources" class="context-list"></div></section>
+      <div class="modal-actions"><button class="primary-button" type="button" data-close="contextDialog">Done</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="localBackupDialog" class="modal-dialog wide-dialog">
+    <form id="localBackupForm" class="modal-card">
+      <div class="modal-heading"><div><span class="eyebrow">LOCAL RECOVERY</span><h2>Restore a SQLite snapshot</h2></div><button class="modal-close" type="button" data-close="localBackupDialog" aria-label="Close">×</button></div>
+      <p class="modal-intro">Restoring replaces every local project. Story Studio will stop active replies and indexing, save a pre-restore recovery snapshot, and validate the selected database before loading it.</p>
+      <label>Available local snapshots<select id="localBackupSelect" required></select></label>
+      <div id="localBackupListStatus" class="integrity-status"></div>
+      <label>Type RESTORE ALL to confirm<input id="localBackupConfirmation" type="text" autocomplete="off" spellcheck="false" placeholder="RESTORE ALL" required></label>
+      <div class="modal-actions"><button class="quiet-button" type="button" data-close="localBackupDialog">Cancel</button><button class="danger-button" type="submit">Restore selected snapshot</button></div>
     </form>
   </dialog>
 
