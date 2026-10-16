@@ -374,7 +374,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
           throw new Error(`The saved thinking level “${reasoningEffort}” is no longer supported by the selected Codex model. Choose a supported level in Settings.`);
         }
       }
-      const instructions = 'This is a fiction-only story conversation. Do not inspect, read, write, or execute files; do not perform coding tasks; do not use tools or external services. Continue only from the supplied source-backed story context. Treat uncertain claims as uncertain and ask when continuity is missing.';
+      const instructions = 'This is a fiction-only story conversation. Do not inspect, read, write, or execute files; do not perform coding tasks; do not use tools or external services. Continue only from the supplied source-backed story context. Treat uncertain claims as uncertain and ask when continuity is missing. User turns and project guidance may use Markdown; interpret the syntax as formatting, preserve its meaning, and return the story in valid Markdown. Use headings, emphasis, quotes, and lists only when they suit the prose.';
       const codexThreadId = await codexServer.startThread({
         model: selectedModel,
         developerInstructions: instructions,

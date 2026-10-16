@@ -35,6 +35,7 @@ const state = {
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const markdownPreviews = new WeakMap();
 
 async function api(url, options = {}) {
   const headers = new Headers(options.headers ?? {});
@@ -179,7 +180,7 @@ function showEmptyState() {
   $('#messageList').hidden = true;
   $('#emptyState').hidden = false;
   $('#composerInput').disabled = true;
-  $('#composerInput').value = '';
+  setTextareaValue($('#composerInput'), '');
   $('#sendButton').disabled = true;
   $('#composerStatus').textContent = 'Create a project, then connect with ChatGPT to begin.';
   $('#continuityEmpty').hidden = false;
@@ -248,7 +249,7 @@ async function openThread(threadId, preserveBranch = false, navigation = ++state
   state.contextInspector = null;
   $('#turnNotice').hidden = true;
   $('#inspectContextButton').hidden = true;
-  $('#composerInput').value = payload.draft?.content ?? '';
+  setTextareaValue($('#composerInput'), payload.draft?.content ?? '');
   if (!preserveBranch) saveSelection();
   renderWorkspace();
   startPolling();
@@ -400,6 +401,181 @@ function isRtl(text) {
   return /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]/u.test(String(text ?? ''));
 }
 
+function appendInlineMarkdown(root, text) {
+  const pattern = /(`+)([^`]+?)\1|\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)(?:\s+"([^"]*)")?\)|(\*\*|__)(\S(?:[\s\S]*?\S)?)\6|(~~)(\S(?:[\s\S]*?\S)?)\8|(\*|_)(\S(?:[\s\S]*?\S)?)\10/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) root.append(document.createTextNode(text.slice(cursor, match.index)));
+    let element;
+    if (match[1]) {
+      element = document.createElement('code');
+      element.dir = 'ltr';
+      element.textContent = match[2];
+    } else if (match[3]) {
+      let url;
+      try { url = new URL(match[4], window.location.href); } catch { url = null; }
+      if (!url || !['http:', 'https:', 'mailto:'].includes(url.protocol)) {
+        root.append(document.createTextNode(match[0]));
+        cursor = match.index + match[0].length;
+        continue;
+      }
+      element = document.createElement('a');
+      element.href = url.href;
+      if (url.protocol !== 'mailto:') {
+        element.target = '_blank';
+        element.rel = 'noopener noreferrer';
+      }
+      if (match[5]) element.title = match[5];
+      appendInlineMarkdown(element, match[3]);
+    } else {
+      const content = match[7] ?? match[9] ?? match[11];
+      element = document.createElement(match[6] ? 'strong' : match[8] ? 'del' : 'em');
+      appendInlineMarkdown(element, content);
+    }
+    root.append(element);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) root.append(document.createTextNode(text.slice(cursor)));
+}
+
+function markdownListMarker(line) {
+  const match = /^ {0,3}([-+*]|\d+[.)])\s+(.*)$/.exec(line);
+  return match ? { ordered: /^\d/.test(match[1]), marker: match[1], content: match[2] } : null;
+}
+
+function isMarkdownBlockStart(line) {
+  return /^ {0,3}(?:#{1,6}\s|>|`{3,}|~{3,})/.test(line) ||
+    /^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line) || Boolean(markdownListMarker(line));
+}
+
+function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) { index += 1; continue; }
+
+    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      const codeLines = [];
+      index += 1;
+      const closePattern = fence[1][0] === '`' ? /^ {0,3}`{3,}\s*$/ : /^ {0,3}~{3,}\s*$/;
+      while (index < lines.length && !closePattern.test(lines[index])) codeLines.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.dir = 'ltr';
+      code.textContent = codeLines.join('\n');
+      pre.append(code);
+      root.append(pre);
+      continue;
+    }
+
+    const heading = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      const element = document.createElement(`h${heading[1].length}`);
+      element.dir = isRtl(heading[2]) ? 'rtl' : 'auto';
+      appendInlineMarkdown(element, heading[2]);
+      root.append(element);
+      index += 1;
+      continue;
+    }
+
+    if (/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)) {
+      root.append(document.createElement('hr'));
+      index += 1;
+      continue;
+    }
+
+    if (/^ {0,3}>/.test(line)) {
+      const quoteLines = [];
+      while (index < lines.length && /^ {0,3}>/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^ {0,3}>\s?/, ''));
+        index += 1;
+      }
+      const quote = document.createElement('blockquote');
+      quote.dir = isRtl(quoteLines.join('\n')) ? 'rtl' : 'auto';
+      appendMarkdownBlocks(quote, quoteLines, { narrative });
+      root.append(quote);
+      continue;
+    }
+
+    const firstMarker = markdownListMarker(line);
+    if (firstMarker) {
+      const list = document.createElement(firstMarker.ordered ? 'ol' : 'ul');
+      if (firstMarker.ordered && Number.parseInt(firstMarker.marker, 10) > 1) list.start = Number.parseInt(firstMarker.marker, 10);
+      while (index < lines.length) {
+        const marker = markdownListMarker(lines[index]);
+        if (!marker || marker.ordered !== firstMarker.ordered) break;
+        const item = document.createElement('li');
+        item.dir = isRtl(marker.content) ? 'rtl' : 'auto';
+        appendInlineMarkdown(item, marker.content);
+        list.append(item);
+        index += 1;
+      }
+      root.append(list);
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) paragraphLines.push(lines[index++]);
+    const content = paragraphLines.join('\n');
+    const paragraph = document.createElement('p');
+    paragraph.className = `markdown-paragraph${narrative ? ` narrative-part ${paragraphKind(content)}` : ''}`;
+    paragraph.dir = isRtl(content) ? 'rtl' : 'auto';
+    paragraphLines.forEach((paragraphLine, lineIndex) => {
+      if (lineIndex) paragraph.append(document.createElement('br'));
+      appendInlineMarkdown(paragraph, paragraphLine);
+    });
+    root.append(paragraph);
+  }
+}
+
+function renderMarkdown(text, { narrative = false, message = false } = {}) {
+  const root = document.createElement('div');
+  root.className = message ? 'message-text markdown-content' : 'markdown-content';
+  root.dir = isRtl(text) ? 'rtl' : 'auto';
+  appendMarkdownBlocks(root, String(text ?? '').replace(/\r\n?/g, '\n').split('\n'), { narrative });
+  return root;
+}
+
+function refreshMarkdownPreview(textarea) {
+  const preview = markdownPreviews.get(textarea);
+  if (!preview) return;
+  const content = textarea.value.trim();
+  preview.hidden = !content;
+  preview.replaceChildren();
+  if (content) {
+    const label = document.createElement('div');
+    label.className = 'markdown-preview-label';
+    label.textContent = 'Live Markdown preview';
+    preview.append(label, renderMarkdown(textarea.value));
+  }
+}
+
+function bindMarkdownField(field) {
+  field.dir = 'rtl';
+  if (field.localName !== 'textarea' || markdownPreviews.has(field)) return;
+  const preview = document.createElement('div');
+  preview.className = 'markdown-preview';
+  preview.setAttribute('aria-label', 'Live Markdown preview');
+  preview.hidden = true;
+  field.insertAdjacentElement('afterend', preview);
+  markdownPreviews.set(field, preview);
+  field.addEventListener('input', () => refreshMarkdownPreview(field));
+  refreshMarkdownPreview(field);
+}
+
+function prepareMarkdownFields(root = document) {
+  const selector = 'input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]), textarea, select';
+  $$(selector, root).forEach(bindMarkdownField);
+}
+
+function setTextareaValue(textarea, value) {
+  textarea.value = value;
+  refreshMarkdownPreview(textarea);
+}
+
 function shortTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -409,19 +585,6 @@ function shortTime(value) {
 function paragraphKind(text) {
   const value = text.trim();
   return /^(?:[“"‘']|—\s|–\s|[\p{L}][^:\n]{0,36}:\s*[“"‘'])/u.test(value) ? 'dialogue' : 'narration';
-}
-
-function renderNarrative(text, messageId) {
-  const fragment = document.createDocumentFragment();
-  const chunks = String(text).split(/\n{2,}/);
-  for (const chunk of chunks) {
-    const p = document.createElement('p');
-    p.className = `message-text narrative-part ${paragraphKind(chunk)}`;
-    p.dir = isRtl(chunk) ? 'rtl' : 'auto';
-    p.textContent = chunk;
-    fragment.append(p);
-  }
-  return fragment;
 }
 
 function makeMessageCard(message) {
@@ -457,15 +620,8 @@ function makeMessageCard(message) {
   meta.append(idButton);
   const body = document.createElement('div');
   body.className = 'message-body';
-  if (message.role === 'assistant' && message.kind === 'story' && state.view === 'narrative') {
-    body.append(renderNarrative(message.content, message.id));
-  } else {
-    const content = document.createElement('div');
-    content.className = 'message-text';
-    content.dir = isRtl(message.content) ? 'rtl' : 'auto';
-    content.textContent = message.content;
-    body.append(content);
-  }
+  const narrative = message.role === 'assistant' && message.kind === 'story' && state.view === 'narrative';
+  body.append(renderMarkdown(message.content, { narrative, message: true }));
   card.append(meta, body);
   if (message.role === 'assistant' && ['failed', 'interrupted'].includes(message.status) && message.sourceMessageId) {
     const retry = document.createElement('button');
@@ -530,14 +686,7 @@ function updateStreamedMessage(messageId, fullText, status = 'streaming') {
   }
   const body = $('.message-body', card);
   body.replaceChildren();
-  if (state.view === 'narrative') body.append(renderNarrative(fullText, messageId));
-  else {
-    const content = document.createElement('div');
-    content.className = 'message-text';
-    content.dir = isRtl(fullText) ? 'rtl' : 'auto';
-    content.textContent = fullText;
-    body.append(content);
-  }
+  body.append(renderMarkdown(fullText, { narrative: state.view === 'narrative', message: true }));
   $('#messageList').scrollTop = $('#messageList').scrollHeight;
 }
 
@@ -589,8 +738,9 @@ function compactItem(item) {
   root.className = 'compact-item';
   const title = document.createElement('strong');
   title.textContent = item.subject;
-  const content = document.createElement('p');
-  content.textContent = item.content;
+  const content = document.createElement('div');
+  content.className = 'continuity-markdown';
+  content.append(renderMarkdown(item.content));
   root.append(title, content);
   appendSourceLine(root, item);
   return root;
@@ -619,8 +769,9 @@ function ledgerCard(item, allowCorrection = true) {
   tag.className = 'ledger-tag';
   tag.textContent = item.status === 'uncertain' ? 'uncertain' : item.type;
   header.append(title, tag);
-  const content = document.createElement('p');
-  content.textContent = item.content;
+  const content = document.createElement('div');
+  content.className = 'continuity-markdown';
+  content.append(renderMarkdown(item.content));
   const meta = document.createElement('div');
   meta.className = 'ledger-meta';
   const origin = document.createElement('span');
@@ -681,7 +832,7 @@ function renderContinuity() {
   const ledger = payload.ledger ?? [];
   const current = ledger.filter((item) => item.effective && ['current', 'uncertain'].includes(item.status));
   const scene = current.find((item) => item.type === 'scene');
-  $('#sceneContent').textContent = scene?.content ?? 'No source-backed scene state has been recorded yet.';
+  $('#sceneContent').replaceChildren(renderMarkdown(scene?.content ?? 'No source-backed scene state has been recorded yet.'));
   const details = $('#sceneDetails');
   details.replaceChildren();
   if (scene) {
@@ -843,7 +994,7 @@ async function streamGeneration({ threadId, url, body, submittedContent = null, 
     await parseSse(response, (event, data) => {
       if (event === 'saved') {
         acknowledged = true;
-        if (clearComposerOnAck && current() && $('#composerInput').value === submittedContent) $('#composerInput').value = '';
+        if (clearComposerOnAck && current() && $('#composerInput').value === submittedContent) setTextareaValue($('#composerInput'), '');
         if (clearComposerOnAck) void clearDraftAfterAcknowledgement(threadId);
         if (current()) {
           state.snapshotSequence += 1;
@@ -904,7 +1055,7 @@ async function streamGeneration({ threadId, url, body, submittedContent = null, 
     if (current()) {
       showToast(error.message, 5500);
       $('#composerStatus').textContent = 'Your saved conversation can be reloaded. Check the connection and retry.';
-      if (!acknowledged && clearComposerOnAck && !$('#composerInput').value) $('#composerInput').value = submittedContent;
+      if (!acknowledged && clearComposerOnAck && !$('#composerInput').value) setTextareaValue($('#composerInput'), submittedContent);
     }
   } finally {
     state.sendingThreads.delete(threadId);
@@ -954,7 +1105,11 @@ function openContextInspector() {
   for (const item of inspector.canon ?? []) {
     const entry = document.createElement('div');
     entry.className = 'context-entry';
-    entry.textContent = `${item.type} · ${item.subject} · ${item.status}\n${item.content}\nSources: ${(item.sourceMessageIds ?? []).join(', ') || 'none'}`;
+    const heading = document.createElement('strong');
+    heading.textContent = `${item.type} · ${item.subject} · ${item.status}`;
+    const sources = document.createElement('small');
+    sources.textContent = `Sources: ${(item.sourceMessageIds ?? []).join(', ') || 'none'}`;
+    entry.append(heading, renderMarkdown(item.content), sources);
     canonRoot.append(entry);
   }
   if (!canonRoot.childElementCount) {
@@ -969,8 +1124,9 @@ function openContextInspector() {
   for (const source of inspector.sources ?? []) {
     const entry = document.createElement('div');
     entry.className = 'context-entry';
-    entry.textContent = `${source.role} · ${source.id}\n${source.excerpt}`;
-    entry.dir = isRtl(entry.textContent) ? 'rtl' : 'auto';
+    const heading = document.createElement('strong');
+    heading.textContent = `${source.role} · ${source.id}`;
+    entry.append(heading, renderMarkdown(source.excerpt, { message: true }));
     sourcesRoot.append(entry);
   }
   if (!sourcesRoot.childElementCount) {
@@ -991,8 +1147,8 @@ function openProjectDialog() {
 function openSettings() {
   const project = state.project;
   $('#settingsProjectName').value = project?.name ?? '';
-  $('#settingsProjectInstructions').value = project?.instructions ?? '';
-  $('#settingsProjectStyle').value = project?.style ?? '';
+  setTextareaValue($('#settingsProjectInstructions'), project?.instructions ?? '');
+  setTextareaValue($('#settingsProjectStyle'), project?.style ?? '');
   $('#memoryScopeSelect').value = project?.memoryScope === 'thread' ? 'thread' : 'project';
   $('#themeSelect').value = state.appSettings.theme;
   state.modelsLoaded = false;
@@ -1108,6 +1264,7 @@ function openEditDialog({ mode, title, help, fields, eyebrow = 'CONTINUITY' }) {
     if (field.multiline) input.rows = field.rows ?? 3;
     label.append(input);
     root.append(label);
+    bindMarkdownField(input);
   }
   $('#editDialog').showModal();
 }
@@ -1272,8 +1429,7 @@ async function runSearch() {
       body.className = 'search-result-body';
       const index = result.content.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
       const start = Math.max(0, index - 110);
-      body.textContent = `${start ? '…' : ''}${result.content.slice(start, start + 380)}${result.content.length > start + 380 ? '…' : ''}`;
-      body.dir = isRtl(body.textContent) ? 'rtl' : 'auto';
+      body.append(renderMarkdown(`${start ? '…' : ''}${result.content.slice(start, start + 380)}${result.content.length > start + 380 ? '…' : ''}`));
       button.append(head, body);
       button.addEventListener('click', async () => {
         closeDialog('searchDialog');
@@ -1463,7 +1619,7 @@ async function retryMemory() {
 }
 
 function commandClick(command) {
-  $('#composerInput').value = command;
+  setTextareaValue($('#composerInput'), command);
   $('#composerInput').focus();
   $('#sendButton').disabled = !state.thread || state.sendingThreads.has(state.thread.id);
   scheduleDraftSave();
@@ -1623,6 +1779,7 @@ function copyText(value) {
 }
 
 function bindEvents() {
+  prepareMarkdownFields();
   $('#createProject').addEventListener('click', openProjectDialog);
   $('#emptyCreateProject').addEventListener('click', openProjectDialog);
   $('#emptyImportProject').addEventListener('click', () => openImportDialog('project'));
