@@ -91,9 +91,17 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
   const csrfToken = randomBytes(32).toString('base64url');
   const activeTurns = new Map();
   const threadQueues = new Map();
+  const backgroundTasks = new Set();
   let server;
   let closingRequested = false;
   let shutdownPromise = null;
+
+  function trackBackgroundTask(task) {
+    let tracked;
+    tracked = Promise.resolve(task).catch(() => {}).finally(() => backgroundTasks.delete(tracked));
+    backgroundTasks.add(tracked);
+    return tracked;
+  }
 
   async function authorizationStatus() {
     try { return await authService.status(); }
@@ -116,6 +124,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     shutdownPromise = (async () => {
       await codexServer.stop();
       await Promise.allSettled([...threadQueues.values()]);
+      await Promise.allSettled([...backgroundTasks]);
       await new Promise((resolve) => server.close(() => resolve()));
       db.close();
     })();
@@ -228,11 +237,11 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       });
       const saved = db.completeAssistantMessage(assistantMessage.id, result.text);
       sse(res, 'complete', { message: saved, memory: db.memoryStatus(thread.projectId, thread.branchId) });
-      void indexer.processMessage(userMessage.id).catch((error) => db.markMemoryJobError(
+      trackBackgroundTask(indexer.processMessage(userMessage.id).catch((error) => db.markMemoryJobError(
         db.listMemoryJobs(thread.projectId, thread.branchId, true).find((job) => job.messageId === userMessage.id)?.id,
         error.message
-      ));
-      void indexer.processRecent(8);
+      )));
+      trackBackgroundTask(indexer.processRecent(8));
     } catch (error) {
       const status = active.cancelled ? 'interrupted' : 'failed';
       if (active.assistantMessage) db.failAssistantMessage(active.assistantMessage.id, status);
@@ -465,7 +474,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const authState = await authorizationStatus();
       if (authState.state === 'connected' || authState.state === 'token_expired') {
         await ensureCodexConnected();
-        void indexer.processRecent(30);
+        trackBackgroundTask(indexer.processRecent(30));
       }
       return json(res, 200, { jobs });
     }

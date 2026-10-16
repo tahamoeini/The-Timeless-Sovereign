@@ -28,12 +28,14 @@ ShowUninstDetails show
 !insertmacro MUI_LANGUAGE "English"
 
 Function .onInit
+  IfFileExists "$INSTDIR\app\src\server.mjs" 0 fresh_install
   InitPluginsDir
   File /oname=$PLUGINSDIR\Stop-Story-Studio.vbs "../dist/windows/payload/Stop-Story-Studio.vbs"
   ExecWait '"$SYSDIR\wscript.exe" "$PLUGINSDIR\Stop-Story-Studio.vbs" "$INSTDIR\app\src\server.mjs"' $0
   ${If} $0 != 0
     Abort
   ${EndIf}
+fresh_install:
 FunctionEnd
 
 Section "Story Studio" MainSection
