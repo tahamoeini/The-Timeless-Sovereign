@@ -9,6 +9,8 @@ const state = {
   payload: null,
   authorization: { state: 'not_signed_in', message: 'Not connected.' },
   database: null,
+  appSettings: { theme: 'system' },
+  appVersion: '1.1.0',
   view: 'narrative',
   sendBusy: false,
   activeAbort: null,
@@ -41,6 +43,12 @@ async function api(url, options = {}) {
 }
 
 function jsonBody(value) { return JSON.stringify(value); }
+
+function applyTheme(theme) {
+  const selected = ['system', 'light', 'dark'].includes(theme) ? theme : 'system';
+  state.appSettings.theme = selected;
+  document.documentElement.dataset.theme = selected;
+}
 
 function showToast(message, duration = 3800) {
   const node = $('#toast');
@@ -85,6 +93,9 @@ async function initialize() {
     state.projects = bootstrap.projects;
     state.authorization = bootstrap.authorization;
     state.database = bootstrap.database;
+    state.appSettings = bootstrap.appSettings ?? { theme: 'system' };
+    state.appVersion = bootstrap.appVersion ?? '1.1.0';
+    applyTheme(state.appSettings.theme);
     renderProjectList();
     $('#dbLocationLabel').textContent = 'SQLite · local to this PC';
     const selected = savedSelection();
@@ -368,6 +379,16 @@ function renderTranscript() {
   const messages = state.payload?.transcript ?? [];
   const fragment = document.createDocumentFragment();
   for (const message of messages) fragment.append(makeMessageCard(message));
+  if (!messages.length && state.thread) {
+    const empty = document.createElement('div');
+    empty.className = 'thread-empty';
+    const title = document.createElement('strong');
+    title.textContent = 'Start a new chapter';
+    const hint = document.createElement('span');
+    hint.textContent = 'Your messages will stay saved in this conversation.';
+    empty.append(title, hint);
+    fragment.append(empty);
+  }
   list.replaceChildren(fragment);
   list.classList.toggle('transcript-view', state.view === 'transcript');
   if (previousBottom < 100) list.scrollTop = list.scrollHeight;
@@ -743,6 +764,10 @@ function openSettings() {
   $('#settingsProjectName').value = project?.name ?? '';
   $('#settingsProjectInstructions').value = project?.instructions ?? '';
   $('#settingsProjectStyle').value = project?.style ?? '';
+  $('#themeSelect').value = state.appSettings.theme;
+  $('#updateStatus').textContent = `Version ${state.appVersion} · updates checked manually`;
+  $('#updateDownload').hidden = true;
+  $('#updateDetails').hidden = true;
   for (const id of ['settingsProjectName', 'settingsProjectInstructions', 'settingsProjectStyle', 'saveSettings', 'exportProject', 'deleteProject']) {
     const element = document.getElementById(id);
     if (element) element.disabled = !project;
@@ -1137,6 +1162,45 @@ async function saveSettings() {
   } catch (error) { showNotice('Settings were not saved', error.message); }
 }
 
+async function saveAppearance() {
+  try {
+    const result = await api('/api/settings/app', {
+      method: 'PATCH', body: jsonBody({ theme: $('#themeSelect').value })
+    });
+    applyTheme(result.theme);
+    showToast('Appearance saved in your local Story Studio database.');
+  } catch (error) { showNotice('Appearance was not saved', error.message); }
+}
+
+async function checkForUpdates() {
+  const button = $('#checkUpdates');
+  const status = $('#updateStatus');
+  button.disabled = true;
+  status.textContent = 'Checking the public GitHub release feed…';
+  $('#updateDownload').hidden = true;
+  $('#updateDetails').hidden = true;
+  try {
+    const update = await api('/api/updates');
+    status.textContent = update.state === 'update_available'
+      ? `Version ${update.latestVersion} is available. Close Story Studio and run the installer to update; your story data stays in place.`
+      : update.state === 'up_to_date'
+        ? `Story Studio ${update.currentVersion} is up to date.`
+        : update.message;
+    if (update.updateAvailable && update.downloadUrl) {
+      const link = $('#updateDownload');
+      link.href = update.downloadUrl;
+      link.hidden = false;
+      if (update.notes) {
+        $('#updateNotes').textContent = update.notes;
+        $('#updateDigest').textContent = update.sha256 ? `Installer SHA-256: ${update.sha256}` : 'This release does not publish an installer SHA-256 digest.';
+        $('#updateDetails').hidden = false;
+      }
+    }
+  } catch (error) {
+    status.textContent = `Update check failed: ${error.message}`;
+  } finally { button.disabled = false; }
+}
+
 async function cancelCurrentTurn() {
   if (!state.thread) return;
   $('#cancelTurn').disabled = true;
@@ -1206,6 +1270,8 @@ function bindEvents() {
   $('#searchInput').addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => void runSearch(), 230); });
   $('#searchForm').addEventListener('submit', (event) => { event.preventDefault(); void runSearch(); });
   $('#saveSettings').addEventListener('click', () => void saveSettings());
+  $('#saveAppearance').addEventListener('click', () => void saveAppearance());
+  $('#checkUpdates').addEventListener('click', () => void checkForUpdates());
   $('#exportProject').addEventListener('click', async () => {
     try { await downloadResponse(`/api/projects/${encodeURIComponent(state.project.id)}/export`, 'story.story.json'); }
     catch (error) { showToast(error.message); }

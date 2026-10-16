@@ -11,9 +11,11 @@ import { CommandProcessor } from './commands.mjs';
 import { buildContextBundle } from './context.mjs';
 import { openDatabase } from './database.mjs';
 import { MemoryIndexer } from './memory-indexer.mjs';
+import { checkForUpdates } from './updates.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_MESSAGE_CHARS = 250_000;
 
@@ -78,7 +80,7 @@ function safeModelList(models) {
     }));
 }
 
-export function createStoryStudioServer({ dataDirectory = defaultDataDirectory(), codex = null, auth = null, database = null, port = 4317 } = {}) {
+export function createStoryStudioServer({ dataDirectory = defaultDataDirectory(), codex = null, auth = null, database = null, port = 4317, updateChecker = checkForUpdates } = {}) {
   fs.mkdirSync(dataDirectory, { recursive: true });
   const db = database ?? openDatabase(dataDirectory);
   const codexServer = codex ?? new CodexAppServer({ dataDirectory });
@@ -244,6 +246,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
         csrfToken,
         projects,
         selectedModel: db.getSetting('model.selected', ''),
+        appVersion: APP_VERSION,
+        appSettings: { theme: db.getSetting('app.theme', 'system') },
         authorization: authState,
         codex: codexServer.getConnectionStatus(),
         database: { integrity: db.integrityCheck(), fts: db.hasFts, location: db.dbPath },
@@ -403,6 +407,20 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       await ensureCodexConnected();
       const models = safeModelList(await codexServer.listModels());
       return json(res, 200, { models, selectedModel: db.getSetting('model.selected', '') });
+    }
+    if (method === 'PATCH' && pathname === '/api/settings/app') {
+      const body = await readJson(req);
+      const theme = String(body.theme ?? '');
+      if (!['system', 'light', 'dark'].includes(theme)) return json(res, 400, { error: 'Choose system, light, or dark appearance.' });
+      db.setSetting('app.theme', theme);
+      return json(res, 200, { theme });
+    }
+    if (method === 'GET' && pathname === '/api/updates') {
+      try {
+        return json(res, 200, await updateChecker({ currentVersion: APP_VERSION }));
+      } catch (error) {
+        return json(res, 502, { error: error.message || 'The update check failed.' });
+      }
     }
     if (method === 'PATCH' && pathname === '/api/settings/model') {
       const body = await readJson(req);
