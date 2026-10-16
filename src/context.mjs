@@ -116,7 +116,7 @@ export function buildLedgerExtractionPrompt(messages) {
   ).join('\n\n');
   return {
     validIds,
-    text: `Extract only concrete, continuity-relevant information stated in these saved story messages. Do not infer unstated events, promises, motives, power limits, or knowledge. Keep character claims and rumors separate from objective facts. Plans and promises are not completed events. If the messages establish nothing durable, return an empty entries array. Every entry must cite one or more exact source message IDs from this input.\n\n${sourceText}`
+    text: `Extract only concrete, continuity-relevant information stated in these saved story messages. Do not infer unstated events, promises, motives, power limits, or knowledge. Keep character claims and rumors separate from objective facts. Plans and promises are not completed events. If the messages establish nothing durable, return an empty entries array. Every entry must cite one or more exact source message IDs from this input. For each entry, represent details as an array of {"key":"...","value":"..."} objects. Every detail value must be a string; represent lists as comma-separated text, and use an empty array when there are no useful details. Include only details supported by the cited source messages.\n\n${sourceText}`
   };
 }
 
@@ -131,7 +131,18 @@ export const LEDGER_OUTPUT_SCHEMA = {
           type: { type: 'string', enum: ['event', 'character', 'relationship', 'rule', 'possession', 'scene', 'thread', 'obligation', 'evidence', 'resource'] },
           subject: { type: 'string' },
           content: { type: 'string' },
-          details: { type: 'object', additionalProperties: true },
+          details: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                key: { type: 'string' },
+                value: { type: 'string' }
+              },
+              required: ['key', 'value'],
+              additionalProperties: false
+            }
+          },
           origin: { type: 'string', enum: ['user_established', 'assistant_established', 'claim_or_rumor', 'hypothesis'] },
           confidence: { type: 'number', minimum: 0, maximum: 1 },
           status: { type: 'string', enum: ['current', 'uncertain', 'resolved', 'abandoned'] },

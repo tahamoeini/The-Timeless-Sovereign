@@ -76,6 +76,8 @@ The user message is saved before Codex starts. Any partial assistant reply is re
 
 Continuity indexing is a separate job from saving the conversation. Pending/error status means the raw transcript is still stored. Connect Codex, use the visible retry action, and check status again. If a source citation is invalid or unsupported, the indexer rejects it rather than silently attaching it to another message.
 
+If the error says `Invalid schema for response_format` and points to `details`, the installed version has an outdated continuity schema. Update Story Studio, reopen the project, then select **Retry memory processing**. The failed records are reprocessed from their saved source messages; the transcript is not rewritten.
+
 ## Restore or database integrity issue
 
 Before restoring, download a full backup or copy the entire local data directory while the app is stopped. Restore from Settings creates a pre-restore database snapshot, then replaces the story database. The protected sign-in credentials are stored separately and are not part of project exports or database backups.

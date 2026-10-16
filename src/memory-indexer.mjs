@@ -14,6 +14,21 @@ function parseStructuredOutput(text) {
   }
 }
 
+function normalizeDetails(details) {
+  if (!Array.isArray(details)) throw new Error('Continuity indexing returned details in an unsupported format.');
+  const normalized = Object.create(null);
+  for (const detail of details) {
+    const key = String(detail?.key ?? '').trim();
+    const value = String(detail?.value ?? '').trim();
+    if (['__proto__', 'constructor', 'prototype'].includes(key.toLowerCase())) {
+      continue;
+    }
+    if (!key || !value) continue;
+    normalized[key] = normalized[key] ? `${normalized[key]}, ${value}` : value;
+  }
+  return normalized;
+}
+
 function validateEntries(payload, messages) {
   if (!payload || !Array.isArray(payload.entries)) throw new Error('Continuity indexing returned no entries array.');
   const allowedIds = new Set(messages.map((message) => message.id));
@@ -41,7 +56,7 @@ function validateEntries(payload, messages) {
       type: entry.type,
       subject: String(entry.subject).trim(),
       content: String(entry.content).trim(),
-      details: entry.details && typeof entry.details === 'object' && !Array.isArray(entry.details) ? entry.details : {},
+      details: normalizeDetails(entry.details),
       origin: entry.origin,
       confidence: entry.confidence,
       status: entry.status,
