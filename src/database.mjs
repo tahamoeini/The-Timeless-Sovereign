@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const MIGRATION_VERSION = 4;
+const MIGRATION_VERSION = 5;
 const MAX_SEQUENCE = 9223372036854775807;
 
 const SCHEMA = `
@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS generation_attempts (
   user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   assistant_message_id TEXT UNIQUE REFERENCES messages(id) ON DELETE SET NULL,
   status TEXT NOT NULL CHECK(status IN ('pending', 'streaming', 'complete', 'failed', 'interrupted')),
+  diagnostics_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -344,6 +345,14 @@ export function openDatabase(dataDirectory) {
         SELECT id, created_at FROM messages ORDER BY sequence
       `).run();
       db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)').run(now());
+      applied = 4;
+    }
+    if (applied < 5) {
+      const attemptColumns = new Set(db.prepare('PRAGMA table_info(generation_attempts)').all().map((column) => column.name));
+      if (!attemptColumns.has('diagnostics_json')) {
+        db.exec("ALTER TABLE generation_attempts ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'");
+      }
+      db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)').run(now());
     }
     db.exec('COMMIT;');
   } catch (error) {
@@ -812,17 +821,26 @@ export function openDatabase(dataDirectory) {
     const row = db.prepare('SELECT * FROM generation_attempts WHERE request_id = ?').get(String(requestId));
     return row ? {
       id: row.id, requestId: row.request_id, threadId: row.thread_id, userMessageId: row.user_message_id,
-      assistantMessageId: row.assistant_message_id, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at
+      assistantMessageId: row.assistant_message_id, status: row.status, diagnostics: parseJson(row.diagnostics_json, {}),
+      createdAt: row.created_at, updatedAt: row.updated_at
     } : null;
   }
 
-  function updateGenerationAttempt(attemptId, { assistantMessageId, status }) {
+  function updateGenerationAttempt(attemptId, { assistantMessageId, status, diagnostics }) {
     const sets = [];
     const args = [];
     if (assistantMessageId !== undefined) { sets.push('assistant_message_id = ?'); args.push(assistantMessageId); }
     if (status !== undefined) {
       if (!['pending', 'streaming', 'complete', 'failed', 'interrupted'].includes(status)) throw new Error('Invalid generation attempt status.');
       sets.push('status = ?'); args.push(status);
+    }
+    if (diagnostics !== undefined) {
+      if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) {
+        throw new Error('Generation diagnostics must be an object.');
+      }
+      const serialized = JSON.stringify(diagnostics);
+      if (serialized.length > 16_384) throw new Error('Generation diagnostics are too large.');
+      sets.push('diagnostics_json = ?'); args.push(serialized);
     }
     if (!sets.length) return null;
     args.push(now(), attemptId);
@@ -1588,7 +1606,11 @@ export function openDatabase(dataDirectory) {
     const drafts = db.prepare('SELECT thread_id AS threadId, content, updated_at AS updatedAt FROM conversation_drafts ORDER BY thread_id').all();
     const generationAttempts = db.prepare(`SELECT id, request_id AS requestId, thread_id AS threadId,
       user_message_id AS userMessageId, assistant_message_id AS assistantMessageId, status,
-      created_at AS createdAt, updated_at AS updatedAt FROM generation_attempts ORDER BY created_at`).all();
+      diagnostics_json AS diagnosticsJson, created_at AS createdAt, updated_at AS updatedAt
+      FROM generation_attempts ORDER BY created_at`).all().map(({ diagnosticsJson, ...attempt }) => ({
+      ...attempt,
+      diagnostics: parseJson(diagnosticsJson, {})
+    }));
     return { format: 'timeless-sovereign-backup', version: 1, createdAt: now(), projects, settings, drafts, generationAttempts };
   }
 
@@ -1628,11 +1650,15 @@ export function openDatabase(dataDirectory) {
             !getThread(attempt.threadId) || !getMessage(attempt.userMessageId)) {
           throw new Error('The backup contains an invalid generation attempt.');
         }
-        db.prepare(`INSERT INTO generation_attempts(id, request_id, thread_id, user_message_id, assistant_message_id, status, created_at, updated_at)
-          VALUES(?, ?, ?, ?, ?, ?, ?, ?)`)
+        const diagnostics = attempt.diagnostics ?? {};
+        if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics) || JSON.stringify(diagnostics).length > 16_384) {
+          throw new Error('The backup contains invalid generation diagnostics.');
+        }
+        db.prepare(`INSERT INTO generation_attempts(id, request_id, thread_id, user_message_id, assistant_message_id, status, diagnostics_json, created_at, updated_at)
+          VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(attempt.id ?? makeId(), attempt.requestId, attempt.threadId, attempt.userMessageId,
             attempt.assistantMessageId && getMessage(attempt.assistantMessageId) ? attempt.assistantMessageId : null,
-            status, attempt.createdAt ?? now(), attempt.updatedAt ?? now());
+            status, JSON.stringify(diagnostics), attempt.createdAt ?? now(), attempt.updatedAt ?? now());
       }
       if (Array.isArray(document.settings)) {
         db.exec('DELETE FROM app_settings;');

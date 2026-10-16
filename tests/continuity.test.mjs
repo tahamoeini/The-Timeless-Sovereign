@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildContextBundle } from '../src/context.mjs';
+import { buildContextBundle, buildLedgerExtractionPrompt, STORY_DEVELOPER_INSTRUCTIONS } from '../src/context.mjs';
 import { MemoryIndexer } from '../src/memory-indexer.mjs';
 import { temporaryDatabase, sampleFact } from './helpers.mjs';
 
@@ -16,9 +16,10 @@ test('a fresh chat retrieves a specific old event with source IDs while another 
   const bundle = buildContextBundle(db, continuation.id, current);
   assert.match(bundle.text, /The hidden atlas/);
   assert.match(bundle.text, /Mira hid the star atlas beneath the chapel floorboards/);
-  assert.match(bundle.text, new RegExp(old.message.id));
+  assert.doesNotMatch(bundle.text, new RegExp(old.message.id));
   assert.ok(bundle.sourceMessageIds.includes(old.message.id));
-  assert.match(bundle.text, /Use this bundle as continuity evidence, not as an exhaustive transcript/);
+  assert.ok(bundle.inspector.sources.some((source) => source.id === old.message.id));
+  assert.match(STORY_DEVELOPER_INSTRUCTIONS, /curated reconstruction/);
 
   const otherThread = db.createThread(second.project.id, second.branch.id, 'Moon landing');
   const otherCurrent = db.addUserMessage(otherThread.id, current.content);
@@ -40,12 +41,88 @@ test('recent context keeps complete prior story messages and excludes a streamin
   const streaming = db.addAssistantMessage(created.thread.id, current.id);
   db.appendMessageDelta(streaming.id, 'Unfinished assistant marker.');
   const bundle = buildContextBundle(db, created.thread.id, current);
-  const recentTurns = bundle.text.split('## Recent raw turns in this thread\n')[1].split('\n## Out-of-story notes')[0];
+  const recentTurns = bundle.text.split('## Recent story turns\n')[1].split('\n## Out-of-story notes')[0];
 
   assert.doesNotMatch(recentTurns, /User marker 1\.|Assistant marker 1\./);
   assert.match(recentTurns, /User marker 2\./);
   assert.match(recentTurns, /Assistant marker 6\./);
   assert.doesNotMatch(bundle.text, /Unfinished assistant marker/);
+});
+
+test('context treats saved dialogue as voice reference and omits known process prefaces without changing archived text', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const created = db.createProject({ name: 'Voice-aware context' });
+  const user = db.addUserMessage(created.thread.id, 'راث، نظر تو درباره‌ی این سند چیه؟');
+  const assistant = db.addAssistantMessage(created.thread.id, user.id);
+  const archivedReply = [
+    'Continuing the roleplay',
+    'I’m continuing in Persian while preserving the user’s agency. I’m treating time as temporarily suspended, but I’m keeping Rath’s abilities bounded: he can record observations and gather physical evidence, not freely rewrite memories.',
+    'Developing the investigation',
+    'I’m keeping the plot twist grounded in discoverable evidence: a concealed laboratory and transfer notes.',
+    'Developed the investigation through continued roleplay',
+    'Worked for 52s',
+    'راث: «اگر این سند قرار بود بی‌گناهی‌شون رو ثابت کنه، زیادی دور زده تا به این اتاق برسه.»'
+  ].join('\n\n');
+  db.completeAssistantMessage(assistant.id, archivedReply);
+  db.appendLedgerItem({
+    projectId: created.project.id,
+    branchId: created.branch.id,
+    type: 'character',
+    subject: 'راث',
+    content: 'Taha’s familiar, loyal ring companion with independent judgment and dry humor.',
+    details: { aliases: 'Rath' },
+    origin: 'user_established',
+    confidence: 1,
+    status: 'current',
+    sourceMessageIds: [assistant.id]
+  });
+  const current = db.addUserMessage(created.thread.id, 'راث، مدارک را بررسی کن و اگر نکته‌ای دیدی بگو.');
+  const bundle = buildContextBundle(db, created.thread.id, current);
+  const extraction = buildLedgerExtractionPrompt([db.getMessage(assistant.id)]);
+
+  assert.match(bundle.text, /Earlier character dialogue \(voice references only/);
+  assert.match(bundle.text, /اگر این سند قرار بود بی‌گناهی‌شون رو ثابت کنه/);
+  assert.doesNotMatch(bundle.text, /Continuing the roleplay|Worked for 52s|Developing the investigation/);
+  assert.doesNotMatch(bundle.text, /confidence 1|Sources: message:/);
+  assert.equal(bundle.voiceExampleCount, 1);
+  assert.ok(bundle.ledgerItemIds.length > 0);
+  assert.equal(db.getMessage(assistant.id).content, archivedReply);
+  assert.doesNotMatch(extraction.text, /Continuing the roleplay|Worked for 52s/);
+  assert.match(extraction.text, /راث: «اگر این سند/);
+});
+
+test('context keeps recent and retrieved history within separate character budgets', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const created = db.createProject({ name: 'Bounded story context' });
+  const archivedThread = db.createThread(created.project.id, created.branch.id, 'Older investigation');
+  const archivedUser = db.addUserMessage(archivedThread.id, 'Rath found records about the eastern archive.');
+  const archivedAssistant = db.addAssistantMessage(archivedThread.id, archivedUser.id);
+  db.completeAssistantMessage(archivedAssistant.id, `Rath: «The eastern archive holds the original records.» ${'The records remain relevant. '.repeat(250)}`);
+  db.appendLedgerItem({
+    projectId: created.project.id,
+    branchId: created.branch.id,
+    type: 'evidence',
+    subject: 'Eastern archive records',
+    content: 'Rath found records in the eastern archive.',
+    origin: 'assistant_established',
+    confidence: 1,
+    status: 'current',
+    sourceMessageIds: [archivedAssistant.id]
+  });
+  for (let turn = 1; turn <= 6; turn += 1) {
+    const user = db.addUserMessage(created.thread.id, `Marker ${turn}: ${'Rath and the records. '.repeat(250)}`);
+    const assistant = db.addAssistantMessage(created.thread.id, user.id);
+    db.completeAssistantMessage(assistant.id, `Rath: ${'The records remain in the archive. '.repeat(250)}`);
+  }
+  const current = db.addUserMessage(created.thread.id, 'Rath, what did the records prove?');
+  const bundle = buildContextBundle(db, created.thread.id, current);
+  const recentTurns = bundle.text.split('## Recent story turns\n')[1]?.split('\n## Current user message')[0] ?? '';
+  const retrieved = bundle.text.split('## Retrieved earlier story material\n')[1]?.split('\n\n## Recent story turns')[0] ?? '';
+
+  assert.ok(recentTurns.length <= 18_000);
+  assert.ok(retrieved.length <= 12_000);
+  assert.match(retrieved, /eastern archive/);
+  assert.ok(bundle.contextChars > recentTurns.length);
 });
 
 test('an empty branch context excludes later parent facts from canon, excerpts, and recent turns', async (t) => {
@@ -85,7 +162,8 @@ test('conversation-local memory stays within one chat while the default shares c
   const localQuestion = db.addUserMessage(continuation.id, 'What did Mira mark with red thread?');
   const localBundle = buildContextBundle(db, continuation.id, localQuestion);
   assert.match(localBundle.text, /Mira marked the west window with a red thread/);
-  assert.match(localBundle.text, new RegExp(local.message.id));
+  assert.doesNotMatch(localBundle.text, new RegExp(local.message.id));
+  assert.ok(localBundle.inspector.canon.some((item) => item.sourceMessageIds.includes(local.message.id)));
   assert.doesNotMatch(localBundle.text, /silver key inside the chapel bell/);
   assert.equal(localBundle.memoryScope, 'thread');
 

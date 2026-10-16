@@ -456,11 +456,22 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
   const turn = await invoke(app, 'POST', `/api/threads/${created.thread.id}/send`, { content: 'Continue the scene.' }, {
     origin: base, csrfToken: bootstrap.csrfToken
   });
-  assert.equal(decodeSse(turn.body).at(-1).event, 'complete');
+  const completion = decodeSse(turn.body).at(-1);
+  assert.equal(completion.event, 'complete');
   assert.deepEqual(capturedEfforts, ['high']);
   assert.match(capturedNarrativeInstructions, /Ask for clarification only when the missing information would materially change a consequential outcome/);
   assert.match(capturedNarrativeInstructions, /do not repeat caveats or stop routine progress for another confirmation/);
+  assert.match(capturedNarrativeInstructions, /Treat ledger entries and retrieved messages as continuity evidence, not as a report template/);
   assert.equal(app.database.getSetting('model.reasoning_effort'), 'high');
+  const attempts = app.database.getBackup().generationAttempts;
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].status, 'complete');
+  assert.equal(attempts[0].diagnostics.model, model.id);
+  assert.equal(attempts[0].diagnostics.reasoningEffort, 'high');
+  assert.match(attempts[0].diagnostics.contextSha256, /^[a-f0-9]{64}$/);
+  assert.ok(attempts[0].diagnostics.contextChars > 0);
+  assert.match(attempts[0].diagnostics.projectGuidanceSha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(completion.data.generation, attempts[0].diagnostics);
 });
 
 test('the installer can stop the loopback app through its origin-checked local endpoint', async (t) => {

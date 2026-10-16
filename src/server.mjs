@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -374,6 +374,22 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
           throw new Error(`The saved thinking level “${reasoningEffort}” is no longer supported by the selected Codex model. Choose a supported level in Settings.`);
         }
       }
+      const project = db.getProject(thread.projectId);
+      const diagnostics = {
+        model: selectedModel,
+        reasoningEffort: reasoningEffort || null,
+        appVersion: APP_VERSION,
+        contextSha256: createHash('sha256').update(bundle.text).digest('hex'),
+        contextChars: bundle.contextChars,
+        sourceMessageIds: bundle.sourceMessageIds,
+        recentMessageIds: bundle.recentMessageIds,
+        ledgerItemIds: bundle.ledgerItemIds,
+        voiceExampleCount: bundle.voiceExampleCount,
+        projectGuidanceSha256: createHash('sha256')
+          .update(JSON.stringify([project.instructions, project.style]))
+          .digest('hex')
+      };
+      if (attempt) db.updateGenerationAttempt(attempt.id, { diagnostics });
       const codexThreadId = await codexServer.startThread({
         model: selectedModel,
         developerInstructions: STORY_DEVELOPER_INSTRUCTIONS,
@@ -396,7 +412,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const saved = db.completeAssistantMessage(assistantMessage.id, result.text);
       if (!saved) throw new Error('The reply was interrupted before it could be saved.');
       if (attempt) db.updateGenerationAttempt(attempt.id, { status: 'complete' });
-      sse(res, 'complete', { message: saved, memory: db.memoryStatus(thread.projectId, thread.branchId) });
+      const generation = attempt ? db.getGenerationAttempt(attempt.requestId)?.diagnostics ?? null : null;
+      sse(res, 'complete', { message: saved, memory: db.memoryStatus(thread.projectId, thread.branchId), generation });
       trackBackgroundTask(indexer.processMessage(userMessage.id).catch((error) => db.markMemoryJobError(
         db.listMemoryJobs(thread.projectId, thread.branchId, true).find((job) => job.messageId === userMessage.id)?.id,
         error.message
@@ -409,7 +426,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       if (attempt) db.updateGenerationAttempt(attempt.id, { status });
       const publicMessage = error instanceof AuthError ? error.message : String(error?.message ?? error);
       const activity = db.addSystemActivity(thread.id, interrupted ? 'Generation was interrupted. The saved user turn and any partial assistant text remain in the transcript.' : `Generation failed: ${publicMessage}`, 'status');
-      sse(res, 'failure', { message: publicMessage, interrupted, activity });
+      const generation = attempt ? db.getGenerationAttempt(attempt.requestId)?.diagnostics ?? null : null;
+      sse(res, 'failure', { message: publicMessage, interrupted, activity, generation });
     } finally {
       activeTurns.delete(thread.id);
     }
@@ -430,6 +448,9 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       return;
     }
     const userMessage = db.addUserMessage(threadId, content, { allowPaused: true });
+    const attempt = thread.paused ? null : db.createGenerationAttempt({
+      requestId: `story-${randomUUID()}`, threadId, userMessageId: userMessage.id
+    }).attempt;
     sseStart(res);
     sse(res, 'saved', { message: userMessage, memory: db.memoryStatus(thread.projectId, thread.branchId) });
     if (thread.paused) {
@@ -439,7 +460,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       return;
     }
     const previous = threadQueues.get(threadId) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(() => closingRequested ? undefined : runNarrativeTurn(thread, userMessage, res));
+    const next = previous.catch(() => {}).then(() => closingRequested ? undefined : runNarrativeTurn(thread, userMessage, res, attempt));
     threadQueues.set(threadId, next);
     try { await next; }
     finally { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); }

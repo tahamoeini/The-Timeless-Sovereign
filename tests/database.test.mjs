@@ -179,7 +179,7 @@ test('database migration adds the project memory scope to an existing version-on
   const migrated = openDatabase(fixture.directory);
   try {
     assert.equal(migrated.getProject('legacy-project').memoryScope, 'project');
-    assert.equal(migrated.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 4);
+    assert.equal(migrated.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 5);
     assert.deepEqual(migrated.integrityCheck(), ['ok']);
   } finally {
     migrated.close();
@@ -191,12 +191,42 @@ test('fresh databases start at the current schema and remain current on reopen',
   const db = fixture.database;
   const created = db.createProject({ name: 'Current schema' });
   const firstVersion = db.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version;
-  assert.equal(firstVersion, 4);
+  assert.equal(firstVersion, 5);
   assert.deepEqual(db.getDraft(created.thread.id), { content: '', updatedAt: null });
   const reopened = fixture.reopen();
   assert.equal(reopened.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, firstVersion);
   assert.equal(reopened.getProject(created.project.id).name, 'Current schema');
   assert.deepEqual(reopened.integrityCheck(), ['ok']);
+});
+
+test('version-four generation records gain diagnostics without losing retry history', async (t) => {
+  const fixture = await temporaryDatabase(t);
+  fixture.database.close();
+  const databasePath = path.join(fixture.directory, 'story-studio.db');
+  fs.rmSync(databasePath, { force: true });
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES(4, '2026-10-01T00:00:00.000Z');
+    CREATE TABLE generation_attempts (
+      id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, thread_id TEXT NOT NULL,
+      user_message_id TEXT NOT NULL, assistant_message_id TEXT, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    INSERT INTO generation_attempts(id, request_id, thread_id, user_message_id, status, created_at, updated_at)
+      VALUES('attempt-1', 'request-1', 'thread-1', 'message-1', 'failed', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z');
+  `);
+  legacy.close();
+
+  const migrated = openDatabase(fixture.directory);
+  try {
+    assert.equal(migrated.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 5);
+    const columns = migrated.db.prepare('PRAGMA table_info(generation_attempts)').all().map((column) => column.name);
+    assert.ok(columns.includes('diagnostics_json'));
+    assert.equal(migrated.db.prepare('SELECT diagnostics_json FROM generation_attempts WHERE id = ?').get('attempt-1').diagnostics_json, '{}');
+  } finally {
+    migrated.close();
+  }
 });
 
 test('version-two migration maps only unambiguous archive threads and keeps archive contents', async (t) => {
@@ -236,7 +266,7 @@ test('version-two migration maps only unambiguous archive threads and keeps arch
       { id: 'archive-1', thread_id: 'unique-thread', raw_content: 'preserve unique' },
       { id: 'archive-2', thread_id: null, raw_content: 'preserve ambiguous' }
     ]);
-    assert.equal(migrated.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 4);
+    assert.equal(migrated.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 5);
     assert.deepEqual(migrated.integrityCheck(), ['ok']);
   } finally { migrated.close(); }
 });
@@ -247,7 +277,7 @@ test('already-current databases preserve archive links and do not rerun migratio
   const imported = fixture.database.importArchive(created.project.id, 'kept.md', 'raw archive', [{ user: 'Question', assistant: 'Answer' }]);
   const archive = fixture.database.db.prepare('SELECT id, thread_id, raw_content FROM archive_imports').get();
   fixture.reopen();
-  assert.equal(fixture.database.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 4);
+  assert.equal(fixture.database.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 5);
   assert.deepEqual(fixture.database.db.prepare('SELECT id, thread_id, raw_content FROM archive_imports').get(), archive);
   assert.equal(fixture.database.listArchiveImports(created.project.id).length, 1);
   assert.equal(imported.importedTurns, 1);
@@ -258,6 +288,12 @@ test('backup restore preserves drafts and retry history while normalizing interr
   const created = db.createProject({ name: 'Backup recovery' });
   const user = db.addUserMessage(created.thread.id, 'The unsent draft should survive restore.');
   const attempt = db.createGenerationAttempt({ requestId: 'retry-before-restore', threadId: created.thread.id, userMessageId: user.id }).attempt;
+  const diagnostics = {
+    model: 'gpt-test', reasoningEffort: 'high', contextSha256: 'a'.repeat(64), contextChars: 1234,
+    sourceMessageIds: [user.id], recentMessageIds: [], ledgerItemIds: [], voiceExampleCount: 1,
+    projectGuidanceSha256: 'b'.repeat(64)
+  };
+  db.updateGenerationAttempt(attempt.id, { diagnostics });
   const assistant = db.addAssistantMessage(created.thread.id, user.id, attempt.id);
   db.appendMessageDelta(assistant.id, 'A partial reply');
   db.markMemoryJobProcessing(db.getMemoryJobForMessage(user.id).id);
@@ -266,6 +302,7 @@ test('backup restore preserves drafts and retry history while normalizing interr
   const backup = db.getBackup();
   assert.equal(backup.drafts[0].content, 'The next scene starts here.');
   assert.equal(backup.generationAttempts[0].status, 'streaming');
+  assert.deepEqual(backup.generationAttempts[0].diagnostics, diagnostics);
   db.createProject({ name: 'Changes after snapshot' });
   db.restoreBackup(backup);
 
@@ -275,6 +312,7 @@ test('backup restore preserves drafts and retry history while normalizing interr
   assert.equal(db.getMessage(assistant.id).content, 'A partial reply');
   assert.equal(db.getMemoryJobForMessage(user.id).status, 'pending');
   assert.equal(db.getGenerationAttempt(attempt.requestId).status, 'interrupted');
+  assert.deepEqual(db.getGenerationAttempt(attempt.requestId).diagnostics, diagnostics);
   assert.deepEqual(db.integrityCheck(), ['ok']);
 });
 
