@@ -62,50 +62,122 @@ mkdir -p "$app_root/runtime"
 cp -a "$repo_root/src" "$repo_root/public" "$app_root/"
 cp "$repo_root/package.json" "$repo_root/README.md" "$repo_root/TROUBLESHOOTING.md" "$app_root/"
 cp "$windows_node" "$app_root/runtime/node.exe"
+cp "$repo_root/scripts/windows-launch-server.mjs" "$app_root/runtime/launch-server.mjs"
 windows_node_dir="$(dirname "$windows_node")"
 for license in "$windows_node_dir/LICENSE" "$windows_node_dir/LICENSE.txt"; do
   if [[ -f "$license" ]]; then cp "$license" "$app_root/runtime/Node-LICENSE.txt"; break; fi
 done
 
+for source_file in "$app_root/src/server.mjs" "$app_root/runtime/launch-server.mjs"; do
+  windows_source_file="$(wslpath -w "$source_file")"
+  if ! "$windows_node" --check "$windows_source_file"; then
+    printf 'Windows Node.js could not validate the packaged source: %s\n' "$source_file" >&2
+    exit 1
+  fi
+done
+
 cat > "$payload/Launch-Story-Studio.vbs" <<'VBS'
 Option Explicit
-Dim shell, files, installRoot, appRoot, nodePath, serverPath, appUrl, probe, attempt
+Dim shell, files, installRoot, appRoot, nodePath, launcherPath, serverPath, appUrl
+Dim probe, attempt, localAppData, logDirectory, launcherLogPath, serverLogPath, logStream
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 installRoot = files.GetParentFolderName(WScript.ScriptFullName)
 appRoot = files.BuildPath(installRoot, "app")
 nodePath = files.BuildPath(appRoot, "runtime\node.exe")
+launcherPath = files.BuildPath(appRoot, "runtime\launch-server.mjs")
 serverPath = files.BuildPath(appRoot, "src\server.mjs")
+localAppData = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%")
+If localAppData = "%LOCALAPPDATA%" Then localAppData = shell.ExpandEnvironmentStrings("%TEMP%")
+logDirectory = files.BuildPath(localAppData, "TheTimelessSovereign\logs")
+On Error Resume Next
+If Not files.FolderExists(files.BuildPath(localAppData, "TheTimelessSovereign")) Then files.CreateFolder files.BuildPath(localAppData, "TheTimelessSovereign")
+If Not files.FolderExists(logDirectory) Then files.CreateFolder logDirectory
+If Err.Number <> 0 Then
+  Err.Clear
+  logDirectory = shell.ExpandEnvironmentStrings("%TEMP%")
+End If
+launcherLogPath = files.BuildPath(logDirectory, "Story-Studio-launcher.log")
+serverLogPath = files.BuildPath(logDirectory, "Story-Studio-startup.log")
+Set logStream = files.CreateTextFile(launcherLogPath, True, True)
+If Err.Number = 0 Then
+  logStream.WriteLine Now & " Launch requested from " & installRoot
+  logStream.Close
+End If
+Err.Clear
+
+If Not files.FileExists(nodePath) Then
+  RecordLaunchError "Bundled Node.js runtime is missing: " & nodePath
+  ShowLaunchFailure "The bundled Node.js runtime is missing."
+  WScript.Quit 1
+End If
+If Not files.FileExists(launcherPath) Or Not files.FileExists(serverPath) Then
+  RecordLaunchError "The installed launcher or server file is missing."
+  ShowLaunchFailure "The installed app files are incomplete. Run the installer again."
+  WScript.Quit 1
+End If
+
 appUrl = "http://127.0.0.1:4317/"
 shell.Environment("Process")("STORY_STUDIO_PORT") = "4317"
 shell.Environment("Process")("STORY_STUDIO_OPEN_BROWSER") = "0"
 shell.CurrentDirectory = appRoot
 
-On Error Resume Next
 Set probe = CreateObject("WinHttp.WinHttpRequest.5.1")
 probe.SetTimeouts 300, 300, 300, 300
 probe.Open "GET", appUrl & "api/bootstrap", False
 probe.Send
 If Err.Number = 0 And probe.Status = 200 Then
-  shell.Run appUrl, 1, False
-  WScript.Quit 0
+  If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
+    shell.Run appUrl, 1, False
+    WScript.Quit 0
+  End If
+  RecordLaunchError "Port 4317 returned HTTP 200, but the response was not Story Studio."
+  ShowLaunchFailure "Another service is using port 4317. Close it, then launch Story Studio again."
+  WScript.Quit 1
+ElseIf Err.Number = 0 Then
+  RecordLaunchError "Port 4317 is occupied and returned HTTP " & probe.Status & "."
+  ShowLaunchFailure "Another service is using port 4317. Close it, then launch Story Studio again."
+  WScript.Quit 1
 End If
 Err.Clear
 
-shell.Run """" & nodePath & """ --disable-warning=ExperimentalWarning """ & serverPath & """", 0, False
-For attempt = 1 To 40
-  WScript.Sleep 250
+shell.Run """" & nodePath & """ --disable-warning=ExperimentalWarning """ & launcherPath & """ """ & serverPath & """ """ & serverLogPath & """", 0, False
+If Err.Number <> 0 Then
+  RecordLaunchError "Windows could not launch the bundled Node.js runtime: " & Err.Description
+  ShowLaunchFailure "Windows could not launch the bundled Node.js runtime."
+  WScript.Quit 1
+End If
+For attempt = 1 To 60
+  WScript.Sleep 500
   Err.Clear
   Set probe = CreateObject("WinHttp.WinHttpRequest.5.1")
   probe.SetTimeouts 300, 300, 300, 300
   probe.Open "GET", appUrl & "api/bootstrap", False
   probe.Send
   If Err.Number = 0 And probe.Status = 200 Then
-    shell.Run appUrl, 1, False
-    WScript.Quit 0
+    If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
+      shell.Run appUrl, 1, False
+      WScript.Quit 0
+    End If
   End If
 Next
-MsgBox "Story Studio could not start. Try launching it again or open the installed troubleshooting guide.", vbExclamation, "The Timeless Sovereign Story Studio"
+RecordLaunchError "Story Studio did not become ready within 30 seconds."
+ShowLaunchFailure "Story Studio did not become ready within 30 seconds."
+
+Sub RecordLaunchError(message)
+  On Error Resume Next
+  Dim errorStream
+  Set errorStream = files.OpenTextFile(launcherLogPath, 8, True, -1)
+  If Err.Number = 0 Then
+    errorStream.WriteLine Now & " " & message
+    errorStream.Close
+  End If
+  Err.Clear
+End Sub
+
+Sub ShowLaunchFailure(message)
+  MsgBox message & vbCrLf & vbCrLf & "Review these logs for the startup error:" & vbCrLf & launcherLogPath & vbCrLf & serverLogPath, vbExclamation, "The Timeless Sovereign Story Studio"
+End Sub
 VBS
 
 cat > "$payload/Stop-Story-Studio.vbs" <<'VBS'
