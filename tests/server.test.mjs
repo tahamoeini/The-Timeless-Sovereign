@@ -459,7 +459,7 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
   assert.equal(decodeSse(turn.body).at(-1).event, 'complete');
   assert.deepEqual(capturedEfforts, ['high']);
   assert.match(capturedNarrativeInstructions, /Ask for clarification only when the missing information would materially change a consequential outcome/);
-  assert.match(capturedNarrativeInstructions, /Do not repeat caveats or stop routine progress for another confirmation/);
+  assert.match(capturedNarrativeInstructions, /do not repeat caveats or stop routine progress for another confirmation/);
   assert.equal(app.database.getSetting('model.reasoning_effort'), 'high');
 });
 
