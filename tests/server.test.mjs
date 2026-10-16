@@ -165,3 +165,46 @@ test('retry reconnects Codex and resumes pending continuity jobs after restart',
   assert.equal(calls.indexThreads, 1);
   assert.equal(calls.indexTurns, 1);
 });
+
+test('project import accepts a ChatGPT JSON conversation as a new project and preserves the raw export', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-chatgpt-import-test-'));
+  const auth = {
+    async status() { return { state: 'not_signed_in', message: 'Not connected.' }; },
+    async signOut() { return { revoked: false }; }
+  };
+  const codex = {
+    getConnectionStatus() { return { state: 'disconnected', message: 'Not connected.' }; },
+    async stop() {}
+  };
+  const app = createStoryStudioServer({ dataDirectory, port: 0, auth, codex });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+
+  const document = { metadata: { title: 'Archive as project' }, messages: [
+    { role: 'Prompt', say: 'An exact opening prompt.\r\n' , time: '2026-10-16T12:00:00.000Z' },
+    { role: 'Response', say: 'A reply with exact spacing.  ', time: '2026-10-16T12:00:01.000Z' }
+  ] };
+  const rawContent = JSON.stringify(document, null, 2);
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  const result = await invoke(app, 'POST', '/api/projects/import', {
+    document, rawContent, fileName: 'ChatGPT-My-Story.json'
+  }, {
+    origin: `http://127.0.0.1:${app.server.address().port}`, csrfToken: bootstrap.csrfToken
+  });
+  assert.equal(result.status, 201);
+  const imported = JSON.parse(result.body);
+  assert.equal(imported.archiveImported, true);
+  assert.equal(imported.project.name, 'Archive as project');
+  assert.equal(imported.importedTurns, 1);
+  const thread = JSON.parse((await invoke(app, 'GET', `/api/threads/${imported.thread.id}`)).body);
+  assert.deepEqual(thread.transcript.map((message) => message.content), document.messages.map((message) => message.say));
+  assert.equal(app.database.getBackup().projects[0].archives[0].rawContent, rawContent);
+
+  const invalid = await invoke(app, 'POST', '/api/projects/import', { document: { metadata: {}, messages: [] } }, {
+    origin: `http://127.0.0.1:${app.server.address().port}`, csrfToken: bootstrap.csrfToken
+  });
+  assert.equal(invalid.status, 400);
+});

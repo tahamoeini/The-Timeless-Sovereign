@@ -8,7 +8,7 @@ Requirements:
 
 - Windows 10 or 11.
 - Node.js 22.14 or newer (`node:sqlite` is experimental in this Node release; the app suppresses that warning during normal launch).
-- Codex CLI installed and available as `codex.exe` on `PATH`. If it is installed elsewhere, set `CODEX_EXECUTABLE` to its full path.
+- Codex CLI installed. The app checks `PATH` and the standard per-user Codex install under `%LOCALAPPDATA%\OpenAI\Codex\bin`; set `CODEX_EXECUTABLE` if yours is elsewhere.
 - A ChatGPT account eligible to use Sign in with ChatGPT for Codex app-server. Availability and usage limits depend on the account and plan; this app does not provide a separate allowance.
 
 Double-click `START.ps1`, or run it from PowerShell. The app listens only on `127.0.0.1:4317` and opens the local page in your browser. To stop it, close the PowerShell window or press Ctrl+C.
@@ -41,7 +41,7 @@ The story database and project exports do not contain credentials. Back up the w
 - Every user turn is saved before generation begins. Assistant output is saved as it streams. If generation fails or the app closes, the source messages remain and interrupted/pending work is visible for recovery.
 - Continuity indexing runs separately. A pending/error badge does not mean the transcript was lost; use **Retry memory processing** when available.
 
-The existing `Histories` and `Images` folders are left untouched. Import a Markdown chat archive from the app to bring recognized turns into a project. The original Markdown file is retained in the local story database.
+The existing `Histories` and `Images` folders are left untouched. Import a Markdown chat archive into a project, or import a ChatGPT conversation JSON as a new project or into an existing project. The original source file and every prompt/response message are retained in the local story database.
 
 ## Commands
 

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { AuthError, AuthService } from './auth.mjs';
-import { parseChatHistoryMarkdown } from './archive.mjs';
+import { isChatHistoryJson, parseChatHistory, parseChatHistoryJson } from './archive.mjs';
 import { CodexAppServer } from './codex-app-server.mjs';
 import { CommandProcessor } from './commands.mjs';
 import { buildContextBundle } from './context.mjs';
@@ -270,17 +270,47 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     const projectImportMatch = pathname === '/api/projects/import';
     if (method === 'POST' && projectImportMatch) {
       const body = await readJson(req);
-      const imported = db.importProject(body.document);
-      return json(res, 201, { project: imported, threads: db.listThreads(imported.id) });
+      if (body.document?.format === 'timeless-sovereign-project') {
+        try {
+          const imported = db.importProject(body.document);
+          return json(res, 201, { project: imported, threads: db.listThreads(imported.id) });
+        } catch (error) {
+          return json(res, 400, { error: error.message });
+        }
+      }
+      if (isChatHistoryJson(body.document)) {
+        const rawContent = typeof body.rawContent === 'string' ? body.rawContent : JSON.stringify(body.document);
+        let archiveDocument;
+        let messages;
+        try {
+          archiveDocument = JSON.parse(rawContent);
+          messages = parseChatHistoryJson(archiveDocument);
+        } catch (error) {
+          return json(res, 400, { error: error.message });
+        }
+        const fileName = String(body.fileName ?? 'ChatGPT conversation.json').slice(0, 200);
+        const fileStem = fileName.replace(/\.[^.]+$/, '').trim();
+        const titleCandidate = typeof archiveDocument.metadata.title === 'string' ? archiveDocument.metadata.title : fileStem;
+        const title = String(titleCandidate).trim().slice(0, 100) || 'Imported ChatGPT story';
+        try {
+          const imported = db.importArchiveAsProject(title, fileName, rawContent, messages);
+          return json(res, 201, { ...imported, threads: [imported.thread], archiveImported: true });
+        } catch (error) {
+          return json(res, 400, { error: error.message });
+        }
+      }
+      return json(res, 400, { error: 'Choose a Story Studio project export or a supported ChatGPT conversation JSON file.' });
     }
     const archiveMatch = pathMatch(pathname, /^\/api\/projects\/([^/]+)\/archive$/);
     if (method === 'POST' && archiveMatch) {
       const body = await readJson(req);
       if (typeof body.content !== 'string' || !body.content.trim()) return json(res, 400, { error: 'Choose a non-empty Markdown chat archive.' });
-      const turns = parseChatHistoryMarkdown(body.content);
-      if (!turns.length) return json(res, 400, { error: 'No Prompt/Response turns were found in that archive.' });
-      const imported = db.importArchive(archiveMatch[0], body.fileName ?? 'story-history.md', body.content, turns);
-      return json(res, 201, { ...imported, message: 'The complete original archive and parsed conversation have been saved. Memory indexing is pending until Codex is connected.' });
+      let parsedItems;
+      try { parsedItems = parseChatHistory(body.content); }
+      catch (error) { return json(res, 400, { error: error.message }); }
+      if (!parsedItems.length) return json(res, 400, { error: 'No supported Prompt/Response turns or ChatGPT JSON messages were found in that archive.' });
+      const imported = db.importArchive(archiveMatch[0], body.fileName ?? 'story-history.md', body.content, parsedItems);
+      return json(res, 201, { ...imported, message: 'The complete original archive and its messages were saved. Continuity indexing is pending and can be retried from the story panel.' });
     }
     const projectMatch = pathMatch(pathname, /^\/api\/projects\/([^/]+)$/);
     if (projectMatch && method === 'PATCH') {

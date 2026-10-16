@@ -9,6 +9,7 @@
 - Parse slash commands in the local app before model submission. Inspection and continuity commands are recorded and handled locally; only ordinary story messages start an app-server turn.
 - Before each narrative turn, assemble project instructions, style, current scene, branch-local canon and knowledge boundaries, relevant ledger/search hits with message IDs, recent raw thread turns, and the current user message. Retrieval is bounded; the full archive is searched locally and never sent wholesale.
 - Use the documented Codex app-server JSONL protocol over a child-process stdio pipe. Start/resume durable Codex threads, stream deltas, interrupt on cancel, and persist the local user message and pending index job before starting generation. Disable shell, code, web, MCP, plugin, skill, and other non-chat features; start with an empty app-owned working directory and a read-only sandbox. If startup cannot apply those restrictions, do not submit story content.
+- Resolve Codex from `CODEX_EXECUTABLE`, `PATH`, or the standard `%LOCALAPPDATA%\OpenAI\Codex\bin\<build>\codex.exe` per-user installation.
 - Implement Sign in with ChatGPT using the official dynamic-client loopback OAuth flow: fresh state, nonce, PKCE S256, exact callback URI, issued client ID, verified ID token/JWKS, and granted-scope checks. Keep rotating tokens in Windows DPAPI-protected credential slots, pass only the access token through the app-server child environment, and never fall back to API-key billing.
 
 ## Local data and security

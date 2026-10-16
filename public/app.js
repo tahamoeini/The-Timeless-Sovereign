@@ -787,10 +787,10 @@ function openImportDialog(mode) {
   const projectMode = mode === 'project';
   $('#importTitle').textContent = projectMode ? 'Import a story project' : 'Import a chat archive';
   $('#importHelp').textContent = projectMode
-    ? 'Project exports include complete messages, branch timelines, source-linked continuity, and audit history. Imports receive new local identifiers.'
-    : 'The original Markdown file is saved in the selected project. Recognized turns are added as saved history and memory indexing stays pending until Codex connects.';
+    ? 'Import a Story Studio project export, or choose a ChatGPT conversation JSON to create a new project from its saved messages.'
+    : 'Import a Markdown or ChatGPT JSON archive. The original file and saved messages are retained in the selected project.';
   $('#archiveProjectLabel').hidden = projectMode;
-  $('#importFile').accept = projectMode ? '.json,application/json' : '.md,text/markdown,text/plain';
+  $('#importFile').accept = projectMode ? '.json,application/json' : '.md,.json,text/markdown,text/plain,application/json';
   const select = $('#archiveProjectSelect');
   select.replaceChildren();
   for (const project of state.projects) {
@@ -992,12 +992,16 @@ async function submitImport(event) {
     const content = await file.text();
     if (state.importMode === 'project') {
       const document = JSON.parse(content);
-      const result = await api('/api/projects/import', { method: 'POST', body: jsonBody({ document }) });
+      const result = await api('/api/projects/import', {
+        method: 'POST', body: jsonBody({ document, fileName: file.name, rawContent: content })
+      });
       state.projects = await api('/api/bootstrap').then((data) => { state.csrfToken = data.csrfToken; state.projects = data.projects; return data.projects; });
       closeDialog('importDialog');
       renderProjectList();
-      await openProject(result.project.id);
-      showToast(`Imported ${result.project.name}.`);
+      await openProject(result.project.id, '', result.thread?.id ?? '');
+      showToast(result.archiveImported
+        ? `Imported ${result.importedTurns} turns from ${file.name} into a new project.`
+        : `Imported ${result.project.name}.`);
     } else {
       const projectId = $('#archiveProjectSelect').value;
       if (!projectId) throw new Error('Create a project before importing a chat archive.');

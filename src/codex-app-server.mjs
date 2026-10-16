@@ -28,13 +28,32 @@ const APPROVAL_REQUESTS = new Set([
   'applyPatch/requestApproval'
 ]);
 
-function resolveCodexExecutable() {
-  const configuredPath = process.env.CODEX_EXECUTABLE;
+function resolveCodexExecutable({ env = process.env, spawnSyncImpl = spawnSync } = {}) {
+  const configuredPath = env.CODEX_EXECUTABLE;
   if (configuredPath && fs.existsSync(configuredPath)) return configuredPath;
-  const lookup = spawnSync('where.exe', ['codex.exe'], { encoding: 'utf8', windowsHide: true });
-  if (lookup.status === 0) {
-    const candidate = lookup.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => line && fs.existsSync(line));
+  let lookup;
+  try { lookup = spawnSyncImpl('where.exe', ['codex.exe'], { encoding: 'utf8', windowsHide: true }); }
+  catch { lookup = null; }
+  if (lookup?.status === 0) {
+    const candidate = String(lookup.stdout ?? '').split(/\r?\n/).map((line) => line.trim()).find((line) => line && fs.existsSync(line));
     if (candidate) return candidate;
+  }
+
+  const localAppData = env.LOCALAPPDATA;
+  if (localAppData) {
+    const installRoot = path.join(localAppData, 'OpenAI', 'Codex', 'bin');
+    if (fs.existsSync(installRoot)) {
+      const candidates = [];
+      const directInstall = path.join(installRoot, 'codex.exe');
+      if (fs.existsSync(directInstall) && fs.statSync(directInstall).isFile()) candidates.push(directInstall);
+      for (const entry of fs.readdirSync(installRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(installRoot, entry.name, 'codex.exe');
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) candidates.push(candidate);
+      }
+      candidates.sort((first, second) => fs.statSync(second).mtimeMs - fs.statSync(first).mtimeMs);
+      if (candidates.length) return candidates[0];
+    }
   }
   return null;
 }

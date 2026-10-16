@@ -312,6 +312,7 @@ export function openDatabase(dataDirectory) {
     addCheckpoint,
     listCheckpoints,
     importArchive,
+    importArchiveAsProject,
     listArchiveImports,
     getProjectExport,
     importProject,
@@ -343,9 +344,9 @@ export function openDatabase(dataDirectory) {
     }
   }
 
-  function insertMessage({ projectId, branchId, threadId, role, kind, content, status = 'complete', sourceMessageId = null }) {
+  function insertMessage({ projectId, branchId, threadId, role, kind, content, status = 'complete', sourceMessageId = null, createdAt: sourceCreatedAt = null }) {
     const id = makeId();
-    const createdAt = now();
+    const createdAt = typeof sourceCreatedAt === 'string' && Number.isFinite(Date.parse(sourceCreatedAt)) ? sourceCreatedAt : now();
     db.prepare(`
       INSERT INTO messages(id, project_id, branch_id, thread_id, role, kind, content, status, created_at, source_message_id)
       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -964,27 +965,81 @@ export function openDatabase(dataDirectory) {
       }));
   }
 
-  function importArchive(projectId, fileName, rawContent, parsedTurns) {
+  function writeArchiveContents(projectId, branchId, threadId, fileName, rawContent, parsedItems) {
+    const sha256 = createHash('sha256').update(rawContent).digest('hex');
+    db.prepare('INSERT INTO archive_imports(id, project_id, file_name, source_sha256, raw_content, created_at) VALUES(?, ?, ?, ?, ?, ?)')
+      .run(makeId(), projectId, String(fileName).slice(0, 200), sha256, rawContent, now());
+
+    const isMessageList = parsedItems.every((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string');
+    let importedTurns = 0;
+    let importedMessages = 0;
+    if (isMessageList) {
+      let pendingUser = null;
+      for (const item of parsedItems) {
+        const message = insertMessage({
+          projectId, branchId, threadId, role: item.role, kind: 'story', content: item.content, status: 'complete',
+          sourceMessageId: item.role === 'assistant' ? pendingUser?.id ?? null : null,
+          createdAt: item.createdAt
+        });
+        importedMessages += 1;
+        if (item.role === 'user') {
+          importedTurns += 1;
+          pendingUser = message;
+          db.prepare(`INSERT INTO memory_jobs(id, project_id, branch_id, thread_id, message_id, status, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)`)
+            .run(makeId(), projectId, branchId, threadId, message.id, now(), now());
+        } else if (pendingUser) {
+          db.prepare('UPDATE memory_jobs SET assistant_message_id = ?, updated_at = ? WHERE message_id = ?')
+            .run(message.id, now(), pendingUser.id);
+          pendingUser = null;
+        }
+      }
+    } else {
+      for (const turn of parsedItems) {
+        const user = insertMessage({ projectId, branchId, threadId, role: 'user', kind: 'story', content: turn.user, status: 'complete' });
+        db.prepare(`INSERT INTO memory_jobs(id, project_id, branch_id, thread_id, message_id, status, created_at, updated_at)
+          VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)`)
+          .run(makeId(), projectId, branchId, threadId, user.id, now(), now());
+        const assistant = insertMessage({ projectId, branchId, threadId, role: 'assistant', kind: 'story', content: turn.assistant, status: 'complete', sourceMessageId: user.id });
+        db.prepare('UPDATE memory_jobs SET assistant_message_id = ?, updated_at = ? WHERE message_id = ?')
+          .run(assistant.id, now(), user.id);
+        importedTurns += 1;
+        importedMessages += 2;
+      }
+    }
+    db.prepare('UPDATE threads SET updated_at = ? WHERE id = ?').run(now(), threadId);
+    return { importedTurns, importedMessages, sourceSha256: sha256 };
+  }
+
+  function importArchive(projectId, fileName, rawContent, parsedItems) {
     const project = getProject(projectId);
     if (!project) throw new Error('Project not found.');
     const branch = db.prepare('SELECT id FROM branches WHERE project_id = ? AND parent_branch_id IS NULL ORDER BY created_at LIMIT 1').get(projectId);
     if (!branch) throw new Error('Main branch not found.');
-    const thread = createThread(projectId, branch.id, `Imported · ${String(fileName).slice(0, 70)}`);
-    const sha256 = createHash('sha256').update(rawContent).digest('hex');
-    transaction(() => {
-      db.prepare('INSERT INTO archive_imports(id, project_id, file_name, source_sha256, raw_content, created_at) VALUES(?, ?, ?, ?, ?, ?)')
-        .run(makeId(), projectId, String(fileName).slice(0, 200), sha256, rawContent, now());
-      for (const turn of parsedTurns) {
-        const user = insertMessage({ projectId, branchId: branch.id, threadId: thread.id, role: 'user', kind: 'story', content: turn.user, status: 'complete' });
-        db.prepare(`INSERT INTO memory_jobs(id, project_id, branch_id, thread_id, message_id, status, created_at, updated_at)
-          VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)`)
-          .run(makeId(), projectId, branch.id, thread.id, user.id, now(), now());
-        const assistant = insertMessage({ projectId, branchId: branch.id, threadId: thread.id, role: 'assistant', kind: 'story', content: turn.assistant, status: 'complete' });
-        db.prepare('UPDATE memory_jobs SET assistant_message_id = ?, updated_at = ? WHERE message_id = ?')
-          .run(assistant.id, now(), user.id);
-      }
+    return transaction(() => {
+      const thread = createThread(projectId, branch.id, `Imported · ${String(fileName).slice(0, 70)}`);
+      const imported = writeArchiveContents(projectId, branch.id, thread.id, fileName, rawContent, parsedItems);
+      return { thread, ...imported };
     });
-    return { thread, importedTurns: parsedTurns.length, sourceSha256: sha256 };
+  }
+
+  function importArchiveAsProject(name, fileName, rawContent, parsedMessages) {
+    const projectId = makeId();
+    const branchId = makeId();
+    const threadId = makeId();
+    const timestamp = now();
+    const projectName = String(name ?? '').trim();
+    if (!projectName) throw new Error('Project name is required.');
+    return transaction(() => {
+      db.prepare('INSERT INTO projects(id, name, instructions, created_at, updated_at) VALUES(?, ?, ?, ?, ?)')
+        .run(projectId, projectName, '', timestamp, timestamp);
+      db.prepare('INSERT INTO branches(id, project_id, name, created_at) VALUES(?, ?, ?, ?)')
+        .run(branchId, projectId, 'Main', timestamp);
+      db.prepare('INSERT INTO threads(id, project_id, branch_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')
+        .run(threadId, projectId, branchId, `Imported · ${String(fileName).slice(0, 70)}`, timestamp, timestamp);
+      const imported = writeArchiveContents(projectId, branchId, threadId, fileName, rawContent, parsedMessages);
+      return { project: getProject(projectId), branch: { id: branchId, name: 'Main', projectId }, thread: getThread(threadId), ...imported };
+    });
   }
 
   function listArchiveImports(projectId) {

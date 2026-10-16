@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { CodexAppServer, DISABLED_FEATURES } from '../src/codex-app-server.mjs';
+import { CodexAppServer, DISABLED_FEATURES, resolveCodexExecutable } from '../src/codex-app-server.mjs';
 
 class FakeAppServerChild extends EventEmitter {
   constructor() {
@@ -114,6 +114,20 @@ async function makeServer(t) {
   await app.start('fake-local-access-token');
   return { app, dataDirectory, get child() { return child; }, get options() { return options; } };
 }
+
+test('Codex discovery finds the standard Windows per-user app-server installation', async (t) => {
+  const localAppData = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-install-test-'));
+  t.after(async () => fs.rm(localAppData, { recursive: true, force: true }));
+  const executable = path.join(localAppData, 'OpenAI', 'Codex', 'bin', 'build-hash', 'codex.exe');
+  await fs.mkdir(path.dirname(executable), { recursive: true });
+  await fs.writeFile(executable, 'test executable placeholder');
+
+  const resolved = resolveCodexExecutable({
+    env: { LOCALAPPDATA: localAppData },
+    spawnSyncImpl: () => ({ status: 1, stdout: '' })
+  });
+  assert.equal(resolved, executable);
+});
 
 test('local app-server lifecycle uses read-only chat threads, ephemeral indexing threads, streaming, and interruption', async (t) => {
   const fixture = await makeServer(t);

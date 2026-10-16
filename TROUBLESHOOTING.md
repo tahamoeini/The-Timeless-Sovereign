@@ -27,7 +27,7 @@ Use the printed `http://127.0.0.1:<port>/` address. The app binds to loopback on
 
 ## Codex app-server executable was not found
 
-Install the Codex CLI, ensure `codex.exe` is on `PATH`, and restart the app. If necessary, set its path before launching:
+The app checks `PATH` and the standard per-user Codex installation at `%LOCALAPPDATA%\OpenAI\Codex\bin\<build>\codex.exe`. Install the Codex desktop/CLI app and restart Story Studio. If your installation is elsewhere, set its path before launching:
 
 ```powershell
 $env:CODEX_EXECUTABLE = 'C:\full\path\to\codex.exe'
@@ -35,6 +35,10 @@ $env:CODEX_EXECUTABLE = 'C:\full\path\to\codex.exe'
 ```
 
 The app uses Codex app-server. It does not scrape browser sessions, use private ChatGPT cookies, or accept an API key as a fallback.
+
+## Import a ChatGPT conversation JSON
+
+Use **Import a story project** to import a native Story Studio project export or create a new project from a ChatGPT conversation JSON file. Use **Import chat archive** to add Markdown or ChatGPT JSON messages to an existing project. A JSON chat import retains the original file, prompt/response message text, order, and valid source timestamps. It does not contain or import sign-in credentials.
 
 ## Sign-in is denied, unavailable, or reports missing authorization
 
