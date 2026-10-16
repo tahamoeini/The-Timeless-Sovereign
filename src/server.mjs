@@ -92,7 +92,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
   const activeTurns = new Map();
   const threadQueues = new Map();
   let server;
-  let closed = false;
+  let closingRequested = false;
+  let shutdownPromise = null;
 
   async function authorizationStatus() {
     try { return await authService.status(); }
@@ -100,7 +101,9 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
   }
 
   async function ensureCodexConnected() {
+    if (closingRequested) throw new Error('Story Studio is stopping.');
     const accessToken = await authService.accessToken();
+    if (closingRequested) throw new Error('Story Studio is stopping.');
     if (codexServer.getConnectionStatus().state !== 'connected' || codexServer.accessTokenFingerprint !== accessToken) {
       await codexServer.start(accessToken);
       codexServer.accessTokenFingerprint = accessToken;
@@ -108,11 +111,15 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
   }
 
   async function closeServer() {
-    if (closed) return;
-    closed = true;
-    await codexServer.stop();
-    await new Promise((resolve) => server.close(() => resolve()));
-    db.close();
+    if (shutdownPromise) return shutdownPromise;
+    closingRequested = true;
+    shutdownPromise = (async () => {
+      await codexServer.stop();
+      await Promise.allSettled([...threadQueues.values()]);
+      await new Promise((resolve) => server.close(() => resolve()));
+      db.close();
+    })();
+    return shutdownPromise;
   }
 
   async function ensureThreadLoaded(thread) {
@@ -146,6 +153,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     const allLedger = db.getLedgerItems(thread.projectId, thread.branchId, { includeSuperseded: true });
     const currentIds = new Set(db.getEffectiveLedger(thread.projectId, thread.branchId).filter(visibleMemoryItem).map((item) => item.id));
     const memory = memoryScope === 'thread' ? db.memoryStatusForThread(thread.id) : db.memoryStatus(thread.projectId, thread.branchId);
+    const deletionImpact = db.threadDeletionPlan(thread.id)?.removed ?? { conversations: 1, branches: 0, messages: 0, importedArchives: 0 };
     return {
       thread,
       project,
@@ -154,6 +162,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       ledger: allLedger.filter(visibleMemoryItem).map((item) => ({ ...item, effective: currentIds.has(item.id) })),
       memory,
       memoryScope,
+      deletionImpact,
       branches: db.listBranches(thread.projectId),
       threads: db.listThreads(thread.projectId, thread.branchId),
       checkpoints: db.listCheckpoints(thread.projectId, thread.branchId).filter((entry) => memoryScope === 'project' || entry.threadId === thread.id),
@@ -187,6 +196,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     activeTurns.set(thread.id, active);
     try {
       await ensureCodexConnected();
+      if (active.cancelled || closingRequested) throw new Error('The response was stopped before generation began.');
       const currentThread = db.getThread(thread.id);
       if (currentThread.paused) throw new Error('This thread is paused. Use /resume before continuing.');
       const bundle = buildContextBundle(db, thread.id, userMessage);
@@ -200,6 +210,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
         }
       }
       const codexThreadId = await ensureThreadLoaded(currentThread);
+      if (active.cancelled || closingRequested) throw new Error('The response was stopped before generation began.');
       active.codexThreadId = codexThreadId;
       const assistantMessage = db.addAssistantMessage(thread.id, userMessage.id);
       active.assistantMessage = assistantMessage;
@@ -234,6 +245,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
   }
 
   async function sendMessage(threadId, content, res) {
+    if (closingRequested) throw Object.assign(new Error('Story Studio is stopping.'), { status: 503 });
     const thread = db.getThread(threadId);
     if (!thread) throw Object.assign(new Error('Conversation not found.'), { status: 404 });
     if (typeof content !== 'string' || !content.trim()) throw Object.assign(new Error('Write a message before sending.'), { status: 400 });
@@ -256,7 +268,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       return;
     }
     const previous = threadQueues.get(threadId) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(() => runNarrativeTurn(thread, userMessage, res));
+    const next = previous.catch(() => {}).then(() => closingRequested ? undefined : runNarrativeTurn(thread, userMessage, res));
     threadQueues.set(threadId, next);
     try { await next; }
     finally { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); }
@@ -358,12 +370,27 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       if (body.confirmName !== project.name || body.confirmation !== 'DELETE PROJECT') {
         return json(res, 400, { error: 'Type the exact project name and DELETE PROJECT to remove its data.' });
       }
-      if ([...activeTurns.values()].some((turn) => db.getThread(turn.threadId)?.projectId === project.id)) {
+      const projectThreadIds = new Set(db.listThreads(project.id).map((thread) => thread.id));
+      if ([...activeTurns.keys(), ...threadQueues.keys()].some((threadId) => projectThreadIds.has(threadId))) {
         return json(res, 409, { error: 'A story turn is active in this project. Wait for it to finish before deleting.' });
       }
       const counts = { threads: db.listThreads(project.id).length, branches: db.listBranches(project.id).length };
       db.deleteProject(project.id);
       return json(res, 200, { deleted: project.name, removed: counts });
+    }
+    const threadDeleteMatch = pathMatch(pathname, /^\/api\/threads\/([^/]+)$/);
+    if (threadDeleteMatch && method === 'DELETE') {
+      const body = await readJson(req);
+      const plan = db.threadDeletionPlan(threadDeleteMatch[0]);
+      if (!plan) return json(res, 404, { error: 'Conversation not found.' });
+      if (body.confirmTitle !== plan.thread.title || body.confirmation !== 'DELETE CHAT') {
+        return json(res, 400, { error: 'Type the exact conversation title and DELETE CHAT to remove this chat.' });
+      }
+      const affected = new Set(plan.threadIds);
+      if ([...activeTurns.keys(), ...threadQueues.keys()].some((id) => affected.has(id))) {
+        return json(res, 409, { error: 'A response is active in this chat or one of its dependent branches. Stop it before deleting.' });
+      }
+      return json(res, 200, db.deleteThread(threadDeleteMatch[0]));
     }
     const projectThreadsMatch = pathMatch(pathname, /^\/api\/projects\/([^/]+)\/threads$/);
     if (method === 'POST' && projectThreadsMatch) {
@@ -486,7 +513,11 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       return json(res, 200, { selectedModel: model, reasoningEffort });
     }
     if (method === 'POST' && pathname === '/api/app/shutdown') {
-      if (activeTurns.size) return json(res, 409, { error: 'Wait for the active story response to finish before installing an update.' });
+      const body = await readJson(req);
+      const emergency = body.emergency === true;
+      if (activeTurns.size && !emergency) return json(res, 409, { error: 'A response is still running. Stop it or use Stop app now to close Story Studio immediately.' });
+      closingRequested = true;
+      if (emergency) for (const active of activeTurns.values()) active.cancelled = true;
       json(res, 200, { stopping: true });
       const shutdownTimer = setTimeout(() => { void closeServer(); }, 150);
       shutdownTimer.unref?.();
@@ -549,6 +580,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     let url;
     try { url = new URL(req.url ?? '/', `http://${expectedHost}`); }
     catch { return json(res, 400, { error: 'Invalid local request URL.' }); }
+    if (closingRequested && url.pathname !== '/api/app/shutdown') return json(res, 503, { error: 'Story Studio is stopping.' });
     if (url.pathname === '/auth/callback' && req.method === 'GET') {
       try {
         await authService.handleCallback(url.href);

@@ -14,7 +14,7 @@ const state = {
   models: [],
   modelsLoaded: false,
   transcriptRevision: 0,
-  appVersion: '1.2.0',
+  appVersion: '1.3.0',
   view: 'narrative',
   sendBusy: false,
   activeAbort: null,
@@ -23,7 +23,8 @@ const state = {
   importMode: 'archive',
   editMode: null,
   toastTimer: null,
-  mobileSidebar: false
+  mobileSidebar: false,
+  pendingDeleteChat: null
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -99,7 +100,7 @@ async function initialize() {
     state.database = bootstrap.database;
     state.appSettings = bootstrap.appSettings ?? { theme: 'system' };
     state.selectedModel = bootstrap.selectedModel ?? '';
-    state.appVersion = bootstrap.appVersion ?? '1.2.0';
+    state.appVersion = bootstrap.appVersion ?? '1.3.0';
     applyTheme(state.appSettings.theme);
     renderProjectList();
     $('#dbLocationLabel').textContent = 'SQLite · local to this PC';
@@ -284,6 +285,8 @@ function renderThreads() {
   const root = $('#threadList');
   root.replaceChildren();
   for (const thread of state.threads) {
+    const row = document.createElement('div');
+    row.className = 'thread-row';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `thread-item${thread.id === state.thread?.id ? ' active' : ''}`;
@@ -301,7 +304,18 @@ function renderThreads() {
     }
     button.append(symbol, label);
     button.addEventListener('click', () => void openThread(thread.id));
-    root.append(button);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'thread-delete-button';
+    remove.textContent = '×';
+    remove.title = `Delete ${thread.title}`;
+    remove.setAttribute('aria-label', `Delete conversation ${thread.title}`);
+    remove.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void openDeleteChatDialog(thread);
+    });
+    row.append(button, remove);
+    root.append(row);
   }
   if (!state.threads.length) {
     const empty = document.createElement('div');
@@ -859,10 +873,10 @@ function openImportDialog(mode) {
   const projectMode = mode === 'project';
   $('#importTitle').textContent = projectMode ? 'Import a story project' : 'Import a chat archive';
   $('#importHelp').textContent = projectMode
-    ? 'Import a Story Studio project export, or choose a ChatGPT conversation JSON to create a new project from its saved messages.'
+    ? 'Choose a Story Studio .story.json project export to restore a complete project, or a ChatGPT conversation JSON to create a new project from its saved messages.'
     : 'Import a Markdown or ChatGPT JSON archive. The original file and saved messages are retained in the selected project.';
   $('#archiveProjectLabel').hidden = projectMode;
-  $('#importFile').accept = projectMode ? '.json,application/json' : '.md,.json,text/markdown,text/plain,application/json';
+  $('#importFile').accept = projectMode ? '.story.json,.json,application/json' : '.md,.json,text/markdown,text/plain,application/json';
   const select = $('#archiveProjectSelect');
   select.replaceChildren();
   for (const project of state.projects) {
@@ -981,6 +995,42 @@ function openDeleteDialog() {
   $('#deleteName').value = '';
   $('#deletePhrase').value = '';
   $('#deleteDialog').showModal();
+}
+
+async function openDeleteChatDialog(thread) {
+  try {
+    const payload = thread.id === state.thread?.id ? state.payload : await api(`/api/threads/${encodeURIComponent(thread.id)}`);
+    const impact = payload?.deletionImpact ?? { conversations: 1, branches: 0, messages: 0, importedArchives: 0 };
+    const dependent = Math.max(0, impact.conversations - 1);
+    const parts = [
+      `${impact.messages} saved message${impact.messages === 1 ? '' : 's'}`,
+      `${impact.branches} alternate branch${impact.branches === 1 ? '' : 'es'}`,
+      `${dependent} dependent conversation${dependent === 1 ? '' : 's'}`,
+      `${impact.importedArchives} linked archive${impact.importedArchives === 1 ? '' : 's'}`
+    ];
+    $('#deleteChatDescription').textContent = `This permanently removes “${thread.title}” and ${parts.join(', ')} from this PC. Source-linked continuity records supported by other saved messages remain; records that rely only on deleted messages are removed. The project and unrelated chats stay. This cannot be undone.`;
+    $('#deleteChatName').value = '';
+    $('#deleteChatPhrase').value = '';
+    state.pendingDeleteChat = { id: thread.id, title: thread.title, projectId: thread.projectId, branchId: thread.branchId };
+    $('#deleteChatDialog').showModal();
+  } catch (error) { showNotice('Conversation details could not be loaded', error.message); }
+}
+
+async function deleteChat(event) {
+  event.preventDefault();
+  const target = state.pendingDeleteChat;
+  if (!target) return;
+  try {
+    const result = await api(`/api/threads/${encodeURIComponent(target.id)}`, {
+      method: 'DELETE',
+      body: jsonBody({ confirmTitle: $('#deleteChatName').value, confirmation: $('#deleteChatPhrase').value })
+    });
+    closeDialog('deleteChatDialog');
+    state.pendingDeleteChat = null;
+    await refreshProjects();
+    await openProject(target.projectId, target.branchId);
+    showToast(`Deleted “${result.deleted}” and ${result.removed.messages} saved messages.`);
+  } catch (error) { showNotice('Conversation was not deleted', error.message); }
 }
 
 async function runSearch() {
@@ -1265,8 +1315,24 @@ async function cancelCurrentTurn() {
   $('#cancelTurn').disabled = true;
   try {
     await api(`/api/threads/${encodeURIComponent(state.thread.id)}/cancel`, { method: 'POST', body: jsonBody({}) });
+    showToast('Stop requested. The saved user message and any partial reply will remain in the transcript.');
   } catch (error) { showToast(error.message); }
   finally { $('#cancelTurn').disabled = false; }
+}
+
+async function emergencyStopApp() {
+  const button = $('#emergencyStopButton');
+  button.disabled = true;
+  button.textContent = 'Stopping…';
+  try {
+    await api('/api/app/shutdown', { method: 'POST', body: jsonBody({ emergency: true }) });
+    $('#composerStatus').textContent = 'Story Studio has been stopped. Active replies were interrupted; saved text remains in the local database.';
+    showNotice('Story Studio is stopping', 'All running story replies are being interrupted. Saved user messages and any partial assistant text remain in the local database. Close this browser tab after the app stops.');
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Stop app';
+    showNotice('Story Studio could not be stopped', error.message);
+  }
 }
 
 function copyText(value) {
@@ -1277,6 +1343,7 @@ function copyText(value) {
 function bindEvents() {
   $('#createProject').addEventListener('click', openProjectDialog);
   $('#emptyCreateProject').addEventListener('click', openProjectDialog);
+  $('#emptyImportProject').addEventListener('click', () => openImportDialog('project'));
   $('#projectForm').addEventListener('submit', createNewProject);
   $('#settingsOpen').addEventListener('click', openSettings);
   $('#connectionButton').addEventListener('click', () => state.authorization.state === 'connected' ? openSettings() : void startSignIn());
@@ -1345,6 +1412,8 @@ function bindEvents() {
   $('#restoreButton').addEventListener('click', () => void restoreBackup());
   $('#deleteProject').addEventListener('click', openDeleteDialog);
   $('#deleteForm').addEventListener('submit', deleteProject);
+  $('#deleteChatForm').addEventListener('submit', deleteChat);
+  $('#emergencyStopButton').addEventListener('click', () => void emergencyStopApp());
   $('#settingsForm').addEventListener('submit', (event) => event.preventDefault());
   $('#commandToggle').title = 'Open the app command palette';
   $('#mobileNav').addEventListener('click', () => {

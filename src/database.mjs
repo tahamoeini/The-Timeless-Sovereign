@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const MIGRATION_VERSION = 2;
+const MIGRATION_VERSION = 3;
 const MAX_SEQUENCE = 9223372036854775807;
 
 const SCHEMA = `
@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 CREATE TABLE IF NOT EXISTS archive_imports (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
   file_name TEXT NOT NULL,
   source_sha256 TEXT NOT NULL,
   raw_content TEXT NOT NULL,
@@ -258,6 +259,26 @@ export function openDatabase(dataDirectory) {
       if (!projectColumns.has('memory_scope')) {
         db.exec("ALTER TABLE projects ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'project' CHECK(memory_scope IN ('thread', 'project'))");
       }
+      const archiveColumns = new Set(db.prepare('PRAGMA table_info(archive_imports)').all().map((column) => column.name));
+      if (!archiveColumns.has('thread_id')) {
+        db.exec('ALTER TABLE archive_imports ADD COLUMN thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE');
+      }
+      db.exec(`
+        UPDATE archive_imports
+        SET thread_id = (
+          SELECT t.id FROM threads t
+          WHERE t.project_id = archive_imports.project_id
+            AND t.title = 'Imported · ' || substr(archive_imports.file_name, 1, 70)
+          ORDER BY abs(julianday(t.created_at) - julianday(archive_imports.created_at)), t.created_at
+          LIMIT 1
+        )
+        WHERE thread_id IS NULL
+          AND (
+            SELECT COUNT(*) FROM threads t
+            WHERE t.project_id = archive_imports.project_id
+              AND t.title = 'Imported · ' || substr(archive_imports.file_name, 1, 70)
+          ) = 1;
+      `);
       db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)').run(MIGRATION_VERSION, now());
     }
     db.exec('COMMIT;');
@@ -282,6 +303,8 @@ export function openDatabase(dataDirectory) {
     updateProject,
     deleteProject,
     createThread,
+    threadDeletionPlan,
+    deleteThread,
     getThread,
     listThreads,
     setThreadPaused,
@@ -503,6 +526,98 @@ export function openDatabase(dataDirectory) {
       ? db.prepare('SELECT id FROM threads WHERE project_id = ? AND branch_id = ? ORDER BY updated_at DESC').all(projectId, branchId)
       : db.prepare('SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at DESC').all(projectId);
     return rows.map(({ id }) => getThread(id));
+  }
+
+  function threadDeletionPlan(threadId) {
+    const thread = getThread(threadId);
+    if (!thread) return null;
+    const branches = db.prepare('SELECT id, parent_branch_id, fork_thread_id FROM branches WHERE project_id = ?').all(thread.projectId);
+    const branchIds = new Set(branches.filter((branch) => branch.fork_thread_id === threadId).map((branch) => branch.id));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const branch of branches) {
+        if (branch.parent_branch_id && branchIds.has(branch.parent_branch_id) && !branchIds.has(branch.id)) {
+          branchIds.add(branch.id);
+          changed = true;
+        }
+      }
+    }
+    const threadIds = new Set([threadId]);
+    if (branchIds.size) {
+      const placeholders = [...branchIds].map(() => '?').join(', ');
+      for (const row of db.prepare(`SELECT id FROM threads WHERE branch_id IN (${placeholders})`).all(...branchIds)) threadIds.add(row.id);
+    }
+    const ids = [...threadIds];
+    const placeholders = ids.map(() => '?').join(', ');
+    const messageCount = db.prepare(`SELECT COUNT(*) AS count FROM messages WHERE thread_id IN (${placeholders})`).get(...ids).count;
+    const importedArchives = db.prepare(`SELECT COUNT(*) AS count FROM archive_imports WHERE thread_id IN (${placeholders})`).get(...ids).count;
+    return {
+      thread,
+      threadIds: ids,
+      branchIds: [...branchIds],
+      removed: { conversations: ids.length, branches: branchIds.size, messages: messageCount, importedArchives }
+    };
+  }
+
+  function deleteThread(threadId) {
+    const plan = threadDeletionPlan(threadId);
+    if (!plan) return null;
+    const { threadIds, branchIds, thread, removed } = plan;
+    const placeholders = threadIds.map(() => '?').join(', ');
+    transaction(() => {
+      const messages = db.prepare(`SELECT id, sequence FROM messages WHERE thread_id IN (${placeholders})`).all(...threadIds);
+      const removedMessages = new Set(messages.map((message) => message.id));
+      const sequenceById = new Map(messages.map((message) => [message.id, message.sequence]));
+      const ledgerRows = db.prepare('SELECT * FROM ledger_items WHERE project_id = ?').all(thread.projectId);
+      const removedLedgerIds = new Set();
+      for (const row of ledgerRows) {
+        const sources = parseJson(row.source_message_ids_json, []);
+        if (!sources.some((sourceId) => removedMessages.has(sourceId))) continue;
+        const remainingSources = sources.filter((sourceId) => !removedMessages.has(sourceId)).sort();
+        if (!remainingSources.length) {
+          removedLedgerIds.add(row.id);
+          continue;
+        }
+        const remainingSequences = remainingSources.map((sourceId) => sequenceById.get(sourceId) ??
+          db.prepare('SELECT sequence FROM messages WHERE id = ?').get(sourceId)?.sequence ?? 0);
+        const sourceSequence = Math.max(...remainingSequences);
+        let nextFingerprint = fingerprint({
+          type: row.item_type,
+          subject: row.subject,
+          content: row.content,
+          details: parseJson(row.details_json),
+          origin: row.origin,
+          confidence: row.confidence,
+          status: row.epistemic_status,
+          sourceMessageIds: remainingSources,
+          supersedesId: row.supersedes_id ?? null
+        });
+        if (db.prepare('SELECT id FROM ledger_items WHERE project_id = ? AND branch_id = ? AND fingerprint = ? AND id <> ?')
+          .get(row.project_id, row.branch_id, nextFingerprint, row.id)) {
+          nextFingerprint = fingerprint({ retainedLedgerId: row.id, sourceMessageIds: remainingSources });
+        }
+        db.prepare('UPDATE ledger_items SET source_message_ids_json = ?, source_sequence = ?, fingerprint = ?, updated_at = ? WHERE id = ?')
+          .run(JSON.stringify(remainingSources), sourceSequence, nextFingerprint, now(), row.id);
+      }
+      if (removedMessages.size) {
+        const messagePlaceholders = [...removedMessages].map(() => '?').join(', ');
+        db.prepare(`DELETE FROM ledger_history WHERE source_message_id IN (${messagePlaceholders})`).run(...removedMessages);
+      }
+      if (removedLedgerIds.size) {
+        const ledgerPlaceholders = [...removedLedgerIds].map(() => '?').join(', ');
+        db.prepare(`DELETE FROM ledger_items WHERE id IN (${ledgerPlaceholders})`).run(...removedLedgerIds);
+      }
+      db.prepare(`DELETE FROM meta_notes WHERE thread_id IN (${placeholders})`).run(...threadIds);
+      db.prepare(`DELETE FROM checkpoints WHERE thread_id IN (${placeholders})`).run(...threadIds);
+      db.prepare(`DELETE FROM threads WHERE id IN (${placeholders})`).run(...threadIds);
+      if (branchIds.length) {
+        const branchPlaceholders = branchIds.map(() => '?').join(', ');
+        db.prepare(`DELETE FROM branches WHERE id IN (${branchPlaceholders})`).run(...branchIds);
+      }
+    });
+    if (hasFts) ftsReady(db);
+    return { deleted: thread.title, removed };
   }
 
   function setThreadPaused(threadId, paused) {
@@ -1004,8 +1119,8 @@ export function openDatabase(dataDirectory) {
 
   function writeArchiveContents(projectId, branchId, threadId, fileName, rawContent, parsedItems) {
     const sha256 = createHash('sha256').update(rawContent).digest('hex');
-    db.prepare('INSERT INTO archive_imports(id, project_id, file_name, source_sha256, raw_content, created_at) VALUES(?, ?, ?, ?, ?, ?)')
-      .run(makeId(), projectId, String(fileName).slice(0, 200), sha256, rawContent, now());
+    db.prepare('INSERT INTO archive_imports(id, project_id, thread_id, file_name, source_sha256, raw_content, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      .run(makeId(), projectId, threadId, String(fileName).slice(0, 200), sha256, rawContent, now());
 
     const isMessageList = parsedItems.every((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string');
     let importedTurns = 0;
@@ -1125,7 +1240,7 @@ export function openDatabase(dataDirectory) {
         messageId: row.message_id, payload: parseJson(row.payload_json), createdAt: row.created_at
       })),
       archives: db.prepare('SELECT * FROM archive_imports WHERE project_id = ? ORDER BY created_at').all(projectId).map((row) => ({
-        id: row.id, projectId: row.project_id, fileName: row.file_name, sha256: row.source_sha256,
+        id: row.id, projectId: row.project_id, threadId: row.thread_id, fileName: row.file_name, sha256: row.source_sha256,
         rawContent: row.raw_content, createdAt: row.created_at
       })),
       projectHistory: db.prepare('SELECT * FROM project_history WHERE project_id = ? ORDER BY created_at').all(projectId).map((row) => ({
@@ -1241,8 +1356,8 @@ export function openDatabase(dataDirectory) {
           .run(id(row.id), projectId, branchMap.get(row.branchId), threadMap.get(row.threadId), mapValue(messageMap, row.messageId), JSON.stringify(row.payload), row.createdAt ?? importTime);
       }
       for (const row of data.archives) {
-        db.prepare('INSERT INTO archive_imports(id, project_id, file_name, source_sha256, raw_content, created_at) VALUES(?, ?, ?, ?, ?, ?)')
-          .run(id(row.id), projectId, row.fileName, row.sha256, row.rawContent, row.createdAt ?? importTime);
+        db.prepare('INSERT INTO archive_imports(id, project_id, thread_id, file_name, source_sha256, raw_content, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+          .run(id(row.id), projectId, mapValue(threadMap, row.threadId), row.fileName, row.sha256, row.rawContent, row.createdAt ?? importTime);
       }
       for (const row of data.projectHistory) {
         db.prepare('INSERT INTO project_history(id, project_id, action, before_json, after_json, source_message_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')

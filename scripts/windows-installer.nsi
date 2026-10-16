@@ -7,11 +7,11 @@ SetOverwrite on
 !include "LogicLib.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.2.0"
+  !define APP_VERSION "1.3.0"
 !endif
 
 Name "The Timeless Sovereign Story Studio"
-OutFile "dist/windows/The-Timeless-Sovereign-Setup-${APP_VERSION}.exe"
+OutFile "../dist/windows/The-Timeless-Sovereign-Setup-${APP_VERSION}.exe"
 InstallDir "$LOCALAPPDATA\Programs\The Timeless Sovereign Story Studio"
 InstallDirRegKey HKCU "Software\TheTimelessSovereign\StoryStudio" "InstallDir"
 ShowInstDetails show
@@ -29,7 +29,7 @@ ShowUninstDetails show
 
 Function .onInit
   InitPluginsDir
-  File /oname=$PLUGINSDIR\Stop-Story-Studio.vbs "dist\windows\payload\Stop-Story-Studio.vbs"
+  File /oname=$PLUGINSDIR\Stop-Story-Studio.vbs "../dist/windows/payload/Stop-Story-Studio.vbs"
   ExecWait '"$SYSDIR\wscript.exe" "$PLUGINSDIR\Stop-Story-Studio.vbs" "$INSTDIR\app\src\server.mjs"' $0
   ${If} $0 != 0
     Abort
@@ -39,7 +39,7 @@ FunctionEnd
 Section "Story Studio" MainSection
   SetShellVarContext current
   SetOutPath "$INSTDIR"
-  File /r "dist\windows\payload\*"
+  File /r "../dist/windows/payload/*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${APP_KEY}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "The Timeless Sovereign Story Studio"

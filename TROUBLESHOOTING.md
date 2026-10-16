@@ -22,6 +22,8 @@ Run `npm run build:windows` from the repository folder inside WSL. The distro ne
 
 The app stores data separately from its installed files in `%LOCALAPPDATA%\TheTimelessSovereign`. Installing an update or uninstalling the app does not remove that data. Make a backup before manually deleting the data folder.
 
+To update, build the next version through the same WSL command and run its `The-Timeless-Sovereign-Setup-<version>.exe`. Setup replaces the installed app and leaves the local story database in place. It asks the running app to stop first. Use **Stop app** if an active reply needs to be interrupted before installing.
+
 ## Updates are not available
 
 The update check reads the latest public stable release from this repository’s GitHub releases. No public release is published yet if the app reports that no release is available. A future release must include an installer named `The-Timeless-Sovereign-Setup-<version>.exe`. Download and run each new installer to update; the app does not install updates automatically.
@@ -50,7 +52,15 @@ The app uses Codex app-server. It does not scrape browser sessions, use private 
 
 ## Import a ChatGPT conversation JSON
 
-Use **Import a story project** to import a native Story Studio project export or create a new project from a ChatGPT conversation JSON file. Use **Import chat archive** to add Markdown or ChatGPT JSON messages to an existing project. A JSON chat import retains the original file, prompt/response message text, order, and valid source timestamps. It does not contain or import sign-in credentials.
+Use **Import project** in the library, or on the empty welcome screen, to restore a complete Story Studio `.story.json` export or create a new project from a ChatGPT conversation JSON file. Use **Import chat archive** to add Markdown or ChatGPT JSON messages to an existing project. A JSON chat import retains the original file, prompt/response message text, order, and valid source timestamps. It does not contain or import sign-in credentials.
+
+## Delete a conversation
+
+Select the × beside a conversation, review the number of saved messages and dependent branches, then type the exact conversation title and `DELETE CHAT`. If it is still replying, use **Stop reply** first. Removing a chat also removes alternate branches that were forked from it; unrelated conversations stay saved. Project deletion remains a separate action in Settings.
+
+## Stop the app quickly
+
+Use **Stop app** in the top bar to interrupt every active reply and close Story Studio. User messages and partial assistant replies already saved remain in the local database. Close the browser tab after the app stops; start it again from the installed shortcut.
 
 ## Sign-in is denied, unavailable, or reports missing authorization
 

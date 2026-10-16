@@ -24,6 +24,7 @@
         <button id="searchOpen" class="icon-button" type="button" aria-label="Search story history" title="Search story history">⌕</button>
         <button id="connectionButton" class="connection-button" type="button"><span class="state-dot"></span><span id="connectionLabel">Not connected</span></button>
         <button id="settingsOpen" class="icon-button" type="button" aria-label="Project and app settings" title="Settings">⚙</button>
+        <button id="emergencyStopButton" class="emergency-stop-button" type="button" title="Stop all replies and close Story Studio immediately">Stop app</button>
       </div>
     </header>
 
@@ -31,7 +32,7 @@
       <aside class="sidebar panel" aria-label="Story navigation">
         <div class="panel-heading"><span class="eyebrow">LIBRARY</span><button id="createProject" class="small-plus" type="button" aria-label="Create project">+</button></div>
         <div id="projectList" class="project-list"></div>
-        <button id="importProjectButton" class="quiet-button import-project-button" type="button">＋ Import a project</button>
+        <div class="library-import"><button id="importProjectButton" class="quiet-button import-project-button" type="button">＋ Import project</button><small>Story Studio export or ChatGPT JSON</small></div>
         <div class="sidebar-divider"></div>
         <div class="panel-heading branch-heading"><span class="eyebrow">BRANCH</span><button id="createBranch" class="tiny-icon" type="button" title="Create an alternate timeline" aria-label="Create an alternate timeline">↗</button></div>
         <label class="sr-only" for="branchSelect">Select story branch</label>
@@ -58,6 +59,7 @@
           <h2>Make room for the long story.</h2>
           <p>Create a project with its own instructions and canon. Every message is saved on this PC, and future chats can retrieve relevant moments with their source records.</p>
           <button id="emptyCreateProject" class="primary-button" type="button">Create your first project</button>
+          <button id="emptyImportProject" class="quiet-button empty-import-button" type="button">Import a project or ChatGPT chat</button>
         </div>
         <div id="messageList" class="message-list" aria-live="polite" aria-relevant="additions text"></div>
         <div id="turnNotice" class="turn-notice" hidden></div>
@@ -85,7 +87,7 @@
             <textarea id="composerInput" rows="3" maxlength="250000" placeholder="Write what happens next…" disabled></textarea>
             <div class="composer-footer">
               <div class="composer-hint"><span class="hint-dot"></span><span id="composerStatus">Connect with ChatGPT to begin a story turn.</span></div>
-              <div class="composer-buttons"><button id="cancelTurn" class="cancel-button" type="button" hidden>Stop</button><button id="sendButton" class="send-button" type="submit" disabled><span>Send</span><span class="send-arrow">↗</span></button></div>
+              <div class="composer-buttons"><button id="cancelTurn" class="cancel-button" type="button" hidden>Stop reply</button><button id="sendButton" class="send-button" type="submit" disabled><span>Send</span><span class="send-arrow">↗</span></button></div>
             </div>
           </form>
           <div class="privacy-caption"><span>◇</span> The story record stays on this PC. ChatGPT-plan access follows your account eligibility and plan limits.</div>
@@ -139,7 +141,7 @@
         </div>
         <div class="settings-aside">
           <div class="status-card"><span class="eyebrow">APPEARANCE</span><div class="status-card-title">Color theme</div><label for="themeSelect">Choose a theme<select id="themeSelect"><option value="system">Use device setting</option><option value="light">Light</option><option value="dark">Dark</option></select></label><p>The selection is saved in your local Story Studio database.</p><div class="settings-inline"><button id="saveAppearance" class="quiet-button" type="button">Save appearance</button></div></div>
-          <div class="status-card"><span class="eyebrow">UPDATES</span><div id="updateStatus" class="status-card-title" role="status" aria-live="polite">Version 1.2.0 · updates checked manually</div><p>Run a downloaded setup to install each update. Your local story database stays in place.</p><div class="settings-inline"><button id="checkUpdates" class="quiet-button" type="button">Check for updates</button><a id="updateDownload" class="update-download" href="#" target="_blank" rel="noreferrer" hidden>Download installer</a></div><details id="updateDetails" class="update-details" hidden><summary>Release notes</summary><p id="updateNotes"></p><small id="updateDigest"></small></details></div>
+          <div class="status-card"><span class="eyebrow">UPDATES</span><div id="updateStatus" class="status-card-title" role="status" aria-live="polite">Version 1.3.0 · updates checked manually</div><p>Run a downloaded setup to install each update. Your local story database stays in place.</p><div class="settings-inline"><button id="checkUpdates" class="quiet-button" type="button">Check for updates</button><a id="updateDownload" class="update-download" href="#" target="_blank" rel="noreferrer" hidden>Download installer</a></div><details id="updateDetails" class="update-details" hidden><summary>Release notes</summary><p id="updateNotes"></p><small id="updateDigest"></small></details></div>
           <div class="status-card"><span class="eyebrow">CHATGPT CONNECTION</span><div id="settingsConnectionState" class="status-card-title">Not connected</div><p id="settingsConnectionMessage">Sign in with ChatGPT to enable story generation. No API key billing fallback is available.</p><div class="settings-inline"><button id="settingsConnect" class="primary-button" type="button">Sign in with ChatGPT</button><button id="settingsDisconnect" class="quiet-button" type="button" hidden>Disconnect</button></div></div>
           <div class="status-card"><span class="eyebrow">LOCAL STORAGE</span><div class="status-card-title">On this PC</div><p id="settingsStorageLocation">Story data uses a local SQLite database. Credentials are kept separately using Windows protection.</p><div id="integrityStatus" class="integrity-status"></div></div>
           <button id="deleteProject" class="danger-link" type="button">Delete this project and its complete story record</button>
@@ -175,9 +177,19 @@
     </form>
   </dialog>
 
+  <dialog id="deleteChatDialog" class="modal-dialog">
+    <form id="deleteChatForm" method="dialog" class="modal-card">
+      <div class="modal-heading"><div><span class="eyebrow danger-eyebrow">PERMANENT LOCAL DELETION</span><h2>Delete conversation?</h2></div><button class="modal-close" type="button" data-close="deleteChatDialog" aria-label="Close">×</button></div>
+      <p id="deleteChatDescription" class="modal-intro"></p>
+      <label>Type the conversation title<input id="deleteChatName" autocomplete="off" required></label>
+      <label>Then type <code>DELETE CHAT</code><input id="deleteChatPhrase" autocomplete="off" required></label>
+      <div class="modal-actions"><button class="quiet-button" type="button" data-close="deleteChatDialog">Keep conversation</button><button class="danger-button" type="submit">Delete conversation</button></div>
+    </form>
+  </dialog>
+
   <dialog id="importDialog" class="modal-dialog">
     <form id="importForm" method="dialog" class="modal-card">
-      <div class="modal-heading"><div><span class="eyebrow">BRING YOUR STORY</span><h2 id="importTitle">Import a chat archive</h2></div><button class="modal-close" type="button" data-close="importDialog" aria-label="Close">×</button></div>
+      <div class="modal-heading"><div><span class="eyebrow">BRING YOUR STORY</span><h2 id="importTitle">Import a project</h2></div><button class="modal-close" type="button" data-close="importDialog" aria-label="Close">×</button></div>
       <p id="importHelp" class="modal-intro">Markdown and ChatGPT JSON archives can be added to a project while keeping the original file and messages.</p>
       <label id="archiveProjectLabel">Add archive to project<select id="archiveProjectSelect"></select></label>
       <label>Select a file<input id="importFile" type="file" accept=".md,.json,application/json,text/markdown" required></label>

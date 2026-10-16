@@ -7,7 +7,7 @@ import { JsonlRpcClient } from './jsonl-rpc.mjs';
 const CLIENT_INFO = {
   name: 'timeless-sovereign-story-studio',
   title: 'The Timeless Sovereign Story Studio',
-  version: '1.2.0'
+  version: '1.3.0'
 };
 
 const DISABLED_FEATURES = [

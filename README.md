@@ -61,6 +61,8 @@ The story database and project exports do not contain credentials. Back up the w
 
 The existing `Histories` and `Images` folders are left untouched. Import a Markdown chat archive into a project, or import a ChatGPT conversation JSON as a new project or into an existing project. The original source file and every prompt/response message are retained in the local story database.
 
+Use **Import project** in the library to restore a complete Story Studio `.story.json` export or create a new project from a ChatGPT conversation JSON. On an empty library, the same option is available from the welcome screen.
+
 ## Commands
 
 Commands are handled locally and do not advance the fictional scene. Their text and the app’s response are retained in the transcript.
@@ -88,7 +90,9 @@ Invalid or incomplete command arguments produce an explanation and do not become
 - **Create local backup** makes a consistent SQLite backup under the local data directory’s `backups` folder. **Download full backup** downloads the complete database snapshot; keep it private because it includes all projects and archives.
 - **Restore from backup** replaces the current story database after creating a pre-restore snapshot. A restore does not replace the protected credential store.
 - Installed-app updates do not remove local projects or settings. The uninstaller removes app files, not the local story database or protected credentials.
+- **Delete conversation** is available beside each chat. Review the affected message and branch counts, then enter the exact title and `DELETE CHAT`. If that chat anchors alternate branches, those dependent timelines are included. Remaining continuity facts keep their surviving source links.
 - Project deletion requires typing the project name and `DELETE PROJECT`. It removes that project’s chats, branches, messages, ledger, audit history, checkpoints, and imported archives from the local database.
+- **Stop reply** interrupts the active turn and keeps the user message plus any partial reply. **Stop app** interrupts replies and closes the local app immediately; saved story data remains on disk.
 
 ## Verify
 
