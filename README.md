@@ -40,7 +40,7 @@ The installer is written to `dist/windows/The-Timeless-Sovereign-Setup-<version>
 
 This installer is intentionally unsigned. Windows may show an unknown-publisher or SmartScreen notice. Review the source and download the installer only from a release location you trust.
 
-To publish an update later, increase `version` in `package.json`, build the installer, and attach the matching `The-Timeless-Sovereign-Setup-<version>.exe` file to a **public stable GitHub release** in this repository. In the app, open **Settings → Check for updates**, download the linked setup, and run it. It replaces the installed app while preserving `%LOCALAPPDATA%\TheTimelessSovereign`; no updater runs installers in the background. A public GitHub release is required for the in-app update check.
+To publish an update later, commit your changes with a Conventional Commit message, build the installer, and attach the matching `The-Timeless-Sovereign-Setup-<version>.exe` file to a **public stable GitHub release** in this repository. Set up automatic version bumps once with `npm run setup:git-hooks`. `feat` commits bump the minor version, `fix` and other or untyped commits bump the patch version, and `!` or a `BREAKING CHANGE:` footer bumps the major version. The hook stages the updated `package.json` in the same commit. In the app, open **Settings → Check for updates**, download the linked setup, and run it. It replaces the installed app while preserving `%LOCALAPPDATA%\TheTimelessSovereign`; no updater runs installers in the background. A public GitHub release is required for the in-app update check.
 
 ## Connect Codex
 

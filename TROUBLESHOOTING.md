@@ -28,6 +28,10 @@ To update, build the next version through the same WSL command and run its `The-
 
 The update check reads the latest public stable release from this repository’s GitHub releases. No public release is published yet if the app reports that no release is available. A future release must include an installer named `The-Timeless-Sovereign-Setup-<version>.exe`. Download and run each new installer to update; the app does not install updates automatically.
 
+## Package version did not bump on commit
+
+Run `npm run setup:git-hooks` once in the repository. The setup points this clone's Git hooks at `.githooks`; it does not replace an existing custom hook folder. Use a conventional commit header such as `feat: add scene search` or `fix(memory): retry failed indexing`. If `package.json` has unstaged changes, stage those edits first so the hook can safely add only the version change.
+
 ## The page does not open, or port 4317 is already in use
 
 The app prints its local address when it starts. If another app owns port 4317, close it or choose a different port before launching:
