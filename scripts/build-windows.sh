@@ -103,16 +103,26 @@ Set logStream = files.CreateTextFile(launcherLogPath, True, True)
 If Err.Number = 0 Then
   logStream.WriteLine Now & " Launch requested from " & installRoot
   logStream.Close
+Else
+  Err.Clear
+  logDirectory = shell.ExpandEnvironmentStrings("%TEMP%")
+  launcherLogPath = files.BuildPath(logDirectory, "Story-Studio-launcher.log")
+  serverLogPath = files.BuildPath(logDirectory, "Story-Studio-startup.log")
+  Set logStream = files.OpenTextFile(launcherLogPath, 8, True, -1)
+  If Err.Number = 0 Then
+    logStream.WriteLine Now & " Launch requested from " & installRoot & " (LOCALAPPDATA log directory unavailable; using TEMP)."
+    logStream.Close
+  End If
 End If
 Err.Clear
 
 If Not files.FileExists(nodePath) Then
-  RecordLaunchError "Bundled Node.js runtime is missing: " & nodePath
+  RecordLaunchEvent "Bundled Node.js runtime is missing: " & nodePath
   ShowLaunchFailure "The bundled Node.js runtime is missing."
   WScript.Quit 1
 End If
 If Not files.FileExists(launcherPath) Or Not files.FileExists(serverPath) Then
-  RecordLaunchError "The installed launcher or server file is missing."
+  RecordLaunchEvent "The installed launcher or server file is missing."
   ShowLaunchFailure "The installed app files are incomplete. Run the installer again."
   WScript.Quit 1
 End If
@@ -128,22 +138,32 @@ probe.Open "GET", appUrl & "api/bootstrap", False
 probe.Send
 If Err.Number = 0 And probe.Status = 200 Then
   If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
+    RecordLaunchEvent "Reusing the Story Studio server already responding on port 4317. Opening " & appUrl
+    Err.Clear
     shell.Run appUrl, 1, False
+    If Err.Number <> 0 Then
+      RecordLaunchEvent "Windows could not open the browser: " & Err.Description
+      ShowLaunchFailure "Windows could not open the browser."
+      WScript.Quit 1
+    End If
+    RecordLaunchEvent "Browser open request accepted for the existing server."
     WScript.Quit 0
   End If
-  RecordLaunchError "Port 4317 returned HTTP 200, but the response was not Story Studio."
+  RecordLaunchEvent "Port 4317 returned HTTP 200, but the response was not Story Studio."
   ShowLaunchFailure "Another service is using port 4317. Close it, then launch Story Studio again."
   WScript.Quit 1
 ElseIf Err.Number = 0 Then
-  RecordLaunchError "Port 4317 is occupied and returned HTTP " & probe.Status & "."
+  RecordLaunchEvent "Port 4317 is occupied and returned HTTP " & probe.Status & "."
   ShowLaunchFailure "Another service is using port 4317. Close it, then launch Story Studio again."
   WScript.Quit 1
 End If
+If Err.Number <> 0 Then RecordLaunchEvent "No healthy server answered the initial probe; starting the packaged server. Probe detail: " & Err.Description
 Err.Clear
 
+RecordLaunchEvent "Starting the packaged server with the bundled Node.js runtime."
 shell.Run """" & nodePath & """ --disable-warning=ExperimentalWarning """ & launcherPath & """ """ & serverPath & """ """ & serverLogPath & """", 0, False
 If Err.Number <> 0 Then
-  RecordLaunchError "Windows could not launch the bundled Node.js runtime: " & Err.Description
+  RecordLaunchEvent "Windows could not launch the bundled Node.js runtime: " & Err.Description
   ShowLaunchFailure "Windows could not launch the bundled Node.js runtime."
   WScript.Quit 1
 End If
@@ -156,15 +176,23 @@ For attempt = 1 To 60
   probe.Send
   If Err.Number = 0 And probe.Status = 200 Then
     If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
+      RecordLaunchEvent "Packaged server is ready on port 4317. Opening " & appUrl
+      Err.Clear
       shell.Run appUrl, 1, False
+      If Err.Number <> 0 Then
+        RecordLaunchEvent "Windows could not open the browser: " & Err.Description
+        ShowLaunchFailure "Windows could not open the browser."
+        WScript.Quit 1
+      End If
+      RecordLaunchEvent "Browser open request accepted for the packaged server."
       WScript.Quit 0
     End If
   End If
 Next
-RecordLaunchError "Story Studio did not become ready within 30 seconds."
+RecordLaunchEvent "Story Studio did not become ready within 30 seconds."
 ShowLaunchFailure "Story Studio did not become ready within 30 seconds."
 
-Sub RecordLaunchError(message)
+Sub RecordLaunchEvent(message)
   On Error Resume Next
   Dim errorStream
   Set errorStream = files.OpenTextFile(launcherLogPath, 8, True, -1)
