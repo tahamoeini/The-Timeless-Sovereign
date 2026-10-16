@@ -141,10 +141,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .markdown-content pre code { padding: 0; background: transparent; }
 .markdown-content a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
 .markdown-content hr { margin: .8em 0; border: 0; border-top: 1px solid var(--line); }
-.markdown-preview { margin: 0 10px 9px; padding: 9px 11px; max-height: 155px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--raised-bg); color: var(--ink); font-family: "Vazirmatn", "Segoe UI", system-ui, sans-serif; font-size: 12px; line-height: 1.65; }
-.markdown-preview[hidden] { display: none !important; }
-.markdown-preview .markdown-content { white-space: normal; }
-.markdown-preview-label { margin-bottom: 5px; color: var(--subtle); font-size: 9px; }
+.markdown-editor { display: block; width: 100%; min-width: 0; direction: rtl; text-align: right; unicode-bidi: plaintext; white-space: normal; overflow-wrap: anywhere; font-family: "Vazirmatn", "Segoe UI", system-ui, sans-serif; outline: none; }
+.markdown-editor:focus-visible { outline: 2px solid var(--moss-bright); outline-offset: 2px; }
+.markdown-editor[contenteditable="false"] { opacity: .55; cursor: not-allowed; }
+.markdown-editor.is-empty::before { content: attr(data-placeholder); color: #6f776a; pointer-events: none; }
+.markdown-source { display: none !important; }
 .markdown-input-hint { display: block; padding: 0 13px 4px; color: var(--subtle); font-size: 9px; }
 .message-card.user .message-text { color: #d3dddc; }
 .message-card.user .message-body { border-left: 2px solid #627a78; padding: 10px 14px; background: rgba(52, 70, 67, .2); border-radius: 0 9px 9px 0; }
@@ -188,6 +189,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .composer { max-width: 800px; margin: 0 auto; border: 1px solid #46503d; border-radius: 11px; background: #1c211c; box-shadow: 0 0 0 3px rgba(111, 130, 84, .035); transition: border-color .15s, box-shadow .15s; }
 .composer:focus-within { border-color: #788a61; box-shadow: 0 0 0 3px rgba(139, 164, 103, .08); }
 .composer textarea { display: block; width: 100%; min-height: 56px; max-height: 230px; resize: vertical; border: 0; outline: 0; padding: 12px 14px 7px; color: #e2dfd2; background: transparent; font-size: 12px; line-height: 1.55; }
+.composer .markdown-editor { min-height: 56px; max-height: 230px; overflow: auto; resize: vertical; padding: 12px 14px 7px; color: #e2dfd2; background: transparent; font-size: 12px; line-height: 1.55; }
+.composer .markdown-editor > p { margin: .15em 0; }
 .composer textarea::placeholder { color: #6f776a; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 8px 8px 13px; }
 .composer-hint { display: flex; align-items: center; gap: 7px; overflow: hidden; color: #737c6e; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
@@ -259,6 +262,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modal-intro { margin: 8px 0 18px; color: #989f90; font-size: 11px; line-height: 1.65; }
 .modal-card label { display: block; margin: 14px 0; color: #c7cbbb; font-size: 10px; }
 .modal-card input, .modal-card textarea, .modal-card select { display: block; width: 100%; margin-top: 6px; border: 1px solid #3e4839; border-radius: 7px; padding: 9px 10px; background: #171b17; color: #e6e3d7; font-size: 11px; line-height: 1.5; }
+.modal-card .markdown-editor { min-height: 68px; margin-top: 6px; border: 1px solid #3e4839; border-radius: 7px; padding: 9px 10px; background: #171b17; color: #e6e3d7; font-size: 11px; line-height: 1.5; }
+.modal-card .markdown-editor > p { margin: .15em 0; }
 .modal-card textarea { resize: vertical; }
 .modal-card label small { display: block; margin-top: 6px; color: #777f71; font-size: 9px; }
 .modal-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 18px; }
@@ -398,6 +403,7 @@ body, .app-shell { background: var(--page-bg); color: var(--ink); }
 .composer { background: var(--input-bg); border-color: var(--line); border-radius: 18px; box-shadow: none; }
 .composer:focus-within { border-color: var(--muted); box-shadow: 0 0 0 2px rgba(128, 128, 128, .1); }
 .composer textarea { color: var(--ink); }
+.composer .markdown-editor { color: var(--ink); }
 .composer textarea::placeholder { color: var(--subtle); }
 .slash-mark { border-color: var(--line); color: var(--muted); }
 .command-palette { background: var(--surface); border-color: var(--line); }
@@ -410,6 +416,7 @@ body, .app-shell { background: var(--page-bg); color: var(--ink); }
 .modal-heading h2 { color: var(--ink); font-family: inherit; font-weight: 600; }
 .modal-close, .modal-card label, .status-card-title { color: var(--ink); }
 .modal-card input, .modal-card textarea, .modal-card select { background: var(--input-bg); color: var(--ink); border-color: var(--line); }
+.modal-card .markdown-editor { background: var(--input-bg); color: var(--ink); border-color: var(--line); }
 .status-card { background: var(--raised-bg); }
 .data-actions { border-color: var(--line-soft); }
 .search-result-body { color: var(--ink); }
@@ -500,7 +507,7 @@ body, .app-shell { background: var(--page-bg); color: var(--ink); }
   .message-card.assistant .message-text { font-size: 13px; }
   .composer-wrap { padding: 8px 12px 9px; }
   .privacy-caption { font-size: 7px; }
-  .composer textarea { font-size: 12px; }
+  .composer textarea, .composer .markdown-editor { font-size: 12px; }
   .settings-grid { display: block; }
   .settings-aside { margin-top: 18px; }
   .modal-card { padding: 18px; }

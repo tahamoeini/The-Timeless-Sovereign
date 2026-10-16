@@ -35,7 +35,8 @@ const state = {
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const markdownPreviews = new WeakMap();
+const markdownEditors = new WeakMap();
+let markdownEditorSequence = 0;
 
 async function api(url, options = {}) {
   const headers = new Headers(options.headers ?? {});
@@ -443,12 +444,16 @@ function markdownListMarker(line) {
   return match ? { ordered: /^\d/.test(match[1]), marker: match[1], content: match[2] } : null;
 }
 
+function markdownDirection(text, forceRtl = false) {
+  return forceRtl || isRtl(text) ? 'rtl' : 'auto';
+}
+
 function isMarkdownBlockStart(line) {
   return /^ {0,3}(?:#{1,6}\s|>|`{3,}|~{3,})/.test(line) ||
     /^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line) || Boolean(markdownListMarker(line));
 }
 
-function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
+function appendMarkdownBlocks(root, lines, { narrative = false, forceRtl = false } = {}) {
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
@@ -470,10 +475,10 @@ function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
       continue;
     }
 
-    const heading = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    const heading = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
     if (heading) {
       const element = document.createElement(`h${heading[1].length}`);
-      element.dir = isRtl(heading[2]) ? 'rtl' : 'auto';
+      element.dir = markdownDirection(heading[2], forceRtl);
       appendInlineMarkdown(element, heading[2]);
       root.append(element);
       index += 1;
@@ -493,8 +498,8 @@ function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
         index += 1;
       }
       const quote = document.createElement('blockquote');
-      quote.dir = isRtl(quoteLines.join('\n')) ? 'rtl' : 'auto';
-      appendMarkdownBlocks(quote, quoteLines, { narrative });
+      quote.dir = markdownDirection(quoteLines.join('\n'), forceRtl);
+      appendMarkdownBlocks(quote, quoteLines, { narrative, forceRtl });
       root.append(quote);
       continue;
     }
@@ -507,7 +512,7 @@ function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
         const marker = markdownListMarker(lines[index]);
         if (!marker || marker.ordered !== firstMarker.ordered) break;
         const item = document.createElement('li');
-        item.dir = isRtl(marker.content) ? 'rtl' : 'auto';
+        item.dir = markdownDirection(marker.content, forceRtl);
         appendInlineMarkdown(item, marker.content);
         list.append(item);
         index += 1;
@@ -522,7 +527,7 @@ function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
     const content = paragraphLines.join('\n');
     const paragraph = document.createElement('p');
     paragraph.className = `markdown-paragraph${narrative ? ` narrative-part ${paragraphKind(content)}` : ''}`;
-    paragraph.dir = isRtl(content) ? 'rtl' : 'auto';
+    paragraph.dir = markdownDirection(content, forceRtl);
     paragraphLines.forEach((paragraphLine, lineIndex) => {
       if (lineIndex) paragraph.append(document.createElement('br'));
       appendInlineMarkdown(paragraph, paragraphLine);
@@ -531,39 +536,317 @@ function appendMarkdownBlocks(root, lines, { narrative = false } = {}) {
   }
 }
 
-function renderMarkdown(text, { narrative = false, message = false } = {}) {
+function renderMarkdown(text, { narrative = false, message = false, forceRtl = false } = {}) {
   const root = document.createElement('div');
   root.className = message ? 'message-text markdown-content' : 'markdown-content';
-  root.dir = isRtl(text) ? 'rtl' : 'auto';
-  appendMarkdownBlocks(root, String(text ?? '').replace(/\r\n?/g, '\n').split('\n'), { narrative });
+  root.dir = markdownDirection(text, forceRtl);
+  appendMarkdownBlocks(root, String(text ?? '').replace(/\r\n?/g, '\n').split('\n'), { narrative, forceRtl });
   return root;
 }
 
-function refreshMarkdownPreview(textarea) {
-  const preview = markdownPreviews.get(textarea);
-  if (!preview) return;
-  const content = textarea.value.trim();
-  preview.hidden = !content;
-  preview.replaceChildren();
-  if (content) {
-    const label = document.createElement('div');
-    label.className = 'markdown-preview-label';
-    label.textContent = 'Live Markdown preview';
-    preview.append(label, renderMarkdown(textarea.value));
+function setMarkdownEditorContent(editor, value) {
+  const rendered = renderMarkdown(value, { forceRtl: true });
+  editor.replaceChildren(...rendered.childNodes);
+  editor.classList.toggle('is-empty', !serializeMarkdownEditor(editor).trim());
+}
+
+function markdownInlineText(node) {
+  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue.replace(/\u00a0/g, ' ');
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+  const tag = node.tagName.toLowerCase();
+  if (tag === 'br') return '\n';
+  const content = [...node.childNodes].map(markdownInlineText).join('');
+  if (tag === 'strong' || tag === 'b') return `**${content}**`;
+  if (tag === 'em' || tag === 'i') return `*${content}*`;
+  if (tag === 'del' || tag === 's' || tag === 'strike') return `~~${content}~~`;
+  if (tag === 'code') {
+    const ticks = '`'.repeat(Math.max(1, ...[...content.matchAll(/`+/g)].map((match) => match[0].length + 1)));
+    return `${ticks}${content}${ticks}`;
   }
+  if (tag === 'a') {
+    try {
+      const url = new URL(node.getAttribute('href'), window.location.href);
+      if (['http:', 'https:', 'mailto:'].includes(url.protocol)) return `[${content}](${url.href})`;
+    } catch { /* Ignore invalid pasted or edited links. */ }
+  }
+  return content;
+}
+
+function markdownListText(list, depth = 0) {
+  const ordered = list.tagName.toLowerCase() === 'ol';
+  let number = Number.parseInt(list.getAttribute('start') || '1', 10);
+  const indent = '  '.repeat(depth);
+  const lines = [];
+  for (const item of [...list.children].filter((child) => child.tagName?.toLowerCase() === 'li')) {
+    const marker = ordered ? `${number++}.` : '-';
+    const inline = [...item.childNodes].filter((child) => !['ul', 'ol'].includes(child.nodeName.toLowerCase())).map(markdownInlineText).join('');
+    lines.push(`${indent}${marker}${inline ? ` ${inline}` : ' '}`);
+    for (const nested of [...item.children].filter((child) => ['ul', 'ol'].includes(child.tagName.toLowerCase()))) {
+      lines.push(markdownListText(nested, depth + 1));
+    }
+  }
+  return lines.join('\n');
+}
+
+function markdownBlockText(node) {
+  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue.replace(/\u00a0/g, ' ');
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+  const tag = node.tagName.toLowerCase();
+  if (tag === 'ul' || tag === 'ol') return markdownListText(node);
+  if (/^h[1-6]$/.test(tag)) return `${'#'.repeat(Number(tag[1]))} ${[...node.childNodes].map(markdownInlineText).join('')}`;
+  if (tag === 'blockquote') {
+    const quote = markdownBlocksText([...node.childNodes]);
+    return (quote || '').split('\n').map((line) => `>${line ? ` ${line}` : ' '}`).join('\n');
+  }
+  if (tag === 'pre') {
+    const code = node.querySelector('code')?.textContent ?? node.textContent;
+    const fence = '`'.repeat(Math.max(3, ...[...code.matchAll(/`+/g)].map((match) => match[0].length + 1)));
+    return `${fence}\n${code}\n${fence}`;
+  }
+  if (tag === 'hr') return '---';
+  if (tag === 'div' && [...node.children].some((child) => /^(?:p|div|h[1-6]|ul|ol|blockquote|pre|hr)$/.test(child.tagName.toLowerCase()))) {
+    return markdownBlocksText([...node.childNodes]);
+  }
+  if (tag === 'p' || tag === 'div') return [...node.childNodes].map(markdownInlineText).join('');
+  return [...node.childNodes].map(markdownInlineText).join('');
+}
+
+function markdownBlocksText(nodes) {
+  return nodes.map(markdownBlockText).join('\n\n');
+}
+
+function serializeMarkdownEditor(editor) {
+  return markdownBlocksText([...editor.childNodes]);
+}
+
+function setMarkdownCaret(element, offset = 0) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  let caretNode = element.firstChild;
+  if (!caretNode || caretNode.nodeType !== Node.TEXT_NODE) {
+    caretNode = document.createTextNode('');
+    element.insertBefore(caretNode, element.firstChild);
+  }
+  const range = document.createRange();
+  range.setStart(caretNode, Math.min(offset, caretNode.textContent.length));
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function focusMarkdownField(textarea) {
+  const editor = markdownEditors.get(textarea)?.editor;
+  if (!editor) return textarea.focus();
+  editor.focus();
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function formatMarkdownAtCaret(editor) {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !selection.isCollapsed) return false;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return false;
+  const textNode = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer : null;
+  if (!textNode || textNode.parentElement?.closest('code, pre')) return false;
+  const before = textNode.data.slice(0, range.startOffset);
+  const patterns = [
+    { expression: /\*\*(\S(?:[\s\S]*?\S)?)\*\*$/u, tag: 'strong' },
+    { expression: /__(\S(?:[\s\S]*?\S)?)__$/u, tag: 'strong' },
+    { expression: /~~(\S(?:[\s\S]*?\S)?)~~$/u, tag: 'del' },
+    { expression: /`([^`\n]+)`$/u, tag: 'code' },
+    { expression: /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)$/u, tag: 'a' },
+    { expression: /\*(\S(?:[\s\S]*?\S)?)\*$/u, tag: 'em' },
+    { expression: /_(\S(?:[\s\S]*?\S)?)_$/u, tag: 'em' }
+  ];
+  for (const { expression, tag } of patterns) {
+    const match = expression.exec(before);
+    if (!match) continue;
+    const start = range.startOffset - match[0].length;
+    const replacement = document.createElement(tag);
+    if (tag === 'a') {
+      let url;
+      try { url = new URL(match[2], window.location.href); } catch { url = null; }
+      if (!url || !['http:', 'https:', 'mailto:'].includes(url.protocol)) continue;
+      replacement.textContent = match[1];
+      replacement.href = url.href;
+      if (url.protocol !== 'mailto:') {
+        replacement.target = '_blank';
+        replacement.rel = 'noopener noreferrer';
+      }
+    } else replacement.textContent = match[1];
+    const replaceRange = document.createRange();
+    replaceRange.setStart(textNode, start);
+    replaceRange.setEnd(textNode, range.startOffset);
+    replaceRange.deleteContents();
+    replaceRange.insertNode(replacement);
+    const after = document.createRange();
+    after.setStartAfter(replacement);
+    after.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(after);
+    return true;
+  }
+  return false;
+}
+
+function markdownMarkerForSpace(editor) {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !selection.isCollapsed) return null;
+  const cursor = selection.getRangeAt(0);
+  if (!editor.contains(cursor.startContainer)) return null;
+  let top = cursor.startContainer.nodeType === Node.ELEMENT_NODE ? cursor.startContainer : cursor.startContainer.parentElement;
+  while (top?.parentElement && top.parentElement !== editor) top = top.parentElement;
+  if (!top || top.parentElement !== editor || top.nodeType === Node.ELEMENT_NODE && top.closest('li, blockquote')) return null;
+  const fullText = top.textContent ?? '';
+  const prefixRange = document.createRange();
+  prefixRange.selectNodeContents(top);
+  try { prefixRange.setEnd(cursor.startContainer, cursor.startOffset); } catch { return null; }
+  const before = prefixRange.toString();
+  if (!before || before !== fullText) return null;
+  const match = /^(?:([-+*])|(\d+[.)])|(#{1,6})|>|(-{3,}|\*{3,}))$/.exec(before);
+  if (!match) return null;
+  return { top, marker: before, unordered: Boolean(match[1]), ordered: match[2], heading: match[3]?.length, quote: before === '>', rule: Boolean(match[4]) };
+}
+
+function convertMarkdownMarker(editor) {
+  const parsed = markdownMarkerForSpace(editor);
+  if (!parsed) return false;
+  const { top, ordered, heading, quote, rule } = parsed;
+  let target;
+  if (rule) {
+    target = document.createElement('p');
+    target.append(document.createElement('br'));
+    top.parentNode.insertBefore(document.createElement('hr'), top);
+    top.parentNode.insertBefore(target, top);
+  } else if (parsed.unordered || ordered) {
+    target = document.createElement(parsed.unordered ? 'ul' : 'ol');
+    if (ordered) target.start = Number.parseInt(ordered, 10);
+    const item = document.createElement('li');
+    target.append(item);
+    top.parentNode.insertBefore(target, top);
+    target = item;
+  } else if (heading) {
+    target = document.createElement(`h${heading}`);
+    top.parentNode.insertBefore(target, top);
+  } else if (quote) {
+    target = document.createElement('blockquote');
+    top.parentNode.insertBefore(target, top);
+  }
+  if (!target) return false;
+  top.remove();
+  if (target.tagName === 'P' && target.firstChild?.tagName === 'BR') target.replaceChildren();
+  setMarkdownCaret(target);
+  return true;
+}
+
+function commitMarkdownEditor(textarea, editor, { rehydrate = false } = {}) {
+  let value = serializeMarkdownEditor(editor);
+  if (textarea.maxLength >= 0 && value.length > textarea.maxLength) {
+    value = value.slice(0, textarea.maxLength);
+    textarea.value = value;
+    setMarkdownEditorContent(editor, value);
+    setMarkdownCaret(editor);
+  } else {
+    textarea.value = value;
+    editor.classList.toggle('is-empty', !value.trim());
+  }
+  if (rehydrate) setMarkdownEditorContent(editor, value);
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function bindMarkdownField(field) {
   field.dir = 'rtl';
-  if (field.localName !== 'textarea' || markdownPreviews.has(field)) return;
-  const preview = document.createElement('div');
-  preview.className = 'markdown-preview';
-  preview.setAttribute('aria-label', 'Live Markdown preview');
-  preview.hidden = true;
-  field.insertAdjacentElement('afterend', preview);
-  markdownPreviews.set(field, preview);
-  field.addEventListener('input', () => refreshMarkdownPreview(field));
-  refreshMarkdownPreview(field);
+  if (field.localName !== 'textarea' || markdownEditors.has(field)) return;
+  const editor = document.createElement('div');
+  editor.className = 'markdown-editor markdown-content';
+  editor.id = `${field.id || `markdownEditor${++markdownEditorSequence}`}Editor`;
+  editor.dir = 'rtl';
+  editor.setAttribute('role', 'textbox');
+  editor.setAttribute('aria-multiline', 'true');
+  editor.setAttribute('contenteditable', String(!field.disabled));
+  editor.setAttribute('spellcheck', 'true');
+  editor.dataset.placeholder = field.placeholder || '';
+  editor.tabIndex = field.disabled ? -1 : 0;
+
+  const wrappingLabel = field.closest('label');
+  const labels = field.id ? [...document.querySelectorAll('label[for]')].filter((label) => label.htmlFor === field.id) : [];
+  const labelText = wrappingLabel?.textContent ?? labels[0]?.textContent ?? field.getAttribute('aria-label') ?? field.placeholder;
+  if (labelText) editor.setAttribute('aria-label', labelText.trim());
+  for (const label of labels) label.htmlFor = editor.id;
+  if (wrappingLabel) {
+    wrappingLabel.htmlFor = editor.id;
+    field.remove();
+    wrappingLabel.insertAdjacentElement('afterend', editor);
+    editor.insertAdjacentElement('afterend', field);
+  } else {
+    field.insertAdjacentElement('beforebegin', editor);
+  }
+  field.classList.add('markdown-source');
+  field.setAttribute('aria-hidden', 'true');
+  field.tabIndex = -1;
+  setMarkdownEditorContent(editor, field.value);
+  editor.addEventListener('input', (event) => {
+    if (!event.isComposing) formatMarkdownAtCaret(editor);
+    commitMarkdownEditor(field, editor);
+  });
+  editor.addEventListener('paste', (event) => {
+    const text = event.clipboardData?.getData('text/plain');
+    if (text === undefined) return;
+    event.preventDefault();
+    if (!document.execCommand('insertText', false, text)) {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
+    }
+  });
+  editor.addEventListener('keydown', (event) => {
+    if (event.key === ' ' && !event.shiftKey && !event.isComposing && convertMarkdownMarker(editor)) {
+      event.preventDefault();
+      commitMarkdownEditor(field, editor);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && (['b', 'i'].includes(event.key.toLowerCase()) || event.key.toLowerCase() === 'x' && event.shiftKey)) {
+      event.preventDefault();
+      const command = event.key.toLowerCase() === 'b' ? 'bold' : event.key.toLowerCase() === 'i' ? 'italic' : 'strikeThrough';
+      document.execCommand(command);
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'formatText' }));
+      return;
+    }
+    if (event.key !== 'Enter' || field.id !== 'composerInput' || event.isComposing) {
+      if (event.key === 'Escape' && field.id === 'composerInput') toggleCommandPalette(false);
+      return;
+    }
+    const selection = window.getSelection();
+    const current = selection?.anchorNode?.nodeType === Node.ELEMENT_NODE
+      ? selection.anchorNode
+      : selection?.anchorNode?.parentElement;
+    const inListItem = Boolean(current?.closest('li'));
+    if (!event.shiftKey && (event.ctrlKey || event.metaKey || !inListItem)) {
+      event.preventDefault();
+      $('#composerForm').requestSubmit();
+    }
+  });
+  const observer = new MutationObserver(() => {
+    editor.contentEditable = String(!field.disabled);
+    editor.setAttribute('aria-disabled', String(field.disabled));
+    editor.tabIndex = field.disabled ? -1 : 0;
+  });
+  observer.observe(field, { attributes: true, attributeFilter: ['disabled'] });
+  markdownEditors.set(field, { editor, observer });
+  field.form?.addEventListener('reset', () => setTimeout(() => setMarkdownEditorContent(editor, field.value), 0));
 }
 
 function prepareMarkdownFields(root = document) {
@@ -573,7 +856,8 @@ function prepareMarkdownFields(root = document) {
 
 function setTextareaValue(textarea, value) {
   textarea.value = value;
-  refreshMarkdownPreview(textarea);
+  const binding = markdownEditors.get(textarea);
+  if (binding) setMarkdownEditorContent(binding.editor, value);
 }
 
 function shortTime(value) {
@@ -1620,7 +1904,7 @@ async function retryMemory() {
 
 function commandClick(command) {
   setTextareaValue($('#composerInput'), command);
-  $('#composerInput').focus();
+  focusMarkdownField($('#composerInput'));
   $('#sendButton').disabled = !state.thread || state.sendingThreads.has(state.thread.id);
   scheduleDraftSave();
   toggleCommandPalette(false);
@@ -1635,7 +1919,7 @@ async function createNewProject(event) {
     closeDialog('projectDialog');
     await refreshProjects();
     await openProject(result.project.id, result.branch.id, result.thread.id);
-    $('#composerInput').focus();
+    focusMarkdownField($('#composerInput'));
     showToast('Project created. Its story and canon are stored locally.');
   } catch (error) { showToast(error.message); }
 }
@@ -1650,7 +1934,7 @@ async function createThread() {
       method: 'POST', body: jsonBody({ branchId: state.branch.id, title })
     });
     await openThread(result.thread.id);
-    $('#composerInput').focus();
+    focusMarkdownField($('#composerInput'));
     showToast('New chat created on this branch. Project canon remains available.');
   } catch (error) { showToast(error.message); }
 }
@@ -1802,13 +2086,6 @@ function bindEvents() {
     $('#sendButton').disabled = !$('#composerInput').value.trim() || !state.thread || state.sendingThreads.has(state.thread.id);
     scheduleDraftSave();
     if ($('#composerInput').value === '/') toggleCommandPalette(true);
-  });
-  $('#composerInput').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      $('#composerForm').requestSubmit();
-    }
-    if (event.key === 'Escape') toggleCommandPalette(false);
   });
   $('#composerForm').addEventListener('submit', (event) => { event.preventDefault(); void submitMessage(); });
   $('#cancelTurn').addEventListener('click', () => void cancelCurrentTurn());
