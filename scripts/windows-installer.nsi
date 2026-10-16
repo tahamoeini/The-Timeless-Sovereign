@@ -7,7 +7,7 @@ SetOverwrite on
 !include "LogicLib.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.3.0"
+  !define APP_VERSION "1.3.1"
 !endif
 
 Name "The Timeless Sovereign Story Studio"

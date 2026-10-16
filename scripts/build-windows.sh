@@ -110,49 +110,84 @@ VBS
 
 cat > "$payload/Stop-Story-Studio.vbs" <<'VBS'
 Option Explicit
-Dim request, expression, matches, serverPath, service, process, exitCode, attempt
+Dim request, expression, matches, serverPath, service, processes, process, found, attempt
 On Error Resume Next
 serverPath = ""
 If WScript.Arguments.Count > 0 Then serverPath = WScript.Arguments(0)
 Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
+If Err.Number <> 0 Then
+  MsgBox "Story Studio could not verify its local server. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+  WScript.Quit 1
+End If
 request.SetTimeouts 500, 500, 500, 500
 request.Open "GET", "http://127.0.0.1:4317/api/bootstrap", False
 request.Send
-If Err.Number = 0 And request.Status = 200 Then
+If Err.Number = 0 Then
+  If request.Status <> 200 Then
+    MsgBox "Another service is using the Story Studio address. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
+  End If
   Set expression = New RegExp
   expression.Pattern = """csrfToken""\s*:\s*""([^""]+)"""
   Set matches = expression.Execute(request.ResponseText)
-  If matches.Count > 0 Then
-    request.Open "POST", "http://127.0.0.1:4317/api/app/shutdown", False
-    request.SetRequestHeader "Origin", "http://127.0.0.1:4317"
-    request.SetRequestHeader "X-CSRF-Token", matches(0).SubMatches(0)
-    request.SetRequestHeader "Content-Type", "application/json"
-    request.Send "{}"
-    If Err.Number = 0 And request.Status = 409 Then
-      MsgBox "A story response is still running. Wait for it to finish, then run the installer again.", vbInformation, "Story Studio is busy"
-      WScript.Quit 1
-    End If
-    If Err.Number = 0 And request.Status = 200 Then
-      For attempt = 1 To 40
-        WScript.Sleep 250
-        Err.Clear
-        request.Open "GET", "http://127.0.0.1:4317/api/bootstrap", False
-        request.Send
-        If Err.Number <> 0 Or request.Status <> 200 Then WScript.Quit 0
-      Next
-      MsgBox "Story Studio did not close in time. Close it and try again.", vbExclamation, "Story Studio could not close"
-      WScript.Quit 1
-    End If
+  If matches.Count = 0 Then
+    MsgBox "Story Studio could not verify its local server. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
   End If
-End If
-
-If Len(serverPath) > 0 Then
+  request.Open "POST", "http://127.0.0.1:4317/api/app/shutdown", False
+  request.SetRequestHeader "Origin", "http://127.0.0.1:4317"
+  request.SetRequestHeader "X-CSRF-Token", matches(0).SubMatches(0)
+  request.SetRequestHeader "Content-Type", "application/json"
+  request.Send "{}"
+  If Err.Number <> 0 Then
+    MsgBox "Story Studio could not be stopped safely. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
+  End If
+  If request.Status = 409 Then
+    MsgBox "A story response is still running. Wait for it to finish, then run the installer again.", vbInformation, "Story Studio is busy"
+    WScript.Quit 1
+  End If
+  If request.Status <> 200 Then
+    MsgBox "Story Studio could not be stopped safely. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
+  End If
+  For attempt = 1 To 120
+    WScript.Sleep 250
+    Err.Clear
+    Set request = CreateObject("WinHttp.WinHttpRequest.5.1")
+    request.SetTimeouts 500, 500, 500, 500
+    request.Open "GET", "http://127.0.0.1:4317/api/bootstrap", False
+    request.Send
+    If Err.Number <> 0 Then WScript.Quit 0
+    If request.Status <> 200 And request.Status <> 503 Then
+      MsgBox "Story Studio stopped responding unexpectedly. Close it and try again.", vbExclamation, "Story Studio could not close"
+      WScript.Quit 1
+    End If
+  Next
+  MsgBox "Story Studio did not close in time. Close it and try again.", vbExclamation, "Story Studio could not close"
+  WScript.Quit 1
+Else
   Err.Clear
   Set service = GetObject("winmgmts:\\.\root\cimv2")
-  For Each process In service.ExecQuery("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='node.exe'")
-    If InStr(1, LCase(CStr(process.CommandLine)), LCase(serverPath), vbTextCompare) > 0 Then process.Terminate
+  If Err.Number <> 0 Then
+    MsgBox "Story Studio could not verify whether its local server is running. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
+  End If
+  Set processes = service.ExecQuery("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='node.exe'")
+  If Err.Number <> 0 Then
+    MsgBox "Story Studio could not verify whether its local server is running. Close it before installing the update.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
+  End If
+  found = False
+  For Each process In processes
+    If InStr(1, LCase(CStr(process.CommandLine)), LCase(serverPath), vbTextCompare) > 0 Then found = True
   Next
+  If found Then
+    MsgBox "Story Studio is still running but is not responding. Close the app and try again.", vbExclamation, "Story Studio could not close"
+    WScript.Quit 1
+  End If
 End If
+WScript.Quit 0
 VBS
 
 installer="$build_root/The-Timeless-Sovereign-Setup-$package_version.exe"
