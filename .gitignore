@@ -1,0 +1,13 @@
+node_modules/
+.tmp-*/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+backups/
+credentials.dpapi
+credentials.dpapi.*.slot
+codex-home/
+empty-workspace/
