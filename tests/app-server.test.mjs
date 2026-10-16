@@ -84,6 +84,16 @@ class FakeAppServerChild extends EventEmitter {
           this.reply({ method: 'turn/completed', params: { threadId, turn: { id: 'test-turn-1', status: 'failed', error: { message: 'Temporary model failure.' }, items: [] } } });
           return;
         }
+        if (this.mode === 'error-notification') {
+          this.reply({ method: 'error', params: { threadId, turnId: 'test-turn-1', error: { message: 'This model is unavailable for this account.' }, willRetry: false } });
+          return;
+        }
+        if (this.mode === 'retryable-error') {
+          this.reply({ method: 'error', params: { threadId, turnId: 'test-turn-1', error: { message: 'Temporary connection issue.' }, willRetry: true } });
+          this.reply({ method: 'item/agentMessage/delta', params: { threadId, turnId: 'test-turn-1', delta: 'Recovered after retry.' } });
+          this.reply({ method: 'turn/completed', params: { threadId, turn: { id: 'test-turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'Recovered after retry.' }] } } });
+          return;
+        }
         this.reply({ method: 'item/agentMessage/delta', params: { threadId, turnId: 'test-turn-1', delta: 'The lantern burned ' } });
         this.reply({ method: 'item/agentMessage/delta', params: { threadId, turnId: 'test-turn-1', delta: 'blue at midnight.' } });
         this.reply({ method: 'turn/completed', params: { threadId, turn: { id: 'test-turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'The lantern burned blue at midnight.' }] } } });
@@ -154,11 +164,12 @@ test('local app-server lifecycle uses read-only chat threads, ephemeral indexing
   assert.equal(child.lastThreadFork.sandbox, 'read-only');
 
   const deltas = [];
-  const result = await app.streamTurn({ threadId: persistentId, text: 'Source-backed context.', onDelta: (delta) => deltas.push(delta) });
+  const result = await app.streamTurn({ threadId: persistentId, text: 'Source-backed context.', reasoningEffort: 'high', onDelta: (delta) => deltas.push(delta) });
   assert.equal(result.text, 'The lantern burned blue at midnight.');
   assert.deepEqual(deltas, ['The lantern burned ', 'blue at midnight.']);
   assert.deepEqual(child.lastTurnStart.input, [{ type: 'text', text: 'Source-backed context.' }]);
   assert.deepEqual(child.lastTurnStart.sandboxPolicy, { type: 'readOnly', networkAccess: false });
+  assert.equal(child.lastTurnStart.effort, 'high');
   assert.equal(child.lastTurnStart.cwd, path.join(dataDirectory, 'empty-workspace'));
 
   const ephemeralId = await app.startThread({ developerInstructions: 'Index saved messages only.', ephemeral: true });
@@ -176,6 +187,13 @@ test('app-server failures and any non-chat item fail closed without presenting i
   await assert.rejects(app.streamTurn({ threadId, text: 'continue' }), /Temporary model failure/);
   child.mode = 'tool';
   await assert.rejects(app.streamTurn({ threadId, text: 'continue' }), /only allows story chat/);
+  child.mode = 'error-notification';
+  await assert.rejects(app.streamTurn({ threadId, text: 'continue' }), /model is unavailable for this account/);
+  child.mode = 'retryable-error';
+  const activities = [];
+  const retried = await app.streamTurn({ threadId, text: 'continue', onActivity: (activity) => activities.push(activity) });
+  assert.equal(retried.text, 'Recovered after retry.');
+  assert.equal(activities.some((activity) => activity.type === 'retrying'), true);
   await app.stop();
 
   const unauthorizedDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-unauthorized-test-'));

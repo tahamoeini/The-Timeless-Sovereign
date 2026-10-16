@@ -286,7 +286,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     }
     if (method === 'POST' && pathname === '/api/projects') {
       const body = await readJson(req);
-      const result = db.createProject({ name: body.name, instructions: body.instructions ?? '' });
+      const result = db.createProject({ name: body.name, instructions: body.instructions ?? '', memoryScope: body.memoryScope ?? 'project' });
       return json(res, 201, result);
     }
     const projectReadMatch = pathMatch(pathname, /^\/api\/projects\/([^/]+)$/);

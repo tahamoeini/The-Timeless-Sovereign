@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { openDatabase } from '../src/database.mjs';
 import { temporaryDatabase, sampleFact } from './helpers.mjs';
 
 test('raw messages survive database reopen byte-for-byte and remain searchable', async (t) => {
@@ -59,7 +61,7 @@ test('project search isolation and branch lineage prevent later main events leak
 test('project export/import remaps branch cutoffs and preserves all source records and audit history', async (t) => {
   const fixture = await temporaryDatabase(t);
   const sourceDb = fixture.database;
-  const projectData = sourceDb.createProject({ name: 'A Thousand Winters', instructions: 'Keep the narrator close to the protagonist.' });
+  const projectData = sourceDb.createProject({ name: 'A Thousand Winters', instructions: 'Keep the narrator close to the protagonist.', memoryScope: 'thread' });
   const { message, item } = sampleFact(sourceDb, projectData.thread.id, { subject: 'Neris', content: 'Neris found a bronze key in the watchtower.' });
   const assistant = sourceDb.addAssistantMessage(projectData.thread.id, message.id);
   sourceDb.completeAssistantMessage(assistant.id, 'The old watchtower rang in the wind.');
@@ -76,6 +78,7 @@ test('project export/import remaps branch cutoffs and preserves all source recor
   const exportDocument = sourceDb.getProjectExport(projectData.project.id);
 
   const imported = sourceDb.importProject(exportDocument);
+  assert.equal(sourceDb.getProject(imported.id).memoryScope, 'thread');
   const importedBranches = sourceDb.listBranches(imported.id);
   const importedAlt = importedBranches.find((branch) => branch.name === branchData.branch.name);
   const importedThread = sourceDb.listThreads(imported.id).find((thread) => thread.branchId === importedAlt.id);
@@ -101,6 +104,34 @@ test('project export/import remaps branch cutoffs and preserves all source recor
   assert.deepEqual(restoredDb.integrityCheck(), ['ok']);
   assert.ok(restoredDb.getTranscript(importedThread.id).some((row) => row.content === 'Neris found a bronze key in the watchtower.'));
   assert.ok(restoredDb.listLedgerHistory(imported.id, importedAlt.id).some((row) => row.action === 'retcon'));
+});
+
+test('database migration adds the project memory scope to an existing version-one database', async (t) => {
+  const fixture = await temporaryDatabase(t);
+  fixture.database.close();
+  const databasePath = path.join(fixture.directory, 'story-studio.db');
+  fs.rmSync(databasePath, { force: true });
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    INSERT INTO schema_migrations(version, applied_at) VALUES(1, '2026-10-01T00:00:00.000Z');
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL DEFAULT '',
+      style TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    INSERT INTO projects(id, name, instructions, style, created_at, updated_at)
+      VALUES('legacy-project', 'Legacy', '', '', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z');
+  `);
+  legacy.close();
+
+  const migrated = openDatabase(fixture.directory);
+  try {
+    assert.equal(migrated.getProject('legacy-project').memoryScope, 'project');
+    assert.equal(migrated.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, 2);
+    assert.deepEqual(migrated.integrityCheck(), ['ok']);
+  } finally {
+    migrated.close();
+  }
 });
 
 test('startup recovery marks partial generation interrupted and memory processing pending', async (t) => {

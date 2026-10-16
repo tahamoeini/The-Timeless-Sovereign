@@ -27,6 +27,30 @@ test('a fresh chat retrieves a specific old event with source IDs while another 
   assert.equal(otherBundle.sourceMessageIds.includes(old.message.id), false);
 });
 
+test('conversation-local memory stays within one chat while the default shares canon across project chats', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const project = db.createProject({ name: 'Memory scope' });
+  const shared = sampleFact(db, project.thread.id, {
+    subject: 'The first key', content: 'Mira hid the silver key inside the chapel bell.'
+  });
+  const continuation = db.createThread(project.project.id, project.branch.id, 'A later conversation');
+  const sharedQuestion = db.addUserMessage(continuation.id, 'Where did Mira hide the silver key?');
+  const sharedBundle = buildContextBundle(db, continuation.id, sharedQuestion);
+  assert.match(sharedBundle.text, /Mira hid the silver key inside the chapel bell/);
+  assert.equal(sharedBundle.memoryScope, 'project');
+
+  db.updateProject(project.project.id, { memoryScope: 'thread' });
+  const local = sampleFact(db, continuation.id, {
+    subject: 'The local clue', content: 'Mira marked the west window with a red thread.'
+  });
+  const localQuestion = db.addUserMessage(continuation.id, 'What did Mira mark with red thread?');
+  const localBundle = buildContextBundle(db, continuation.id, localQuestion);
+  assert.match(localBundle.text, /Mira marked the west window with a red thread/);
+  assert.match(localBundle.text, new RegExp(local.message.id));
+  assert.doesNotMatch(localBundle.text, /silver key inside the chapel bell/);
+  assert.equal(localBundle.memoryScope, 'thread');
+});
+
 test('memory indexing marks failures retryable, validates citations, and does not duplicate ledger history', async (t) => {
   const { database: db } = await temporaryDatabase(t);
   const created = db.createProject({ name: 'Memory queue' });

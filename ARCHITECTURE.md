@@ -30,6 +30,8 @@
 - [Codex app-server protocol and lifecycle](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - [`turn/start` protocol: model and effort parameters](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/turn.rs)
 - [Model catalog reasoning-effort options](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs)
+- [App-server error notifications and retry flag](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/notification.rs)
+- [Turn error payload](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs)
 - [Sign in with ChatGPT registration and sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
 - [Sign in with ChatGPT sessions and token refresh](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
 - [Codex app-server with ChatGPT-plan OAuth](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)

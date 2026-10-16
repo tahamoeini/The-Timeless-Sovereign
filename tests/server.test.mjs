@@ -130,8 +130,8 @@ test('local app persists a disconnected user turn, rejects cross-origin writes, 
 test('appearance preferences persist in SQLite across a server restart and update status is local API data', async (t) => {
   const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-settings-test-'));
   const updateChecker = async ({ currentVersion }) => ({
-    state: 'update_available', currentVersion, latestVersion: '1.2.0', updateAvailable: true,
-    downloadUrl: 'https://github.com/tahamoeini/The-Timeless-Sovereign/releases/download/v1.2.0/The-Timeless-Sovereign-Setup-1.2.0.exe'
+    state: 'update_available', currentVersion, latestVersion: '1.3.0', updateAvailable: true,
+    downloadUrl: 'https://github.com/tahamoeini/The-Timeless-Sovereign/releases/download/v1.3.0/The-Timeless-Sovereign-Setup-1.3.0.exe'
   });
   let app = createStoryStudioServer({ dataDirectory, port: 0, updateChecker });
   await app.listen();
@@ -142,7 +142,7 @@ test('appearance preferences persist in SQLite across a server restart and updat
 
   const initial = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
   assert.equal(initial.appSettings.theme, 'system');
-  assert.equal(initial.appVersion, '1.1.0');
+  assert.equal(initial.appVersion, '1.2.0');
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const saved = await invoke(app, 'PATCH', '/api/settings/app', { theme: 'dark' }, { origin: base, csrfToken: initial.csrfToken });
   assert.equal(saved.status, 200);
@@ -157,7 +157,87 @@ test('appearance preferences persist in SQLite across a server restart and updat
   assert.equal(restored.appSettings.theme, 'dark');
   const update = await invoke(app, 'GET', '/api/updates');
   assert.equal(update.status, 200);
-  assert.equal(JSON.parse(update.body).latestVersion, '1.2.0');
+  assert.equal(JSON.parse(update.body).latestVersion, '1.3.0');
+});
+
+test('thread snapshot polling returns only new messages instead of retransmitting the full transcript', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-snapshot-test-'));
+  const app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+
+  const created = app.database.createProject({ name: 'Large transcript' });
+  const archived = app.database.addUserMessage(created.thread.id, 'A'.repeat(180_000));
+  const full = await invoke(app, 'GET', `/api/threads/${created.thread.id}`);
+  const initial = JSON.parse(full.body);
+  const snapshot = await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${initial.transcriptRevision}`);
+  const unchanged = JSON.parse(snapshot.body);
+  assert.equal(Object.hasOwn(unchanged, 'transcript'), false);
+  assert.deepEqual(unchanged.delta, []);
+  assert.ok(snapshot.body.length < full.body.length / 20);
+
+  const next = app.database.addUserMessage(created.thread.id, 'A newly saved continuation.');
+  const changed = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${archived.sequence}`)).body);
+  assert.deepEqual(changed.delta.map((message) => message.id), [next.id]);
+  assert.equal(changed.delta[0].content, 'A newly saved continuation.');
+});
+
+test('model thinking preferences follow the Codex model catalog and reach turn/start', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-reasoning-test-'));
+  let connection = 'disconnected';
+  const capturedEfforts = [];
+  const model = {
+    id: 'gpt-story-test', model: 'gpt-story-test', displayName: 'Story Test', isDefault: true,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }, { reasoningEffort: 'high' }]
+  };
+  const auth = {
+    async status() { return { state: 'connected', message: 'Connected.' }; },
+    async accessToken() { return 'test-access-token'; },
+    async signOut() { return { revoked: false }; }
+  };
+  const codex = {
+    getConnectionStatus() { return { state: connection, message: 'Test app-server.' }; },
+    async start() { connection = 'connected'; },
+    async stop() { connection = 'disconnected'; },
+    async listModels() { return [model]; },
+    async startThread({ ephemeral }) { return ephemeral ? 'indexer-thread' : 'story-thread'; },
+    async streamTurn({ threadId, reasoningEffort, onDelta }) {
+      if (threadId === 'indexer-thread') return { text: JSON.stringify({ entries: [] }) };
+      capturedEfforts.push(reasoningEffort);
+      onDelta?.('The door opened.');
+      return { text: 'The door opened.' };
+    }
+  };
+  const app = createStoryStudioServer({ dataDirectory, port: 0, auth, codex });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const saved = await invoke(app, 'PATCH', '/api/settings/model', { model: model.id, reasoningEffort: 'high' }, {
+    origin: base, csrfToken: bootstrap.csrfToken
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(JSON.parse(saved.body), { selectedModel: model.id, reasoningEffort: 'high' });
+  const invalid = await invoke(app, 'PATCH', '/api/settings/model', { model: model.id, reasoningEffort: 'ultra' }, {
+    origin: base, csrfToken: bootstrap.csrfToken
+  });
+  assert.equal(invalid.status, 400);
+
+  const created = app.database.createProject({ name: 'Reasoning choice' });
+  const turn = await invoke(app, 'POST', `/api/threads/${created.thread.id}/send`, { content: 'Continue the scene.' }, {
+    origin: base, csrfToken: bootstrap.csrfToken
+  });
+  assert.equal(decodeSse(turn.body).at(-1).event, 'complete');
+  assert.deepEqual(capturedEfforts, ['high']);
+  assert.equal(app.database.getSetting('model.reasoning_effort'), 'high');
 });
 
 test('retry reconnects Codex and resumes pending continuity jobs after restart', async (t) => {

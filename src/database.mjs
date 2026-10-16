@@ -374,16 +374,17 @@ export function openDatabase(dataDirectory) {
     `).run(message.sequence, message.content, message.id, message.project_id, message.branch_id, message.thread_id, message.sequence);
   }
 
-  function createProject({ name, instructions = '' }) {
+  function createProject({ name, instructions = '', memoryScope = 'project' }) {
     const projectId = makeId();
     const branchId = makeId();
     const threadId = makeId();
     const timestamp = now();
     const safeName = String(name ?? '').trim();
     if (!safeName) throw new Error('Project name is required.');
+    if (!['thread', 'project'].includes(memoryScope)) throw new Error('Memory scope must be conversation-local or shared across this project.');
     transaction(() => {
-      db.prepare('INSERT INTO projects(id, name, instructions, created_at, updated_at) VALUES(?, ?, ?, ?, ?)')
-        .run(projectId, safeName, String(instructions), timestamp, timestamp);
+      db.prepare('INSERT INTO projects(id, name, instructions, memory_scope, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')
+        .run(projectId, safeName, String(instructions), memoryScope, timestamp, timestamp);
       db.prepare('INSERT INTO branches(id, project_id, name, created_at) VALUES(?, ?, ?, ?)')
         .run(branchId, projectId, 'Main', timestamp);
       db.prepare('INSERT INTO threads(id, project_id, branch_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)')

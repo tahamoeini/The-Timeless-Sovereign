@@ -65,7 +65,8 @@ export function buildContextBundle(database, threadId, currentMessage) {
   const searchHits = database.searchMessages(thread.projectId, thread.branchId, currentMessage.content, MAX_SEARCH_RESULTS)
     .filter((message) => message.kind === 'story' && message.id !== currentMessage.id && (memoryScope === 'project' || message.threadId === thread.id));
   const transcript = database.getTranscript(threadId)
-    .filter((message) => message.kind === 'story' && message.role !== 'system' && message.id !== currentMessage.id)
+    .filter((message) => message.kind === 'story' && message.role !== 'system' && message.id !== currentMessage.id &&
+      (memoryScope === 'project' || message.threadId === thread.id))
     .slice(-MAX_RECENT_TURNS);
 
   const sources = new Map();

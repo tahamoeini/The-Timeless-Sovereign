@@ -74,3 +74,23 @@ test('commands on a paused thread remain usable and inspection commands do not c
   assert.equal(processor.process(created.thread.id, '/resume').handled, true);
   assert.equal(db.listMemoryJobs(created.project.id, created.branch.id, true).length, 0);
 });
+
+test('conversation-local memory scopes inspection commands and rejects cross-chat retcons', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const created = db.createProject({ name: 'Private continuity' });
+  const source = db.addUserMessage(created.thread.id, 'Mara buried the bronze compass under the old bridge.');
+  const record = db.appendLedgerItem({
+    projectId: created.project.id, branchId: created.branch.id, type: 'event', subject: 'The compass',
+    content: source.content, origin: 'user_established', confidence: 1, status: 'current', sourceMessageIds: [source.id]
+  });
+  const local = db.createThread(created.project.id, created.branch.id, 'Private chat');
+  db.updateProject(created.project.id, { memoryScope: 'thread' });
+  const commands = new CommandProcessor(db);
+
+  const status = commands.process(local.id, '/status');
+  assert.match(status.output, /Memory scope: this conversation/);
+  assert.doesNotMatch(status.output, /bronze compass|old bridge/);
+  const retcon = commands.process(local.id, `/retcon ${record.id} -- The compass was under the tower.`);
+  assert.match(retcon.output, /outside this conversation.s memory scope/);
+  assert.equal(db.getLedgerItem(created.project.id, created.branch.id, record.id).status, 'current');
+});

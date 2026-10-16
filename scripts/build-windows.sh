@@ -24,7 +24,7 @@ fi
 
 package_version="$(node -p "require('./package.json').version")"
 if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-  printf 'package.json must contain a semantic version such as 1.1.0.\n' >&2
+  printf 'package.json must contain a semantic version such as 1.2.0.\n' >&2
   exit 1
 fi
 

@@ -14,7 +14,7 @@ const state = {
   models: [],
   modelsLoaded: false,
   transcriptRevision: 0,
-  appVersion: '1.1.0',
+  appVersion: '1.2.0',
   view: 'narrative',
   sendBusy: false,
   activeAbort: null,
@@ -99,7 +99,7 @@ async function initialize() {
     state.database = bootstrap.database;
     state.appSettings = bootstrap.appSettings ?? { theme: 'system' };
     state.selectedModel = bootstrap.selectedModel ?? '';
-    state.appVersion = bootstrap.appVersion ?? '1.1.0';
+    state.appVersion = bootstrap.appVersion ?? '1.2.0';
     applyTheme(state.appSettings.theme);
     renderProjectList();
     $('#dbLocationLabel').textContent = 'SQLite · local to this PC';
