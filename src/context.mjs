@@ -188,8 +188,15 @@ export function buildContextBundle(database, threadId, currentMessage) {
   const thread = database.getThread(threadId);
   if (!thread) throw new Error('Thread not found.');
   const project = database.getProject(thread.projectId);
-  const terms = termsFor(currentMessage.content);
+  const searchTerms = termsFor(currentMessage.content);
   const memoryScope = project.memoryScope === 'thread' ? 'thread' : 'project';
+  const transcript = database.getTranscript(threadId)
+    .filter((message) => message.kind === 'story' && message.role !== 'system' && message.id !== currentMessage.id &&
+      message.status === 'complete' && cleanText(message.content) &&
+      (memoryScope === 'project' || message.threadId === thread.id))
+    .slice(-MAX_RECENT_MESSAGES);
+  const recentSceneTerms = termsFor(transcript.slice(-4).map(storyText).join('\n'));
+  const continuityTerms = [...new Set([...searchTerms, ...recentSceneTerms])].slice(0, 48);
   const sourceMessages = new Map();
   const sourceMessage = (id) => {
     if (!sourceMessages.has(id)) sourceMessages.set(id, database.getMessage(id));
@@ -198,7 +205,7 @@ export function buildContextBundle(database, threadId, currentMessage) {
   const ledger = database.getEffectiveLedger(thread.projectId, thread.branchId).filter((item) =>
     memoryScope === 'project' || (item.sourceMessageIds.length > 0 && item.sourceMessageIds.every((id) => sourceMessage(id)?.threadId === thread.id))
   );
-  const selectedLedger = selectLedgerItems(ledger, terms);
+  const selectedLedger = selectLedgerItems(ledger, continuityTerms);
   const sceneItems = selectedLedger.filter((item) => item.type === 'scene');
   const characters = selectedLedger.filter((item) => item.type === 'character');
   const searchHits = database.searchRelevantMessages(
@@ -208,12 +215,6 @@ export function buildContextBundle(database, threadId, currentMessage) {
     MAX_SEARCH_RESULTS,
     memoryScope === 'thread' ? thread.id : null
   ).filter((message) => message.id !== currentMessage.id && message.status === 'complete' && cleanText(message.content));
-  const transcript = database.getTranscript(threadId)
-    .filter((message) => message.kind === 'story' && message.role !== 'system' && message.id !== currentMessage.id &&
-      message.status === 'complete' && cleanText(message.content) &&
-      (memoryScope === 'project' || message.threadId === thread.id))
-    .slice(-MAX_RECENT_MESSAGES);
-
   const sources = new Map();
   for (const message of searchHits) sources.set(message.id, message);
   for (const item of selectedLedger) {
@@ -245,9 +246,9 @@ export function buildContextBundle(database, threadId, currentMessage) {
   if (voiceExamples.length) {
     sections.push(`## Earlier character dialogue (voice references only; do not repeat or treat as new events)\n${voiceExamples.map((example) => `- ${example.character}: «${example.text}»`).join('\n')}`);
   }
-  const retrievedText = formatSourcesWithinBudget(retrievedSources, terms, MAX_RETRIEVED_CONTEXT_CHARS);
+  const retrievedText = formatSourcesWithinBudget(retrievedSources, searchTerms, MAX_RETRIEVED_CONTEXT_CHARS);
   if (retrievedText) sections.push(`## Retrieved earlier story material\n${retrievedText}`);
-  const recentText = formatSourcesWithinBudget(transcript, terms, MAX_RECENT_CONTEXT_CHARS, true);
+  const recentText = formatSourcesWithinBudget(transcript, continuityTerms, MAX_RECENT_CONTEXT_CHARS, true);
   if (recentText) sections.push(`## Recent story turns\n${recentText}`);
   if (metaNotes.length) sections.push(`## Out-of-story notes\n${metaNotes.map((note) => `- ${note.content}`).join('\n')}`);
   sections.push(`## Current user message\n${currentMessage.content}`);
@@ -270,7 +271,7 @@ export function buildContextBundle(database, threadId, currentMessage) {
       })),
       sources: retrievedSources.map((message) => ({
         id: message.id, role: message.role, threadId: message.threadId, createdAt: message.createdAt,
-        excerpt: excerpt(storyText(message), terms).text
+        excerpt: excerpt(storyText(message), searchTerms).text
       })),
       voiceExamples
     }

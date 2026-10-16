@@ -76,7 +76,7 @@ test('context treats saved dialogue as voice reference and omits known process p
     status: 'current',
     sourceMessageIds: [assistant.id]
   });
-  const current = db.addUserMessage(created.thread.id, 'راث، مدارک را بررسی کن و اگر نکته‌ای دیدی بگو.');
+  const current = db.addUserMessage(created.thread.id, 'مدارک را بررسی کن و اگر نکته‌ای دیدی بگو.');
   const bundle = buildContextBundle(db, created.thread.id, current);
   const extraction = buildLedgerExtractionPrompt([db.getMessage(assistant.id)]);
 
