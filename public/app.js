@@ -578,7 +578,24 @@ function renderContinuity() {
   const memoryBadge = $('#memoryBadge');
   memoryBadge.dataset.state = memory.state;
   const indexed = memory.lastIndexed ? ` · through ${memory.lastIndexed.id.slice(0, 8)}` : '';
-  $('#memoryBadgeText').textContent = `${memory.state === 'current' ? 'Memory current' : `Memory ${memory.state}`}${indexed}`;
+  const memoryCounts = memory.counts ?? {};
+  const failedCount = Number(memoryCounts.error ?? 0);
+  const pendingCount = Number(memoryCounts.pending ?? 0);
+  const processingCount = Number(memoryCounts.processing ?? 0);
+  const errorLabel = failedCount ? ` · ${failedCount} failed` : '';
+  $('#memoryBadgeText').textContent = `${memory.state === 'current' ? 'Memory current' : `Memory ${memory.state}`}${errorLabel}${indexed}`;
+  const memoryNotice = $('#memoryNotice');
+  memoryNotice.hidden = memory.state === 'current';
+  memoryNotice.dataset.state = memory.state;
+  if (memory.state === 'error') {
+    memoryNotice.textContent = `${failedCount} continuity ${failedCount === 1 ? 'record needs' : 'records need'} attention; ${pendingCount} are waiting. ${memory.error || 'Indexing did not finish.'} Your saved messages are safe. Retry memory processing when ready.`;
+  } else if (memory.state === 'processing') {
+    memoryNotice.textContent = `Continuity indexing is working on ${processingCount} ${processingCount === 1 ? 'record' : 'records'}; ${pendingCount} are waiting. Your saved messages remain available.`;
+  } else if (memory.state === 'pending') {
+    memoryNotice.textContent = `${pendingCount} continuity ${pendingCount === 1 ? 'record is' : 'records are'} saved and waiting to be indexed. Your messages are safe.`;
+  } else {
+    memoryNotice.textContent = '';
+  }
   $('#retryMemory').hidden = memory.state !== 'error' && memory.state !== 'pending';
 
   const ledger = payload.ledger ?? [];

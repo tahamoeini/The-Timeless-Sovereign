@@ -116,8 +116,10 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     const currentState = codexServer.getConnectionStatus().state;
     const authorizationExpired = authorization.state === 'token_expired';
     if (currentState === 'connected' && !authorizationExpired) return;
-    if (currentState === 'connected' && authorizationExpired && (codexServer.hasActiveTurns?.() || indexer.hasActiveJobs())) {
-      throw new Error('ChatGPT authorization expired while continuity work is running. Let it finish, then retry the connection.');
+    if (currentState === 'connected' && authorizationExpired || currentState !== 'connected') {
+      if (codexServer.hasActiveTurns?.() || indexer.hasActiveJobs()) {
+        throw new Error('A Codex connection change is waiting for continuity work to finish. Saved records remain safe; retry the connection afterward.');
+      }
     }
     if (codexConnectionPromise) return codexConnectionPromise;
 
@@ -126,10 +128,12 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       if (closingRequested) throw new Error('Story Studio is stopping.');
       const latestState = codexServer.getConnectionStatus().state;
       if (latestState === 'connected' && !authorizationExpired) return;
-      if (latestState === 'connected' && authorizationExpired) {
+      if ((latestState === 'connected' && authorizationExpired) || latestState !== 'connected') {
         if (codexServer.hasActiveTurns?.() || indexer.hasActiveJobs()) {
-          throw new Error('ChatGPT authorization expired while continuity work is running. Let it finish, then retry the connection.');
+          throw new Error('A Codex connection change is waiting for continuity work to finish. Saved records remain safe; retry the connection afterward.');
         }
+      }
+      if (latestState === 'connected' && authorizationExpired) {
         await codexServer.stop();
       }
       const accessToken = await authService.accessToken();
@@ -501,7 +505,11 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const summary = indexer.retry(projectId);
       const authState = await authorizationStatus();
       let state = summary.counts.processing ? 'processing' : summary.counts.pending ? 'pending' : 'current';
-      let message = state === 'current' ? 'Continuity memory is already current.' : 'Memory records remain safely saved as pending.';
+      let message = state === 'current'
+        ? 'Continuity memory is already current.'
+        : state === 'processing'
+          ? 'Continuity indexing is already in progress.'
+          : 'Memory records remain safely saved as pending.';
       if (summary.counts.pending && (authState.state === 'connected' || authState.state === 'token_expired')) {
         try {
           await ensureCodexConnected(authState);
@@ -511,8 +519,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
         } catch (error) {
           message = `Memory remains saved as pending. ${String(error?.message ?? error).slice(0, 300)}`;
         }
-      } else if (summary.counts.pending && authState.state !== 'connected') {
-        message = 'Memory remains saved as pending. Connect with ChatGPT to resume indexing.';
+      } else if (summary.counts.pending && authState.state !== 'connected' && authState.state !== 'token_expired') {
+        message = `Memory remains saved as pending. ${authState.message}`;
       }
       return json(res, 200, { ...summary, state, message, authorizationState: authState.state });
     }

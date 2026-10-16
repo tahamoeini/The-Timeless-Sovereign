@@ -73,8 +73,8 @@ export class MemoryIndexer {
       return { state: 'pending', message: 'Memory indexing will retry after Codex reconnects.' };
     }
     this.running.add(messageId);
-    this.database.markMemoryJobProcessing(job.id);
     try {
+      this.database.markMemoryJobProcessing(job.id);
       const userMessage = this.database.getMessage(job.messageId);
       const assistantMessage = job.assistantMessageId ? this.database.getMessage(job.assistantMessageId) : null;
       const messages = [userMessage, assistantMessage].filter((message) => message && message.content);
@@ -101,12 +101,13 @@ export class MemoryIndexer {
       this.database.markMemoryJobIndexed(job.id);
       return { state: 'indexed', entries: entries.length };
     } catch (error) {
-      if (/Codex app-server stopped\./i.test(error.message)) {
+      const message = String(error?.message ?? error);
+      if (/Codex app-server stopped\./i.test(message)) {
         this.database.markMemoryJobPending(job.id);
         return { state: 'pending', message: 'Memory indexing will resume after the Codex connection is available.' };
       }
-      this.database.markMemoryJobError(job.id, error.message);
-      return { state: 'error', error: error.message };
+      this.database.markMemoryJobError(job.id, message);
+      return { state: 'error', error: message };
     } finally {
       this.running.delete(messageId);
     }

@@ -177,6 +177,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .continuity-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
 .continuity-header h2 { margin: 5px 0 0; font-family: Vazirmatn, "Times New Roman", serif; font-weight: 400; font-size: 18px; }
 .continuity-empty { padding: 18px 8px; color: #828a7d; font-size: 11px; line-height: 1.65; }
+.memory-notice { margin: 12px 0 2px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised-bg); color: var(--muted); font-size: 10px; line-height: 1.55; }
+.memory-notice[data-state="error"] { border-color: rgba(185, 143, 94, .45); }
 .continuity-section { padding: 15px 1px 13px; border-bottom: 1px solid var(--line-soft); }
 .scene-card { margin-top: 2px; padding: 14px 11px 13px; border: 1px solid rgba(108, 130, 84, .25); border-radius: 9px; background: linear-gradient(145deg, rgba(70, 86, 55, .2), rgba(30, 37, 29, .28)); }
 .section-title { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
