@@ -80,6 +80,7 @@ cat > "$payload/Launch-Story-Studio.vbs" <<'VBS'
 Option Explicit
 Dim shell, files, installRoot, appRoot, nodePath, launcherPath, serverPath, appUrl
 Dim probe, attempt, localAppData, logDirectory, launcherLogPath, serverLogPath, logStream
+Dim packagedServerState
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 installRoot = files.GetParentFolderName(WScript.ScriptFullName)
@@ -138,6 +139,16 @@ probe.Open "GET", appUrl & "api/bootstrap", False
 probe.Send
 If Err.Number = 0 And probe.Status = 200 Then
   If InStr(1, probe.ResponseText, """csrfToken""", vbTextCompare) > 0 And InStr(1, probe.ResponseText, """appVersion""", vbTextCompare) > 0 Then
+    packagedServerState = CheckPackagedServerProcess(nodePath, serverPath)
+    If packagedServerState = 0 Then
+      RecordLaunchEvent "Port 4317 is serving Story Studio, but its process does not belong to this installation."
+      ShowLaunchFailure "Another Story Studio instance is already using port 4317. Close the other app or source-run server, then launch the installed app again."
+      WScript.Quit 1
+    ElseIf packagedServerState < 0 Then
+      RecordLaunchEvent "Port 4317 is serving Story Studio, but Windows could not verify its process owner."
+      ShowLaunchFailure "Story Studio found another server on port 4317 but could not verify which installation owns it. Close other Story Studio instances, then launch again."
+      WScript.Quit 1
+    End If
     RecordLaunchEvent "Reusing the Story Studio server already responding on port 4317. Opening " & appUrl
     Err.Clear
     shell.Run appUrl, 1, False
@@ -202,6 +213,70 @@ Sub RecordLaunchEvent(message)
   End If
   Err.Clear
 End Sub
+
+Function CheckPackagedServerProcess(expectedNodePath, expectedServerPath)
+  On Error Resume Next
+  Dim netstat, outputLine, expression, matches, ownerPid
+  Dim service, processes, process, processCommandLine, processSeen, found
+  Err.Clear
+  Set netstat = shell.Exec("cmd.exe /d /c netstat -ano -p tcp")
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  Set expression = New RegExp
+  expression.IgnoreCase = True
+  expression.Pattern = "^\s*TCP\s+\S+:4317\s+\S+\s+LISTENING\s+([0-9]+)"
+  ownerPid = ""
+  Do Until netstat.StdOut.AtEndOfStream
+    outputLine = netstat.StdOut.ReadLine
+    Set matches = expression.Execute(Trim(outputLine))
+    If matches.Count > 0 Then
+      ownerPid = matches(0).SubMatches(0)
+      Exit Do
+    End If
+  Loop
+  If Err.Number <> 0 Or ownerPid = "" Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  Set service = GetObject("winmgmts:\\.\root\cimv2")
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  Set processes = service.ExecQuery("SELECT ExecutablePath, CommandLine FROM Win32_Process WHERE ProcessId=" & ownerPid)
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+    Exit Function
+  End If
+  processSeen = False
+  found = False
+  For Each process In processes
+    If Err.Number <> 0 Then Exit For
+    processSeen = True
+    If Not IsNull(process.ExecutablePath) And Not IsNull(process.CommandLine) Then
+      If StrComp(CStr(process.ExecutablePath), expectedNodePath, vbTextCompare) = 0 Then
+        processCommandLine = CStr(process.CommandLine)
+        If InStr(1, processCommandLine, expectedServerPath, vbTextCompare) > 0 Then found = True
+      End If
+    End If
+  Next
+  If Err.Number <> 0 Then
+    CheckPackagedServerProcess = -1
+    Err.Clear
+  ElseIf Not processSeen Then
+    CheckPackagedServerProcess = -1
+  ElseIf Not found Then
+    CheckPackagedServerProcess = 0
+  Else
+    CheckPackagedServerProcess = 1
+  End If
+End Function
 
 Sub ShowLaunchFailure(message)
   MsgBox message & vbCrLf & vbCrLf & "Review these logs for the startup error:" & vbCrLf & launcherLogPath & vbCrLf & serverLogPath, vbExclamation, "The Timeless Sovereign Story Studio"

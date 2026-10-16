@@ -45,7 +45,7 @@ Use the printed `http://127.0.0.1:<port>/` address. The app binds to loopback on
 
 Only one app process can open a data directory. If Story Studio says the directory is already in use, close the other instance first. A lock left by a crashed process is cleared automatically the next time the app starts.
 
-If the installed app does not start, the launcher now shows the paths to its local logs. Open `Story-Studio-launcher.log` and `Story-Studio-startup.log` under `%LOCALAPPDATA%\TheTimelessSovereign\logs` and use the last error in `Story-Studio-startup.log` to identify the startup failure. If the logs are unavailable there, check `%TEMP%` for the same filenames.
+The installed launcher reuses only the server process from the same installation. If another Story Studio instance is using port 4317, close the source-run or other installed instance, then launch the installed app again. If the installed app does not start, the launcher shows the paths to its local logs. Open `Story-Studio-launcher.log` and `Story-Studio-startup.log` under `%LOCALAPPDATA%\TheTimelessSovereign\logs` and use the last error in `Story-Studio-startup.log` to identify the startup failure. If the logs are unavailable there, check `%TEMP%` for the same filenames.
 
 ## Codex app-server executable was not found
 
