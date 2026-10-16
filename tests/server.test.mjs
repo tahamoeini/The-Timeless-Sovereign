@@ -240,6 +240,24 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
   assert.equal(app.database.getSetting('model.reasoning_effort'), 'high');
 });
 
+test('the installer can stop the loopback app through its origin-checked local endpoint', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-update-shutdown-test-'));
+  const app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const stopped = await invoke(app, 'POST', '/api/app/shutdown', {}, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(JSON.parse(stopped.body), { stopping: true });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.equal(app.server.listening, false);
+});
+
 test('retry reconnects Codex and resumes pending continuity jobs after restart', async (t) => {
   const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-memory-retry-test-'));
   const calls = { starts: 0, indexThreads: 0, indexTurns: 0 };
