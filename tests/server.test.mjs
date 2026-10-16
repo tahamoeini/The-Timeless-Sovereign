@@ -162,6 +162,8 @@ test('appearance preferences persist in SQLite across a server restart and updat
   const initial = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
   assert.equal(initial.appSettings.theme, 'system');
   assert.equal(initial.appVersion, '1.5.0');
+  const firstBackups = JSON.parse((await invoke(app, 'GET', '/api/backups')).body).backups.filter((backup) => backup.kind === 'automatic');
+  assert.equal(firstBackups.length, 1);
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const saved = await invoke(app, 'PATCH', '/api/settings/app', { theme: 'dark' }, { origin: base, csrfToken: initial.csrfToken });
   assert.equal(saved.status, 200);
@@ -174,6 +176,9 @@ test('appearance preferences persist in SQLite across a server restart and updat
   await app.listen();
   const restored = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
   assert.equal(restored.appSettings.theme, 'dark');
+  const restartedBackups = JSON.parse((await invoke(app, 'GET', '/api/backups')).body).backups.filter((backup) => backup.kind === 'automatic');
+  assert.equal(restartedBackups.length, 1);
+  assert.equal(restartedBackups[0].createdAt, firstBackups[0].createdAt);
   const update = await invoke(app, 'GET', '/api/updates');
   assert.equal(update.status, 200);
   assert.equal(JSON.parse(update.body).latestVersion, '1.3.0');
@@ -273,6 +278,28 @@ test('drafts, project exports, and local SQLite snapshots survive download and r
   assert.ok(backups.backups.some((backup) => backup.id === snapshot.id && backup.kind === 'manual'));
   assert.ok(backups.backups.some((backup) => backup.id === JSON.parse(restored.body).recoveryBackupId && backup.kind === 'pre-restore'));
   assert.equal(backups.status.latestAutomatic?.kind, 'automatic');
+});
+
+test('invalid local SQLite snapshots leave current projects untouched', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-invalid-snapshot-test-'));
+  const app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  const created = app.database.createProject({ name: 'Keep after invalid restore' });
+  const snapshotResponse = await invoke(app, 'POST', '/api/backup/snapshot', {}, { origin: base, csrfToken: bootstrap.csrfToken });
+  const snapshot = JSON.parse(snapshotResponse.body);
+  await fs.writeFile(path.join(dataDirectory, 'backups', `${snapshot.id}.db`), 'not a SQLite database');
+
+  const restore = await invoke(app, 'POST', `/api/backups/${snapshot.id}/restore`, { confirmation: 'RESTORE ALL' }, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(restore.status, 400);
+  assert.match(JSON.parse(restore.body).error, /SQLite|database|backup/i);
+  assert.equal(app.database.getProject(created.project.id).name, 'Keep after invalid restore');
+  assert.deepEqual(app.database.integrityCheck(), ['ok']);
 });
 
 test('automatic backup retention keeps the latest 14 valid SQLite snapshots', async (t) => {
