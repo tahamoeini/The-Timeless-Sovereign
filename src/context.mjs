@@ -62,8 +62,13 @@ export function buildContextBundle(database, threadId, currentMessage) {
   const relevant = ordered.filter(({ score }) => score > 0).slice(0, 20).map(({ item }) => item);
   const relevantIds = new Set([...sceneItems, ...characters, ...rules, ...openThreads, ...relevant].map((item) => item.id));
   const selectedLedger = ledger.filter((item) => relevantIds.has(item.id));
-  const searchHits = database.searchMessages(thread.projectId, thread.branchId, currentMessage.content, MAX_SEARCH_RESULTS)
-    .filter((message) => message.kind === 'story' && message.id !== currentMessage.id && (memoryScope === 'project' || message.threadId === thread.id));
+  const searchHits = database.searchRelevantMessages(
+    thread.projectId,
+    thread.branchId,
+    currentMessage.content,
+    MAX_SEARCH_RESULTS,
+    memoryScope === 'thread' ? thread.id : null
+  ).filter((message) => message.id !== currentMessage.id);
   const transcript = database.getTranscript(threadId)
     .filter((message) => message.kind === 'story' && message.role !== 'system' && message.id !== currentMessage.id &&
       (memoryScope === 'project' || message.threadId === thread.id))
@@ -105,7 +110,18 @@ export function buildContextBundle(database, threadId, currentMessage) {
     ledgerItemIds: selectedLedger.map((item) => item.id),
     memoryState: memory.state,
     memoryScope,
-    currentScene
+    currentScene,
+    inspector: {
+      memory: { state: memory.state, counts: memory.counts, lastIndexed: memory.lastIndexed },
+      canon: selectedLedger.map((item) => ({
+        id: item.id, type: item.type, subject: item.subject, content: item.content,
+        status: item.status, sourceMessageIds: item.sourceMessageIds
+      })),
+      sources: retrievedSources.map((message) => ({
+        id: message.id, role: message.role, threadId: message.threadId, createdAt: message.createdAt,
+        excerpt: excerpt(message.content, terms).text
+      }))
+    }
   };
 }
 

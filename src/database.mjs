@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const MIGRATION_VERSION = 3;
+const MIGRATION_VERSION = 4;
 const MAX_SEQUENCE = 9223372036854775807;
 
 const SCHEMA = `
@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL,
   source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS message_changes (
+  revision INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS message_changes_message_revision
+  ON message_changes(message_id, revision);
+
+CREATE TRIGGER IF NOT EXISTS messages_record_insert
+AFTER INSERT ON messages
+BEGIN
+  INSERT INTO message_changes(message_id, created_at) VALUES(NEW.id, NEW.created_at);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_record_update
+AFTER UPDATE OF content, status ON messages
+BEGIN
+  INSERT INTO message_changes(message_id, created_at) VALUES(NEW.id, NEW.created_at);
+END;
 
 CREATE INDEX IF NOT EXISTS messages_project_branch_sequence
   ON messages(project_id, branch_id, sequence);
@@ -162,6 +183,23 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS conversation_drafts (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS generation_attempts (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL UNIQUE,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  assistant_message_id TEXT UNIQUE REFERENCES messages(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'streaming', 'complete', 'failed', 'interrupted')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 function now() {
@@ -253,33 +291,47 @@ export function openDatabase(dataDirectory) {
   db.exec('BEGIN IMMEDIATE;');
   try {
     db.exec(SCHEMA);
-    const applied = db.prepare('SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1').get();
-    if (!applied || applied.version < MIGRATION_VERSION) {
+    let applied = db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations').get().version;
+    if (applied === 0) {
+      db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)').run(now());
+      applied = 1;
+    }
+    if (applied < 2) {
       const projectColumns = new Set(db.prepare('PRAGMA table_info(projects)').all().map((column) => column.name));
       if (!projectColumns.has('memory_scope')) {
         db.exec("ALTER TABLE projects ADD COLUMN memory_scope TEXT NOT NULL DEFAULT 'project' CHECK(memory_scope IN ('thread', 'project'))");
       }
+      db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)').run(now());
+      applied = 2;
+    }
+    if (applied < 3) {
       const archiveColumns = new Set(db.prepare('PRAGMA table_info(archive_imports)').all().map((column) => column.name));
       if (!archiveColumns.has('thread_id')) {
         db.exec('ALTER TABLE archive_imports ADD COLUMN thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE');
       }
       db.exec(`
-        UPDATE archive_imports
+        UPDATE archive_imports AS ai
         SET thread_id = (
-          SELECT t.id FROM threads t
-          WHERE t.project_id = archive_imports.project_id
-            AND t.title = 'Imported · ' || substr(archive_imports.file_name, 1, 70)
-          ORDER BY abs(julianday(t.created_at) - julianday(archive_imports.created_at)), t.created_at
-          LIMIT 1
+          SELECT MIN(t.id) FROM threads AS t
+          WHERE t.project_id = ai.project_id
+            AND t.title = 'Imported · ' || substr(ai.file_name, 1, 70)
         )
-        WHERE thread_id IS NULL
+        WHERE ai.thread_id IS NULL
           AND (
-            SELECT COUNT(*) FROM threads t
-            WHERE t.project_id = archive_imports.project_id
-              AND t.title = 'Imported · ' || substr(archive_imports.file_name, 1, 70)
+            SELECT COUNT(*) FROM threads AS t
+            WHERE t.project_id = ai.project_id
+              AND t.title = 'Imported · ' || substr(ai.file_name, 1, 70)
           ) = 1;
       `);
-      db.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)').run(MIGRATION_VERSION, now());
+      db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, ?)').run(now());
+      applied = 3;
+    }
+    if (applied < 4) {
+      db.prepare(`
+        INSERT INTO message_changes(message_id, created_at)
+        SELECT id, created_at FROM messages ORDER BY sequence
+      `).run();
+      db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)').run(now());
     }
     db.exec('COMMIT;');
   } catch (error) {
@@ -313,6 +365,12 @@ export function openDatabase(dataDirectory) {
     getTranscript,
     getThreadRevision,
     getThreadMessagesAfter,
+    getDraft,
+    saveDraft,
+    clearDraft,
+    createGenerationAttempt,
+    getGenerationAttempt,
+    updateGenerationAttempt,
     addUserMessage,
     addCommandMessage,
     addAssistantMessage,
@@ -322,6 +380,7 @@ export function openDatabase(dataDirectory) {
     addSystemActivity,
     getMessage,
     searchMessages,
+    searchRelevantMessages,
     getLedgerItems,
     getEffectiveLedger,
     getLedgerItem,
@@ -334,6 +393,7 @@ export function openDatabase(dataDirectory) {
     getMemoryJobForMessage,
     markMemoryJobProcessing,
     markMemoryJobIndexed,
+    commitMemoryJob,
     markMemoryJobError,
     markMemoryJobPending,
     retryMemoryJobs,
@@ -666,10 +726,7 @@ export function openDatabase(dataDirectory) {
     let inherited = [];
     if (thread.sourceThreadId) {
       inherited = getTranscript(thread.sourceThreadId, seen);
-      if (thread.forkMessageId) {
-        const forkIndex = inherited.findIndex((message) => message.id === thread.forkMessageId);
-        inherited = forkIndex < 0 ? [] : inherited.slice(0, forkIndex + 1);
-      }
+      if (thread.parentBranchId) inherited = inherited.filter((message) => message.sequence <= (thread.forkSequence ?? 0));
       inherited = inherited.map((message) => ({ ...message, inherited: true }));
     }
     const local = db.prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY sequence').all(threadId).map(normalizeMessage);
@@ -677,13 +734,85 @@ export function openDatabase(dataDirectory) {
   }
 
   function getThreadRevision(threadId) {
-    return db.prepare('SELECT COALESCE(MAX(sequence), 0) AS revision FROM messages WHERE thread_id = ?').get(threadId)?.revision ?? 0;
+    const visibleIds = getTranscript(threadId).map((message) => message.id);
+    if (!visibleIds.length) return 0;
+    const placeholders = visibleIds.map(() => '?').join(',');
+    return db.prepare(`SELECT COALESCE(MAX(revision), 0) AS revision FROM message_changes WHERE message_id IN (${placeholders})`)
+      .get(...visibleIds)?.revision ?? 0;
   }
 
-  function getThreadMessagesAfter(threadId, sequence = 0) {
-    const after = Number.isSafeInteger(Number(sequence)) ? Math.max(0, Number(sequence)) : 0;
-    return db.prepare('SELECT * FROM messages WHERE thread_id = ? AND sequence > ? ORDER BY sequence')
-      .all(threadId, after).map(normalizeMessage);
+  function getThreadMessagesAfter(threadId, revision = 0) {
+    const after = Number.isSafeInteger(Number(revision)) ? Math.max(0, Number(revision)) : 0;
+    const visibleIds = getTranscript(threadId).map((message) => message.id);
+    if (!visibleIds.length) return [];
+    const placeholders = visibleIds.map(() => '?').join(',');
+    return db.prepare(`
+      SELECT m.* FROM messages m
+      WHERE m.id IN (${placeholders})
+        AND EXISTS (SELECT 1 FROM message_changes c WHERE c.message_id = m.id AND c.revision > ?)
+      ORDER BY m.sequence
+    `).all(...visibleIds, after).map(normalizeMessage);
+  }
+
+  function getDraft(threadId) {
+    const row = db.prepare('SELECT content, updated_at FROM conversation_drafts WHERE thread_id = ?').get(threadId);
+    return row ? { content: row.content, updatedAt: row.updated_at } : { content: '', updatedAt: null };
+  }
+
+  function saveDraft(threadId, content) {
+    if (!getThread(threadId)) throw new Error('Conversation not found.');
+    const text = String(content ?? '');
+    if (!text.trim()) return clearDraft(threadId);
+    const updatedAt = now();
+    db.prepare(`
+      INSERT INTO conversation_drafts(thread_id, content, updated_at) VALUES(?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at
+    `).run(threadId, text, updatedAt);
+    return { content: text, updatedAt };
+  }
+
+  function clearDraft(threadId) {
+    db.prepare('DELETE FROM conversation_drafts WHERE thread_id = ?').run(threadId);
+    return { content: '', updatedAt: null };
+  }
+
+  function createGenerationAttempt({ requestId, threadId, userMessageId }) {
+    const prior = getGenerationAttempt(requestId);
+    if (prior) return { attempt: prior, created: false };
+    const thread = getThread(threadId);
+    const message = getMessage(userMessageId);
+    if (!thread || !message || message.threadId !== threadId || message.role !== 'user' || message.kind !== 'story') {
+      throw new Error('Choose a saved user story turn in this conversation to retry.');
+    }
+    const id = makeId();
+    const timestamp = now();
+    db.prepare(`
+      INSERT INTO generation_attempts(id, request_id, thread_id, user_message_id, status, created_at, updated_at)
+      VALUES(?, ?, ?, ?, 'pending', ?, ?)
+    `).run(id, String(requestId), threadId, userMessageId, timestamp, timestamp);
+    return { attempt: getGenerationAttempt(requestId), created: true };
+  }
+
+  function getGenerationAttempt(requestId) {
+    const row = db.prepare('SELECT * FROM generation_attempts WHERE request_id = ?').get(String(requestId));
+    return row ? {
+      id: row.id, requestId: row.request_id, threadId: row.thread_id, userMessageId: row.user_message_id,
+      assistantMessageId: row.assistant_message_id, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at
+    } : null;
+  }
+
+  function updateGenerationAttempt(attemptId, { assistantMessageId, status }) {
+    const sets = [];
+    const args = [];
+    if (assistantMessageId !== undefined) { sets.push('assistant_message_id = ?'); args.push(assistantMessageId); }
+    if (status !== undefined) {
+      if (!['pending', 'streaming', 'complete', 'failed', 'interrupted'].includes(status)) throw new Error('Invalid generation attempt status.');
+      sets.push('status = ?'); args.push(status);
+    }
+    if (!sets.length) return null;
+    args.push(now(), attemptId);
+    db.prepare(`UPDATE generation_attempts SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...args);
+    return db.prepare('SELECT * FROM generation_attempts WHERE id = ?').get(attemptId) ?? null;
   }
 
   function addUserMessage(threadId, content, { allowPaused = false } = {}) {
@@ -723,7 +852,7 @@ export function openDatabase(dataDirectory) {
     });
   }
 
-  function addAssistantMessage(threadId, userMessageId) {
+  function addAssistantMessage(threadId, userMessageId, attemptId = null) {
     const thread = getThread(threadId);
     if (!thread) throw new Error('Thread not found.');
     return transaction(() => {
@@ -738,6 +867,7 @@ export function openDatabase(dataDirectory) {
       });
       db.prepare('UPDATE memory_jobs SET assistant_message_id = ?, updated_at = ? WHERE message_id = ?')
         .run(message.id, now(), userMessageId);
+      if (attemptId) updateGenerationAttempt(attemptId, { assistantMessageId: message.id, status: 'streaming' });
       return message;
     });
   }
@@ -812,6 +942,8 @@ export function openDatabase(dataDirectory) {
     const lineage = branchLineage(projectId, branchId);
     if (!lineage.length) return [];
     const scopes = lineage.map(({ branch_id, cutoff_sequence }) => ({ branchId: branch_id, maxSequence: cutoff_sequence ?? MAX_SEQUENCE }));
+    const scopeSql = scopes.map(() => '(branch_id = ? AND sequence <= ?)').join(' OR ');
+    const scopeArgs = scopes.flatMap((scope) => [scope.branchId, scope.maxSequence]);
     const tokens = [...searchText.matchAll(/[\p{L}\p{N}_]+/gu)].map((match) => match[0]).filter(Boolean).slice(0, 10);
     let rows = [];
     if (hasFts && tokens.length) {
@@ -819,9 +951,9 @@ export function openDatabase(dataDirectory) {
       try {
         rows = db.prepare(`
           SELECT m.* FROM message_search s JOIN messages m ON m.sequence = s.rowid
-          WHERE message_search MATCH ? AND m.project_id = ?
+          WHERE message_search MATCH ? AND m.project_id = ? AND (${scopeSql})
           ORDER BY m.sequence DESC LIMIT ?
-        `).all(expression, projectId, limit * 4).filter((row) => scopes.some((scope) => scope.branchId === row.branch_id && row.sequence <= scope.maxSequence));
+        `).all(expression, projectId, ...scopeArgs, limit);
       } catch {
         rows = [];
       }
@@ -829,11 +961,33 @@ export function openDatabase(dataDirectory) {
     if (!rows.length) {
       const escaped = searchText.replace(/[\\%_]/g, '\\$&');
       rows = db.prepare(`
-        SELECT * FROM messages WHERE project_id = ? AND content LIKE ? ESCAPE '\\'
+        SELECT * FROM messages WHERE project_id = ? AND content LIKE ? ESCAPE '\\' AND (${scopeSql})
         ORDER BY sequence DESC LIMIT ?
-      `).all(projectId, `%${escaped}%`, limit * 4).filter((row) => scopes.some((scope) => scope.branchId === row.branch_id && row.sequence <= scope.maxSequence));
+      `).all(projectId, `%${escaped}%`, ...scopeArgs, limit);
     }
-    return rows.slice(0, limit).map((row) => normalizeMessage(row));
+    return rows.map((row) => normalizeMessage(row));
+  }
+
+  function searchRelevantMessages(projectId, branchId, query, limit = 16, threadId = null) {
+    const searchText = String(query ?? '').trim();
+    if (!searchText) return [];
+    const lineage = branchLineage(projectId, branchId);
+    if (!lineage.length) return [];
+    const scopeSql = lineage.map(() => '(branch_id = ? AND sequence <= ?)').join(' OR ');
+    const scopeArgs = lineage.flatMap(({ branch_id, cutoff_sequence }) => [branch_id, cutoff_sequence ?? MAX_SEQUENCE]);
+    const tokens = [...new Set([...searchText.matchAll(/[\p{L}\p{N}_]+/gu)].map((match) => match[0].toLocaleLowerCase()))].slice(0, 20);
+    if (!tokens.length) return [];
+    const conversationFilter = threadId ? ' AND thread_id = ?' : '';
+    const rows = db.prepare(`SELECT * FROM messages WHERE project_id = ? AND kind = 'story' AND (${scopeSql})${conversationFilter}`)
+      .all(projectId, ...scopeArgs, ...(threadId ? [threadId] : []));
+    return rows.map((row) => {
+      const content = row.content.toLocaleLowerCase();
+      const score = tokens.reduce((total, token) => total + (content.includes(token) ? 1 : 0), 0) +
+        (content.includes(searchText.toLocaleLowerCase()) ? tokens.length : 0);
+      return { row, score };
+    }).filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score || right.row.sequence - left.row.sequence)
+      .slice(0, Math.max(0, Number(limit) || 0)).map(({ row }) => normalizeMessage(row));
   }
 
   function getLedgerItems(projectId, branchId, options = {}) {
@@ -850,10 +1004,16 @@ export function openDatabase(dataDirectory) {
       WHERE li.project_id = ? AND (lineage.depth = 0 OR li.source_sequence <= lineage.cutoff_sequence)
       ORDER BY li.source_sequence DESC, li.created_at DESC
     `).all(MAX_SEQUENCE, branchId, projectId, projectId).map(normalizeLedger);
-    if (options.includeSuperseded) return rows;
-    const superseded = new Set(rows.filter((item) => item.status === 'superseded').map((item) => item.id));
-    for (const item of rows) if (item.supersedesId) superseded.add(item.supersedesId);
-    return rows.filter((item) => item.status !== 'superseded' && !superseded.has(item.id));
+    const superseded = new Set(rows.filter((item) => item.supersedesId).map((item) => item.supersedesId));
+    const effectiveRows = rows.map((item) => {
+      if (item.status !== 'superseded' || superseded.has(item.id)) return item;
+      const previous = db.prepare("SELECT before_json FROM ledger_history WHERE ledger_item_id = ? AND action = 'superseded' ORDER BY created_at LIMIT 1")
+        .get(item.id);
+      const priorStatus = previous?.before_json ? parseJson(previous.before_json, {})?.status : null;
+      return { ...item, status: ['current', 'uncertain', 'resolved', 'abandoned'].includes(priorStatus) ? priorStatus : 'current' };
+    });
+    if (options.includeSuperseded) return effectiveRows;
+    return effectiveRows.filter((item) => item.status !== 'superseded' && !superseded.has(item.id));
   }
 
   function getEffectiveLedger(projectId, branchId) {
@@ -866,6 +1026,7 @@ export function openDatabase(dataDirectory) {
 
   function listLedgerHistory(projectId, branchId, ledgerItemId = null) {
     const visibleIds = new Set(getLedgerItems(projectId, branchId, { includeSuperseded: true }).map((item) => item.id));
+    const visibleMessageIds = new Set(getTranscriptIdsForBranch(projectId, branchId));
     if (ledgerItemId && !visibleIds.has(ledgerItemId)) return [];
     const query = ledgerItemId
       ? 'SELECT * FROM ledger_history WHERE project_id = ? AND ledger_item_id = ? ORDER BY created_at'
@@ -873,7 +1034,7 @@ export function openDatabase(dataDirectory) {
     const rows = ledgerItemId
       ? db.prepare(query).all(projectId, ledgerItemId)
       : db.prepare(query).all(projectId);
-    return rows.filter((row) => visibleIds.has(row.ledger_item_id)).map((row) => ({
+    return rows.filter((row) => visibleIds.has(row.ledger_item_id) && visibleMessageIds.has(row.source_message_id)).map((row) => ({
       id: row.id, projectId: row.project_id, branchId: row.branch_id, ledgerItemId: row.ledger_item_id,
       action: row.action, before: row.before_json ? parseJson(row.before_json, null) : null,
       after: parseJson(row.after_json), sourceMessageId: row.source_message_id, createdAt: row.created_at
@@ -893,6 +1054,15 @@ export function openDatabase(dataDirectory) {
       if (cutoff === undefined || row.sequence > cutoff) throw new Error('A source message is outside this branch timeline.');
     }
     return rows;
+  }
+
+  function getTranscriptIdsForBranch(projectId, branchId) {
+    const scopes = branchLineage(projectId, branchId);
+    if (!scopes.length) return [];
+    const scopeSql = scopes.map(() => '(branch_id = ? AND sequence <= ?)').join(' OR ');
+    const args = scopes.flatMap(({ branch_id, cutoff_sequence }) => [branch_id, cutoff_sequence ?? MAX_SEQUENCE]);
+    const rows = db.prepare(`SELECT id FROM messages WHERE project_id = ? AND (${scopeSql})`).all(projectId, ...args);
+    return rows.map((row) => row.id);
   }
 
   function insertLedgerItem(values) {
@@ -952,15 +1122,6 @@ export function openDatabase(dataDirectory) {
       if (!oldItem) throw new Error('Fact not found in this project or branch.');
       const source = visibleSourceMessages(projectId, branchId, [sourceMessageId])[0];
       const before = JSON.stringify(oldItem);
-      if (oldItem.branchId === branchId) {
-        db.prepare('UPDATE ledger_items SET epistemic_status = ?, updated_at = ? WHERE id = ?')
-          .run('superseded', now(), oldItemId);
-        const superseded = getLedgerItem(projectId, branchId, oldItemId);
-        db.prepare(`
-          INSERT INTO ledger_history(id, project_id, branch_id, ledger_item_id, action, before_json, after_json, source_message_id, created_at)
-          VALUES(?, ?, ?, ?, 'superseded', ?, ?, ?, ?)
-        `).run(makeId(), projectId, branchId, oldItemId, before, JSON.stringify(superseded), sourceMessageId, now());
-      }
       const item = insertLedgerItem({
         projectId,
         branchId,
@@ -978,6 +1139,10 @@ export function openDatabase(dataDirectory) {
         INSERT INTO ledger_history(id, project_id, branch_id, ledger_item_id, action, before_json, after_json, source_message_id, created_at)
         VALUES(?, ?, ?, ?, 'retcon', ?, ?, ?, ?)
       `).run(makeId(), projectId, branchId, item.id, before, JSON.stringify(item), sourceMessageId, now());
+      db.prepare(`
+        INSERT INTO ledger_history(id, project_id, branch_id, ledger_item_id, action, before_json, after_json, source_message_id, created_at)
+        VALUES(?, ?, ?, ?, 'correction_linked', ?, ?, ?, ?)
+      `).run(makeId(), projectId, branchId, oldItemId, before, JSON.stringify({ ...oldItem, correctionId: item.id }), sourceMessageId, now());
       return { item, sourceSequence: source.sequence };
     });
   }
@@ -1026,6 +1191,27 @@ export function openDatabase(dataDirectory) {
   function markMemoryJobIndexed(jobId) {
     db.prepare(`UPDATE memory_jobs SET status = 'indexed', error = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), jobId);
+  }
+
+  function commitMemoryJob(jobId, entries) {
+    return transaction(() => {
+      const job = db.prepare('SELECT * FROM memory_jobs WHERE id = ?').get(jobId);
+      if (!job) throw new Error('Continuity job not found.');
+      const items = entries.map((entry) => appendLedgerItem({
+        projectId: job.project_id,
+        branchId: job.branch_id,
+        type: entry.type,
+        subject: entry.subject,
+        content: entry.content,
+        details: entry.details,
+        origin: entry.origin,
+        confidence: entry.confidence,
+        status: entry.status,
+        sourceMessageIds: entry.sourceMessageIds
+      }));
+      markMemoryJobIndexed(jobId);
+      return items;
+    });
   }
 
   function markMemoryJobError(jobId, errorMessage) {
@@ -1380,7 +1566,8 @@ export function openDatabase(dataDirectory) {
 
   function getBackup() {
     const projects = db.prepare('SELECT id FROM projects ORDER BY created_at').all().map(({ id }) => projectRows(id));
-    return { format: 'timeless-sovereign-backup', version: 1, createdAt: now(), projects };
+    const settings = db.prepare('SELECT key, value, updated_at AS updatedAt FROM app_settings ORDER BY key').all();
+    return { format: 'timeless-sovereign-backup', version: 1, createdAt: now(), projects, settings };
   }
 
   function restoreBackup(document) {
@@ -1393,7 +1580,27 @@ export function openDatabase(dataDirectory) {
         DELETE FROM checkpoints; DELETE FROM archive_imports; DELETE FROM ledger_items; DELETE FROM messages;
         DELETE FROM threads; DELETE FROM branches; DELETE FROM projects;
       `);
-      for (const data of document.projects) importProject({ format: 'timeless-sovereign-project', version: 1, data }, { preserveIds: true });
+      for (const original of document.projects) {
+        const data = structuredClone(original);
+        data.messages = (data.messages ?? []).map((message) => ({
+          ...message,
+          status: message.status === 'streaming' ? 'interrupted' : message.status
+        }));
+        data.memoryJobs = (data.memoryJobs ?? []).map((job) => ({
+          ...job,
+          status: job.status === 'processing' ? 'pending' : job.status,
+          error: job.status === 'processing' ? null : job.error
+        }));
+        importProject({ format: 'timeless-sovereign-project', version: 1, data }, { preserveIds: true });
+      }
+      if (Array.isArray(document.settings)) {
+        db.exec('DELETE FROM app_settings;');
+        const insertSetting = db.prepare('INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?)');
+        for (const setting of document.settings) {
+          if (typeof setting?.key !== 'string' || typeof setting?.value !== 'string') throw new Error('The backup contains an invalid app setting.');
+          insertSetting.run(setting.key, setting.value, setting.updatedAt ?? now());
+        }
+      }
     });
     if (hasFts) ftsReady(db);
     return listProjects();

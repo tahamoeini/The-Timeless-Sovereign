@@ -73,13 +73,18 @@ export class MemoryIndexer {
     this.developerInstructions = developerInstructions ?? 'You are a conservative continuity indexer. Use only the supplied source messages. Never create an event from a plan, promise, rumor, or hypothesis. Cite exact source IDs. Return only the requested JSON schema.';
     this.running = new Set();
     this.pendingRuns = new Map();
+    this.paused = false;
   }
+
+  pause() { this.paused = true; }
+  resume() { this.paused = false; }
 
   hasActiveJobs() {
     return this.running.size > 0;
   }
 
   async processMessage(messageId) {
+    if (this.paused) return { state: 'pending', message: 'Continuity indexing is paused for recovery.' };
     if (this.running.has(messageId)) return { state: 'processing' };
     const job = this.database.getMemoryJobForMessage(messageId);
     if (!job) return { state: 'missing' };
@@ -106,14 +111,7 @@ export class MemoryIndexer {
         outputSchema: LEDGER_OUTPUT_SCHEMA
       });
       const entries = validateEntries(parseStructuredOutput(response.text), messages);
-      for (const entry of entries) {
-        this.database.appendLedgerItem({
-          projectId: job.projectId,
-          branchId: job.branchId,
-          ...entry
-        });
-      }
-      this.database.markMemoryJobIndexed(job.id);
+      this.database.commitMemoryJob(job.id, entries);
       return { state: 'indexed', entries: entries.length };
     } catch (error) {
       const message = String(error?.message ?? error);
@@ -129,6 +127,7 @@ export class MemoryIndexer {
   }
 
   async processRecent(limit = 8) {
+    if (this.paused) return [];
     const jobs = this.database.listMemoryJobs(null, null, false)
       .filter((job) => (job.status === 'pending' || job.status === 'error') && !this.running.has(job.messageId))
       .slice(0, Math.max(1, limit));
@@ -138,6 +137,7 @@ export class MemoryIndexer {
   }
 
   processPending(projectId = null) {
+    if (this.paused) return Promise.resolve([]);
     const key = projectId ?? '*';
     const existing = this.pendingRuns.get(key);
     if (existing) return existing;
@@ -150,6 +150,7 @@ export class MemoryIndexer {
   }
 
   async processPendingJobs(projectId) {
+    if (this.paused) return [];
     const jobs = this.database.listMemoryJobs(projectId, null, false)
       .filter((job) => (job.status === 'pending' || job.status === 'error') && !this.running.has(job.messageId));
     const results = [];
