@@ -49,6 +49,12 @@ test('conversation-local memory stays within one chat while the default shares c
   assert.match(localBundle.text, new RegExp(local.message.id));
   assert.doesNotMatch(localBundle.text, /silver key inside the chapel bell/);
   assert.equal(localBundle.memoryScope, 'thread');
+
+  const alternate = db.createBranch(continuation.id, 'A separate local chat');
+  const alternateQuestion = db.addUserMessage(alternate.thread.id, 'What happened in this conversation?');
+  const alternateBundle = buildContextBundle(db, alternate.thread.id, alternateQuestion);
+  assert.doesNotMatch(alternateBundle.text, /west window with a red thread/);
+  assert.doesNotMatch(alternateBundle.text, new RegExp(local.message.id));
 });
 
 test('memory indexing marks failures retryable, validates citations, and does not duplicate ledger history', async (t) => {

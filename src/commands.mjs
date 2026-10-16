@@ -125,7 +125,9 @@ export class CommandProcessor {
     const ledger = this.visibleLedger(thread);
     const certain = ledger.filter((item) => item.status === 'current');
     const uncertain = ledger.filter((item) => item.status === 'uncertain');
-    const recent = this.database.getTranscript(thread.id).filter((message) => message.kind === 'story').slice(-6);
+    const recent = this.database.getTranscript(thread.id)
+      .filter((message) => message.kind === 'story' && (this.memoryScope(thread) === 'project' || message.threadId === thread.id))
+      .slice(-6);
     const sections = ['Source-backed recap (no scene advancement):'];
     if (certain.length) sections.push(`\nCurrent canon:\n${certain.slice(0, 30).map(formatEntry).join('\n')}`);
     else sections.push('\nNo durable canon records have been indexed yet.');
