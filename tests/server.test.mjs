@@ -403,6 +403,7 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
   const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-reasoning-test-'));
   let connection = 'disconnected';
   const capturedEfforts = [];
+  let capturedNarrativeInstructions = '';
   const model = {
     id: 'gpt-story-test', model: 'gpt-story-test', displayName: 'Story Test', isDefault: true,
     defaultReasoningEffort: 'medium',
@@ -418,8 +419,11 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
     async start() { connection = 'connected'; },
     async stop() { connection = 'disconnected'; },
     async listModels() { return [model]; },
-    async startThread({ ephemeral }) {
+    async startThread({ ephemeral, developerInstructions }) {
       assert.equal(ephemeral, true);
+      if (developerInstructions.includes('fiction-only story conversation')) {
+        capturedNarrativeInstructions = developerInstructions;
+      }
       return `ephemeral-story-${capturedEfforts.length + 1}`;
     },
     async streamTurn({ reasoningEffort, outputSchema, onDelta }) {
@@ -454,6 +458,8 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
   });
   assert.equal(decodeSse(turn.body).at(-1).event, 'complete');
   assert.deepEqual(capturedEfforts, ['high']);
+  assert.match(capturedNarrativeInstructions, /Ask for clarification only when the missing information would materially change a consequential outcome/);
+  assert.match(capturedNarrativeInstructions, /Do not repeat caveats or stop routine progress for another confirmation/);
   assert.equal(app.database.getSetting('model.reasoning_effort'), 'high');
 });
 

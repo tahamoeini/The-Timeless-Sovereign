@@ -18,13 +18,34 @@ test('a fresh chat retrieves a specific old event with source IDs while another 
   assert.match(bundle.text, /Mira hid the star atlas beneath the chapel floorboards/);
   assert.match(bundle.text, new RegExp(old.message.id));
   assert.ok(bundle.sourceMessageIds.includes(old.message.id));
-  assert.match(bundle.text, /Do not claim that a character knows or witnessed something unless a source-linked record establishes it/);
+  assert.match(bundle.text, /Use this bundle as continuity evidence, not as an exhaustive transcript/);
 
   const otherThread = db.createThread(second.project.id, second.branch.id, 'Moon landing');
   const otherCurrent = db.addUserMessage(otherThread.id, current.content);
   const otherBundle = buildContextBundle(db, otherThread.id, otherCurrent);
   assert.doesNotMatch(otherBundle.text, /The hidden atlas|star atlas beneath the chapel floorboards/);
   assert.equal(otherBundle.sourceMessageIds.includes(old.message.id), false);
+});
+
+test('recent context keeps complete prior story messages and excludes a streaming reply', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const created = db.createProject({ name: 'Complete recent context' });
+  for (let turn = 1; turn <= 6; turn += 1) {
+    const user = db.addUserMessage(created.thread.id, `User marker ${turn}.`);
+    const assistant = db.addAssistantMessage(created.thread.id, user.id);
+    db.completeAssistantMessage(assistant.id, `Assistant marker ${turn}.`);
+  }
+
+  const current = db.addUserMessage(created.thread.id, 'Continue the scene.');
+  const streaming = db.addAssistantMessage(created.thread.id, current.id);
+  db.appendMessageDelta(streaming.id, 'Unfinished assistant marker.');
+  const bundle = buildContextBundle(db, created.thread.id, current);
+  const recentTurns = bundle.text.split('## Recent raw turns in this thread\n')[1].split('\n## Out-of-story notes')[0];
+
+  assert.doesNotMatch(recentTurns, /User marker 1\.|Assistant marker 1\./);
+  assert.match(recentTurns, /User marker 2\./);
+  assert.match(recentTurns, /Assistant marker 6\./);
+  assert.doesNotMatch(bundle.text, /Unfinished assistant marker/);
 });
 
 test('an empty branch context excludes later parent facts from canon, excerpts, and recent turns', async (t) => {
