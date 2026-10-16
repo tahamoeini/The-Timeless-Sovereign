@@ -161,7 +161,8 @@ test('appearance preferences persist in SQLite across a server restart and updat
 
   const initial = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
   assert.equal(initial.appSettings.theme, 'system');
-  assert.equal(initial.appVersion, '1.5.0');
+  const packageVersion = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.equal(initial.appVersion, packageVersion);
   const firstBackups = JSON.parse((await invoke(app, 'GET', '/api/backups')).body).backups.filter((backup) => backup.kind === 'automatic');
   assert.equal(firstBackups.length, 1);
   const base = `http://127.0.0.1:${app.server.address().port}`;
