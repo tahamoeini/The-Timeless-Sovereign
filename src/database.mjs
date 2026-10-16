@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const MIGRATION_VERSION = 4;
@@ -327,6 +328,17 @@ export function openDatabase(dataDirectory) {
       applied = 3;
     }
     if (applied < 4) {
+      db.exec(`
+        UPDATE messages AS assistant
+        SET source_message_id = (
+          SELECT user.id FROM messages AS user
+          WHERE user.thread_id = assistant.thread_id
+            AND user.role = 'user' AND user.kind = 'story'
+            AND user.sequence < assistant.sequence
+          ORDER BY user.sequence DESC LIMIT 1
+        )
+        WHERE assistant.role = 'assistant' AND assistant.kind = 'story' AND assistant.source_message_id IS NULL;
+      `);
       db.prepare(`
         INSERT INTO message_changes(message_id, created_at)
         SELECT id, created_at FROM messages ORDER BY sequence
@@ -778,7 +790,10 @@ export function openDatabase(dataDirectory) {
 
   function createGenerationAttempt({ requestId, threadId, userMessageId }) {
     const prior = getGenerationAttempt(requestId);
-    if (prior) return { attempt: prior, created: false };
+    if (prior) {
+      if (prior.threadId !== threadId || prior.userMessageId !== userMessageId) throw new Error('This retry request identifier is already in use.');
+      return { attempt: prior, created: false };
+    }
     const thread = getThread(threadId);
     const message = getMessage(userMessageId);
     if (!thread || !message || message.threadId !== threadId || message.role !== 'user' || message.kind !== 'story') {
@@ -863,7 +878,8 @@ export function openDatabase(dataDirectory) {
         role: 'assistant',
         kind: 'story',
         content: '',
-        status: 'streaming'
+        status: 'streaming',
+        sourceMessageId: userMessageId
       });
       db.prepare('UPDATE memory_jobs SET assistant_message_id = ?, updated_at = ? WHERE message_id = ?')
         .run(message.id, now(), userMessageId);
@@ -883,7 +899,7 @@ export function openDatabase(dataDirectory) {
 
   function completeAssistantMessage(messageId, finalContent = null) {
     const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
-    if (!existing) return null;
+    if (!existing || existing.role !== 'assistant' || existing.status !== 'streaming') return null;
     const content = finalContent === null ? existing.content : String(finalContent);
     db.prepare('UPDATE messages SET content = ?, status = ? WHERE id = ?').run(content, 'complete', messageId);
     const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
@@ -894,7 +910,7 @@ export function openDatabase(dataDirectory) {
   function failAssistantMessage(messageId, status, messageText = null) {
     if (!['failed', 'interrupted'].includes(status)) throw new Error('Invalid assistant status.');
     const current = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
-    if (!current) return null;
+    if (!current || current.role !== 'assistant' || current.status !== 'streaming') return null;
     const content = current.content || String(messageText ?? '');
     db.prepare('UPDATE messages SET content = ?, status = ? WHERE id = ?').run(content, status, messageId);
     const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
@@ -936,7 +952,7 @@ export function openDatabase(dataDirectory) {
     `).all(MAX_SEQUENCE, branchId, projectId, projectId);
   }
 
-  function searchMessages(projectId, branchId, query, limit = 40) {
+  function searchMessages(projectId, branchId, query, limit = 40, { threadId = null } = {}) {
     const searchText = String(query ?? '').trim();
     if (!searchText) return [];
     const lineage = branchLineage(projectId, branchId);
@@ -944,6 +960,8 @@ export function openDatabase(dataDirectory) {
     const scopes = lineage.map(({ branch_id, cutoff_sequence }) => ({ branchId: branch_id, maxSequence: cutoff_sequence ?? MAX_SEQUENCE }));
     const scopeSql = scopes.map(() => '(branch_id = ? AND sequence <= ?)').join(' OR ');
     const scopeArgs = scopes.flatMap((scope) => [scope.branchId, scope.maxSequence]);
+    const threadFilter = threadId ? ' AND m.thread_id = ?' : '';
+    const plainThreadFilter = threadId ? ' AND thread_id = ?' : '';
     const tokens = [...searchText.matchAll(/[\p{L}\p{N}_]+/gu)].map((match) => match[0]).filter(Boolean).slice(0, 10);
     let rows = [];
     if (hasFts && tokens.length) {
@@ -951,9 +969,9 @@ export function openDatabase(dataDirectory) {
       try {
         rows = db.prepare(`
           SELECT m.* FROM message_search s JOIN messages m ON m.sequence = s.rowid
-          WHERE message_search MATCH ? AND m.project_id = ? AND (${scopeSql})
+          WHERE message_search MATCH ? AND m.project_id = ? AND (${scopeSql})${threadFilter}
           ORDER BY m.sequence DESC LIMIT ?
-        `).all(expression, projectId, ...scopeArgs, limit);
+        `).all(expression, projectId, ...scopeArgs, ...(threadId ? [threadId] : []), limit);
       } catch {
         rows = [];
       }
@@ -961,9 +979,9 @@ export function openDatabase(dataDirectory) {
     if (!rows.length) {
       const escaped = searchText.replace(/[\\%_]/g, '\\$&');
       rows = db.prepare(`
-        SELECT * FROM messages WHERE project_id = ? AND content LIKE ? ESCAPE '\\' AND (${scopeSql})
+        SELECT * FROM messages WHERE project_id = ? AND content LIKE ? ESCAPE '\\' AND (${scopeSql})${plainThreadFilter}
         ORDER BY sequence DESC LIMIT ?
-      `).all(projectId, `%${escaped}%`, ...scopeArgs, limit);
+      `).all(projectId, `%${escaped}%`, ...scopeArgs, ...(threadId ? [threadId] : []), limit);
     }
     return rows.map((row) => normalizeMessage(row));
   }
@@ -1567,7 +1585,11 @@ export function openDatabase(dataDirectory) {
   function getBackup() {
     const projects = db.prepare('SELECT id FROM projects ORDER BY created_at').all().map(({ id }) => projectRows(id));
     const settings = db.prepare('SELECT key, value, updated_at AS updatedAt FROM app_settings ORDER BY key').all();
-    return { format: 'timeless-sovereign-backup', version: 1, createdAt: now(), projects, settings };
+    const drafts = db.prepare('SELECT thread_id AS threadId, content, updated_at AS updatedAt FROM conversation_drafts ORDER BY thread_id').all();
+    const generationAttempts = db.prepare(`SELECT id, request_id AS requestId, thread_id AS threadId,
+      user_message_id AS userMessageId, assistant_message_id AS assistantMessageId, status,
+      created_at AS createdAt, updated_at AS updatedAt FROM generation_attempts ORDER BY created_at`).all();
+    return { format: 'timeless-sovereign-backup', version: 1, createdAt: now(), projects, settings, drafts, generationAttempts };
   }
 
   function restoreBackup(document) {
@@ -1592,6 +1614,25 @@ export function openDatabase(dataDirectory) {
           error: job.status === 'processing' ? null : job.error
         }));
         importProject({ format: 'timeless-sovereign-project', version: 1, data }, { preserveIds: true });
+      }
+      for (const draft of document.drafts ?? []) {
+        if (typeof draft?.threadId !== 'string' || typeof draft.content !== 'string' || !getThread(draft.threadId)) {
+          throw new Error('The backup contains an invalid conversation draft.');
+        }
+        db.prepare('INSERT INTO conversation_drafts(thread_id, content, updated_at) VALUES(?, ?, ?)')
+          .run(draft.threadId, draft.content, draft.updatedAt ?? now());
+      }
+      for (const attempt of document.generationAttempts ?? []) {
+        const status = ['pending', 'streaming'].includes(attempt.status) ? 'interrupted' : attempt.status;
+        if (!['interrupted', 'complete', 'failed'].includes(status) || typeof attempt?.requestId !== 'string' ||
+            !getThread(attempt.threadId) || !getMessage(attempt.userMessageId)) {
+          throw new Error('The backup contains an invalid generation attempt.');
+        }
+        db.prepare(`INSERT INTO generation_attempts(id, request_id, thread_id, user_message_id, assistant_message_id, status, created_at, updated_at)
+          VALUES(?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(attempt.id ?? makeId(), attempt.requestId, attempt.threadId, attempt.userMessageId,
+            attempt.assistantMessageId && getMessage(attempt.assistantMessageId) ? attempt.assistantMessageId : null,
+            status, attempt.createdAt ?? now(), attempt.updatedAt ?? now());
       }
       if (Array.isArray(document.settings)) {
         db.exec('DELETE FROM app_settings;');
@@ -1632,9 +1673,54 @@ export function openDatabase(dataDirectory) {
   }
 
   function createBackupFile(destinationPath) {
-    db.exec('PRAGMA wal_checkpoint(FULL);');
-    const escaped = String(destinationPath).replaceAll("'", "''");
-    db.exec(`VACUUM INTO '${escaped}'`);
+    const resolvedPath = path.resolve(destinationPath);
+    if (fs.existsSync(resolvedPath)) throw new Error('A backup already exists at the selected destination.');
+    const escaped = resolvedPath.replaceAll("'", "''");
+    try {
+      db.exec('PRAGMA wal_checkpoint(FULL);');
+      db.exec(`VACUUM INTO '${escaped}'`);
+    } catch (error) {
+      try { fs.rmSync(resolvedPath, { force: true }); } catch { /* preserve the original backup error */ }
+      throw error;
+    }
+  }
+}
+
+export function validateBackupSnapshot(snapshotPath) {
+  const sourcePath = path.resolve(snapshotPath);
+  const validation = new DatabaseSync(sourcePath, { readOnly: true });
+  try {
+    const integrity = validation.prepare('PRAGMA integrity_check').all().map((row) => row.integrity_check);
+    if (integrity.length !== 1 || integrity[0] !== 'ok') throw new Error('The selected SQLite backup failed its integrity check.');
+    const tables = new Set(validation.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
+    if (!['schema_migrations', 'projects', 'threads', 'messages'].every((name) => tables.has(name))) {
+      throw new Error('The selected file is not a Story Studio SQLite backup.');
+    }
+    const version = validation.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()?.version ?? 0;
+    if (version < 1 || version > MIGRATION_VERSION) throw new Error('The selected backup uses an unsupported Story Studio schema version.');
+  } finally {
+    validation.close();
+  }
+  return true;
+}
+
+export function readBackupSnapshot(snapshotPath) {
+  const sourcePath = path.resolve(snapshotPath);
+  validateBackupSnapshot(sourcePath);
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'story-studio-backup-read-'));
+  try {
+    fs.copyFileSync(sourcePath, path.join(directory, 'story-studio.db'));
+    const snapshot = openDatabase(directory);
+    try {
+      const integrity = snapshot.integrityCheck();
+      if (integrity.length !== 1 || integrity[0] !== 'ok') throw new Error('The selected SQLite backup failed its integrity check.');
+      return snapshot.getBackup();
+    } finally {
+      snapshot.close();
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 }
 

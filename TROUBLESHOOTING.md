@@ -43,6 +43,8 @@ $env:STORY_STUDIO_PORT = '4318'
 
 Use the printed `http://127.0.0.1:<port>/` address. The app binds to loopback only.
 
+Only one app process can open a data directory. If Story Studio says the directory is already in use, close the other instance first. A lock left by a crashed process is cleared automatically the next time the app starts.
+
 ## Codex app-server executable was not found
 
 The app checks `PATH` and the standard per-user Codex installation at `%LOCALAPPDATA%\OpenAI\Codex\bin\<build>\codex.exe`. Install the Codex desktop/CLI app and restart Story Studio. If your installation is elsewhere, set its path before launching:
@@ -74,7 +76,7 @@ If a credential error appears, use **Disconnect**, close the app, restart it, an
 
 ## A reply failed or was interrupted
 
-The user message is saved before Codex starts. Any partial assistant reply is retained and marked interrupted if the app closes mid-stream. Reopen the chat to inspect the transcript, then send a new message to continue. A generation failure does not erase the source record.
+The user message is saved before Codex starts. Any partial assistant reply is retained and marked interrupted if the app closes mid-stream. Use **Retry** on a failed or interrupted reply to try that saved user turn again without adding a duplicate; each partial attempt remains in the transcript. Draft text is saved separately while you type and returns when you reopen the conversation. A generation failure does not erase the source record.
 
 ## Memory is pending or has an error
 
@@ -84,7 +86,7 @@ If the error says `Invalid schema for response_format` and points to `details`, 
 
 ## Restore or database integrity issue
 
-Before restoring, download a full backup or copy the entire local data directory while the app is stopped. Restore from Settings creates a pre-restore database snapshot, then replaces the story database. The protected sign-in credentials are stored separately and are not part of project exports or database backups.
+Settings shows the latest successful backup and any automatic backup failure. Story Studio makes one automatic SQLite snapshot per UTC day and keeps the latest 14 successful automatic snapshots. You can create a manual snapshot or restore a listed local SQLite snapshot from Settings. Restore stops and drains active replies and indexing, validates the chosen database, creates a pre-restore snapshot, then replaces the story database. The protected sign-in credentials are stored separately and are not part of project exports or backups.
 
 If the app reports a database integrity problem, stop the app and preserve a copy of the full data directory before trying a restore. Do not delete the database or backup folder until the story record has been recovered.
 

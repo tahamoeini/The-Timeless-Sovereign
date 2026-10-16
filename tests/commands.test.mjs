@@ -39,7 +39,8 @@ test('app commands stay out of fiction and update only the selected branch', asy
   assert.match(retcon.output, /Correction recorded/);
   const activeScene = db.getEffectiveLedger(project.id, branch.id).find((item) => item.type === 'scene');
   assert.match(activeScene.content, /western gallery/);
-  assert.equal(db.getLedgerItem(project.id, branch.id, recordId).status, 'superseded');
+  assert.equal(db.getLedgerItem(project.id, branch.id, recordId).status, 'current');
+  assert.ok(db.listLedgerHistory(project.id, branch.id, recordId).some((entry) => entry.action === 'correction_linked'));
   assert.ok(db.listLedgerHistory(project.id, branch.id).some((entry) => entry.action === 'retcon'));
 
   const beforeBranch = db.getEffectiveLedger(project.id, alternate.branch.id);

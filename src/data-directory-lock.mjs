@@ -19,8 +19,9 @@ export function acquireDataDirectoryLock(dataDirectory) {
   const contents = JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() });
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd;
     try {
-      const fd = fs.openSync(lockPath, 'wx', 0o600);
+      fd = fs.openSync(lockPath, 'wx', 0o600);
       fs.writeFileSync(fd, contents, 'utf8');
       return () => {
         try { fs.closeSync(fd); } catch { /* already closed */ }
@@ -30,6 +31,10 @@ export function acquireDataDirectoryLock(dataDirectory) {
         } catch { /* another owner or cleanup already removed it */ }
       };
     } catch (error) {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch { /* already closed */ }
+        try { fs.unlinkSync(lockPath); } catch { /* preserve the lock acquisition error */ }
+      }
       if (error?.code !== 'EEXIST') throw error;
       let existing;
       try { existing = JSON.parse(fs.readFileSync(lockPath, 'utf8')); }

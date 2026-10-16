@@ -99,24 +99,43 @@ test('local app persists a disconnected user turn, rejects cross-origin writes, 
   const thread = JSON.parse(threadResponse.body);
   assert.equal(thread.transcript.find((message) => message.role === 'user').content, rawMessage);
   assert.equal(thread.memory.state, 'pending');
-  assert.equal(thread.transcript.filter((message) => message.role === 'assistant').length, 0);
+  assert.equal(thread.transcript.filter((message) => message.role === 'assistant').length, 1);
+  assert.equal(thread.transcript.find((message) => message.role === 'assistant').status, 'failed');
   assert.equal(calls.starts, 0);
   assert.equal(calls.accessToken, 1);
+
+  const retryRequest = { userMessageId: storyEvents[0].data.message.id, clientRequestId: 'retry-once-001' };
+  const retry = await invoke(app, 'POST', `/api/threads/${created.thread.id}/retry`, retryRequest, { origin: base, csrfToken: bootstrap.csrfToken });
+  const retryEvents = decodeSse(retry.body);
+  assert.equal(retry.status, 200);
+  assert.equal(retryEvents[0].event, 'retry-started');
+  assert.equal(retryEvents.at(-1).event, 'failure');
+  const afterRetry = app.database.getTranscript(created.thread.id).filter((message) => message.role === 'assistant');
+  assert.equal(afterRetry.length, 2);
+  assert.notEqual(afterRetry[0].id, afterRetry[1].id);
+  assert.equal(afterRetry[0].status, 'failed');
+  const retryAgain = await invoke(app, 'POST', `/api/threads/${created.thread.id}/retry`, retryRequest, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(decodeSse(retryAgain.body).at(-1).event, 'retry-existing');
+  const otherUser = app.database.addUserMessage(created.thread.id, 'Another failed turn.');
+  const reusedKey = await invoke(app, 'POST', `/api/threads/${created.thread.id}/retry`, {
+    userMessageId: otherUser.id, clientRequestId: 'retry-once-001'
+  }, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(reusedKey.status, 409);
 
   const command = await invoke(app, 'POST', `/api/threads/${created.thread.id}/send`, { content: '/status' }, { origin: base, csrfToken: bootstrap.csrfToken });
   const commandEvents = decodeSse(command.body);
   assert.equal(commandEvents.some((entry) => entry.event === 'failure'), false);
-  assert.equal(calls.accessToken, 1);
-  assert.equal(commandEvents.at(-1).event, 'complete');
-  assert.equal(commandEvents.at(-1).data.command, true);
+  assert.equal(calls.accessToken, 2);
+  assert.equal(commandEvents.at(-1).event, 'command-complete');
+  assert.ok(commandEvents.at(-1).data.activity);
 
   const pause = await invoke(app, 'POST', `/api/threads/${created.thread.id}/send`, { content: '/pause' }, { origin: base, csrfToken: bootstrap.csrfToken });
-  assert.equal(decodeSse(pause.body).at(-1).event, 'complete');
+  assert.equal(decodeSse(pause.body).at(-1).event, 'command-complete');
   const pausedTurn = await invoke(app, 'POST', `/api/threads/${created.thread.id}/send`, { content: 'This typed turn must remain saved while paused.' }, { origin: base, csrfToken: bootstrap.csrfToken });
   const pausedEvents = decodeSse(pausedTurn.body);
   assert.equal(pausedEvents[0].event, 'saved');
   assert.equal(pausedEvents.at(-1).data.paused, true);
-  assert.equal(calls.accessToken, 1);
+  assert.equal(calls.accessToken, 2);
 
   const exported = await invoke(app, 'GET', '/api/backup');
   const backup = JSON.parse(exported.body);
@@ -142,7 +161,7 @@ test('appearance preferences persist in SQLite across a server restart and updat
 
   const initial = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
   assert.equal(initial.appSettings.theme, 'system');
-  assert.equal(initial.appVersion, '1.2.0');
+  assert.equal(initial.appVersion, '1.5.0');
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const saved = await invoke(app, 'PATCH', '/api/settings/app', { theme: 'dark' }, { origin: base, csrfToken: initial.csrfToken });
   assert.equal(saved.status, 200);
@@ -173,16 +192,183 @@ test('thread snapshot polling returns only new messages instead of retransmittin
   const archived = app.database.addUserMessage(created.thread.id, 'A'.repeat(180_000));
   const full = await invoke(app, 'GET', `/api/threads/${created.thread.id}`);
   const initial = JSON.parse(full.body);
-  const snapshot = await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${initial.transcriptRevision}`);
+  const snapshot = await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${initial.transcriptRevision}&cursorVersion=${initial.cursorVersion}`);
   const unchanged = JSON.parse(snapshot.body);
   assert.equal(Object.hasOwn(unchanged, 'transcript'), false);
   assert.deepEqual(unchanged.delta, []);
   assert.ok(snapshot.body.length < full.body.length / 20);
 
   const next = app.database.addUserMessage(created.thread.id, 'A newly saved continuation.');
-  const changed = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${archived.sequence}`)).body);
+  const changed = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${initial.transcriptRevision}&cursorVersion=${initial.cursorVersion}`)).body);
   assert.deepEqual(changed.delta.map((message) => message.id), [next.id]);
   assert.equal(changed.delta[0].content, 'A newly saved continuation.');
+
+  const assistant = app.database.addAssistantMessage(created.thread.id, next.id);
+  const beforeStreaming = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}`)).body);
+  app.database.appendMessageDelta(assistant.id, 'A partial reply.');
+  const streaming = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${beforeStreaming.transcriptRevision}&cursorVersion=${beforeStreaming.cursorVersion}`)).body);
+  assert.equal(streaming.delta.find((message) => message.id === assistant.id).content, 'A partial reply.');
+  assert.equal(streaming.delta.find((message) => message.id === assistant.id).status, 'streaming');
+  app.database.completeAssistantMessage(assistant.id, 'The final reply.');
+  const completed = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${beforeStreaming.transcriptRevision}&cursorVersion=${beforeStreaming.cursorVersion}`)).body);
+  assert.equal(completed.delta.find((message) => message.id === assistant.id).content, 'The final reply.');
+  assert.equal(completed.delta.find((message) => message.id === assistant.id).status, 'complete');
+});
+
+test('data-directory lock prevents a second database opener and releases cleanly on shutdown', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-lock-test-'));
+  const app = createStoryStudioServer({ dataDirectory, port: 0 });
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+
+  assert.throws(() => createStoryStudioServer({ dataDirectory, port: 0 }), /already in use/i);
+  assert.equal(await fs.stat(path.join(dataDirectory, '.story-studio.lock')).then(() => true), true);
+  await app.close();
+  await assert.rejects(fs.stat(path.join(dataDirectory, '.story-studio.lock')), { code: 'ENOENT' });
+  const reopened = createStoryStudioServer({ dataDirectory, port: 0 });
+  await reopened.listen();
+  await reopened.close();
+});
+
+test('drafts, project exports, and local SQLite snapshots survive download and restore workflows', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-backup-http-test-'));
+  const app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  const created = app.database.createProject({ name: 'Draft export story' });
+  const savedMessage = app.database.addUserMessage(created.thread.id, 'This saved line belongs in the snapshot.');
+  const draftText = 'A paragraph in progress, saved without sending it.';
+  const savedDraft = await invoke(app, 'POST', `/api/threads/${created.thread.id}/draft`, { content: draftText }, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(savedDraft.status, 200);
+  assert.equal(JSON.parse(savedDraft.body).content, draftText);
+
+  const projectDownload = await invoke(app, 'GET', `/api/projects/${created.project.id}/export`);
+  assert.match(projectDownload.headers['content-disposition'], /attachment; filename=/);
+  assert.equal(JSON.parse(projectDownload.body).format, 'timeless-sovereign-project');
+  const fullDownload = await invoke(app, 'GET', '/api/backup');
+  assert.equal(JSON.parse(fullDownload.body).drafts[0].content, draftText);
+
+  const snapshotResponse = await invoke(app, 'POST', '/api/backup/snapshot', {}, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(snapshotResponse.status, 201);
+  const snapshot = JSON.parse(snapshotResponse.body);
+  const priorSnapshot = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}`)).body);
+  const newProject = app.database.createProject({ name: 'Remove me on restore' });
+  assert.ok(app.database.getProject(newProject.project.id));
+
+  const restored = await invoke(app, 'POST', `/api/backups/${snapshot.id}/restore`, { confirmation: 'RESTORE ALL' }, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(restored.status, 200);
+  assert.deepEqual(app.database.listProjects().map((project) => project.name), ['Draft export story']);
+  assert.equal(app.database.getDraft(created.thread.id).content, draftText);
+  const resetSnapshot = JSON.parse((await invoke(app, 'GET', `/api/threads/${created.thread.id}/snapshot?after=${priorSnapshot.transcriptRevision}&cursorVersion=${priorSnapshot.cursorVersion}`)).body);
+  assert.equal(resetSnapshot.resetRequired, true);
+  assert.deepEqual(resetSnapshot.delta.map((message) => message.id), [savedMessage.id]);
+  const backups = JSON.parse((await invoke(app, 'GET', '/api/backups')).body);
+  assert.ok(backups.backups.some((backup) => backup.id === snapshot.id && backup.kind === 'manual'));
+  assert.ok(backups.backups.some((backup) => backup.id === JSON.parse(restored.body).recoveryBackupId && backup.kind === 'pre-restore'));
+  assert.equal(backups.status.latestAutomatic?.kind, 'automatic');
+});
+
+test('automatic backup retention keeps the latest 14 valid SQLite snapshots', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-retention-test-'));
+  let app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+  const directory = path.join(dataDirectory, 'backups');
+  for (let daysAgo = 1; daysAgo <= 15; daysAgo += 1) {
+    const date = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+    const id = `auto-${date.toISOString().slice(0, 10)}`;
+    const destination = path.join(directory, `${id}.db`);
+    app.database.createBackupFile(destination);
+    await fs.utimes(destination, date, date);
+  }
+  await app.close();
+
+  app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  const automatic = JSON.parse((await invoke(app, 'GET', '/api/backups')).body).backups.filter((backup) => backup.kind === 'automatic');
+  assert.equal(automatic.length, 14);
+  assert.equal(automatic[0].id, `auto-${new Date().toISOString().slice(0, 10)}`);
+  assert.ok(automatic.every((backup) => backup.size > 0));
+});
+
+test('backup write failures appear in local status and manual snapshot errors are actionable', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-backup-error-test-'));
+  await fs.writeFile(path.join(dataDirectory, 'backups'), 'not a directory');
+  const app = createStoryStudioServer({ dataDirectory, port: 0 });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  assert.match(bootstrap.backupStatus.error, /mkdir|already exists/i);
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const failed = await invoke(app, 'POST', '/api/backup/snapshot', {}, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(failed.status, 500);
+  assert.match(JSON.parse(failed.body).error, /local backup could not be created/i);
+});
+
+test('restore stops active indexing, drains it, and returns its saved job to pending', async (t) => {
+  const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'story-studio-restore-barrier-test-'));
+  let connection = 'connected';
+  let rejectIndexing = null;
+  let signalIndexerStarted;
+  const indexerStarted = new Promise((resolve) => { signalIndexerStarted = resolve; });
+  const codex = {
+    getConnectionStatus() { return { state: connection, message: 'Test app-server.' }; },
+    async start() { connection = 'connected'; },
+    async stop() {
+      connection = 'disconnected';
+      if (rejectIndexing) {
+        const reject = rejectIndexing;
+        rejectIndexing = null;
+        reject(new Error('Codex app-server stopped.'));
+      }
+    },
+    async startThread() { return 'indexing-thread'; },
+    async streamTurn({ outputSchema }) {
+      assert.ok(outputSchema);
+      signalIndexerStarted();
+      return new Promise((resolve, reject) => { rejectIndexing = reject; });
+    }
+  };
+  const auth = {
+    async status() { return { state: 'connected', message: 'Connected.' }; },
+    async accessToken() { return 'test-access-token'; },
+    async signOut() { return { revoked: false }; }
+  };
+  const app = createStoryStudioServer({ dataDirectory, port: 0, auth, codex });
+  await app.listen();
+  t.after(async () => {
+    await app.close();
+    await fs.rm(dataDirectory, { recursive: true, force: true });
+  });
+  const bootstrap = JSON.parse((await invoke(app, 'GET', '/api/bootstrap')).body);
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const created = app.database.createProject({ name: 'Restore barrier' });
+  const source = app.database.addUserMessage(created.thread.id, 'A saved source awaiting indexing.');
+  const backup = app.database.getBackup();
+
+  const indexing = await invoke(app, 'POST', '/api/memory/retry', { projectId: created.project.id }, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(indexing.status, 200);
+  await indexerStarted;
+  assert.equal(app.indexer.hasActiveJobs(), true);
+
+  const restored = await invoke(app, 'POST', '/api/backup/restore', { confirmation: 'RESTORE ALL', document: backup }, { origin: base, csrfToken: bootstrap.csrfToken });
+  assert.equal(restored.status, 200);
+  assert.equal(app.indexer.hasActiveJobs(), false);
+  assert.equal(app.database.getMemoryJobForMessage(source.id).status, 'pending');
+  assert.ok(JSON.parse(restored.body).recoveryBackupId.startsWith('pre-restore-'));
 });
 
 test('model thinking preferences follow the Codex model catalog and reach turn/start', async (t) => {
@@ -204,9 +390,12 @@ test('model thinking preferences follow the Codex model catalog and reach turn/s
     async start() { connection = 'connected'; },
     async stop() { connection = 'disconnected'; },
     async listModels() { return [model]; },
-    async startThread({ ephemeral }) { return ephemeral ? 'indexer-thread' : 'story-thread'; },
-    async streamTurn({ threadId, reasoningEffort, onDelta }) {
-      if (threadId === 'indexer-thread') return { text: JSON.stringify({ entries: [] }) };
+    async startThread({ ephemeral }) {
+      assert.equal(ephemeral, true);
+      return `ephemeral-story-${capturedEfforts.length + 1}`;
+    },
+    async streamTurn({ reasoningEffort, outputSchema, onDelta }) {
+      if (outputSchema) return { text: JSON.stringify({ entries: [] }) };
       capturedEfforts.push(reasoningEffort);
       onDelta?.('The door opened.');
       return { text: 'The door opened.' };

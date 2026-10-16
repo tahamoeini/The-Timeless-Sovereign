@@ -27,6 +27,24 @@ test('a fresh chat retrieves a specific old event with source IDs while another 
   assert.equal(otherBundle.sourceMessageIds.includes(old.message.id), false);
 });
 
+test('an empty branch context excludes later parent facts from canon, excerpts, and recent turns', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const created = db.createProject({ name: 'Empty branch context' });
+  const alternate = db.createBranch(created.thread.id, 'No earlier scene');
+  const laterParentMessage = db.addUserMessage(created.thread.id, 'Mira hid the silver bell in the cypress tree after the flood.');
+  db.appendLedgerItem({
+    projectId: created.project.id, branchId: created.branch.id, type: 'event', subject: 'The hidden bell',
+    content: laterParentMessage.content, origin: 'user_established', confidence: 1, status: 'current', sourceMessageIds: [laterParentMessage.id]
+  });
+  const question = db.addUserMessage(alternate.thread.id, 'What happened to the silver bell?');
+  const bundle = buildContextBundle(db, alternate.thread.id, question);
+
+  assert.doesNotMatch(bundle.text, /cypress tree after the flood/);
+  assert.equal(bundle.sourceMessageIds.includes(laterParentMessage.id), false);
+  assert.equal(bundle.ledgerItemIds.length, 0);
+  assert.deepEqual(db.getTranscript(alternate.thread.id).map((message) => message.id), [question.id]);
+});
+
 test('conversation-local memory stays within one chat while the default shares canon across project chats', async (t) => {
   const { database: db } = await temporaryDatabase(t);
   const project = db.createProject({ name: 'Memory scope' });
@@ -75,7 +93,7 @@ test('memory indexing marks failures retryable, validates citations, and does no
       if (this.fail) throw new Error('Temporary app-server error.');
       return { text: JSON.stringify({ entries: [{
         type: 'rule', subject: 'Brass compass', content: 'The compass points due west even underground.',
-        details: { limit: 'No exception was shown in the source messages.' }, origin: 'user_established', confidence: 0.93,
+        details: [{ key: 'limit', value: 'No exception was shown in the source messages.' }], origin: 'user_established', confidence: 0.93,
         status: 'current', sourceMessageIds: [user.id]
       }] }) };
     }
@@ -110,7 +128,7 @@ test('an indexing response cannot cite sources outside the submitted messages', 
     async startThread() { return 'temporary'; },
     async streamTurn() {
       return { text: JSON.stringify({ entries: [{
-        type: 'event', subject: 'Invented source', content: 'The kite landed safely.', details: {},
+        type: 'event', subject: 'Invented source', content: 'The kite landed safely.', details: [],
         origin: 'user_established', confidence: 1, status: 'current', sourceMessageIds: ['not-a-saved-message']
       }] }) };
     }
@@ -119,4 +137,23 @@ test('an indexing response cannot cite sources outside the submitted messages', 
   assert.equal((await indexer.processMessage(user.id)).state, 'error');
   assert.equal(db.getEffectiveLedger(created.project.id, created.branch.id).length, 0);
   assert.match(db.memoryStatus(created.project.id, created.branch.id).error, /outside the submitted source records/);
+});
+
+test('ledger changes and an indexed job commit atomically', async (t) => {
+  const { database: db } = await temporaryDatabase(t);
+  const created = db.createProject({ name: 'Atomic index result' });
+  const message = db.addUserMessage(created.thread.id, 'The lantern keeps burning under rain.');
+  const job = db.getMemoryJobForMessage(message.id);
+  db.markMemoryJobProcessing(job.id);
+  const valid = {
+    type: 'event', subject: 'The lantern', content: 'The lantern burns under rain.', details: [],
+    origin: 'user_established', confidence: 1, status: 'current', sourceMessageIds: [message.id]
+  };
+  const invalid = { ...valid, subject: 'Invalid source', sourceMessageIds: ['outside-this-project'] };
+  assert.throws(() => db.commitMemoryJob(job.id, [valid, invalid]), /source message was not found/);
+  assert.equal(db.getEffectiveLedger(created.project.id, created.branch.id).length, 0);
+  assert.equal(db.getMemoryJobForMessage(message.id).status, 'processing');
+  db.commitMemoryJob(job.id, [valid]);
+  assert.equal(db.getEffectiveLedger(created.project.id, created.branch.id).length, 1);
+  assert.equal(db.getMemoryJobForMessage(message.id).status, 'indexed');
 });

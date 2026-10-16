@@ -12,6 +12,7 @@ Requirements:
 - A ChatGPT account eligible to use Sign in with ChatGPT for Codex app-server. Availability and usage limits depend on the account and plan; this app does not provide a separate allowance.
 
 Double-click `START.ps1`, or run it from PowerShell. The app listens only on `127.0.0.1:4317` and opens the local page in your browser. To stop it, close the PowerShell window or press Ctrl+C.
+Only one Story Studio process can use a data directory at a time. A second launch reports that the directory is in use; close the existing app before starting another instance with that directory.
 
 For a manual launch from this folder:
 
@@ -53,10 +54,11 @@ The story database and project exports do not contain credentials. Back up the w
 - Each project has its own instructions, style, canon, and story threads.
 - New chats in the same project retrieve shared project and branch continuity by default. Project settings can limit retrieval to the current conversation; projects remain isolated either way.
 - Thinking level is chosen from the levels advertised by the selected Codex model. Use the model default when you do not want to override it.
-- A branch starts at its fork point and develops an independent timeline. Later events on the main branch are not visible to it.
-- The Narrative view is designed for reading; Transcript shows the conventional saved message sequence. Search covers the full saved conversation. Persian and Arabic text is detected and rendered right-to-left.
+- A branch starts at its fork point and develops an independent timeline. Later events on the main branch are not visible to it, including when the branch starts from an empty chat.
+- The Narrative view is designed for reading; Transcript shows the conventional saved message sequence. Search follows the selected project, branch timeline, and conversation scope. Persian and Arabic text is detected and rendered right-to-left.
 - Appearance follows a neutral ChatGPT-style palette with light, dark, and system options saved in the local database.
 - Every user turn is saved before generation begins. Assistant output is saved as it streams. If generation fails or the app closes, the source messages remain and interrupted/pending work is visible for recovery.
+- Drafts save to SQLite while you type and return when you reopen the conversation. A draft is cleared only after Story Studio confirms the user message was saved. Failed replies have a **Retry** action that reuses the saved user turn and keeps each partial reply as a separate attempt.
 - Continuity indexing runs separately. A pending/error badge does not mean the transcript was lost; use **Retry memory processing** when available.
 
 The existing `Histories` and `Images` folders are left untouched. Import a Markdown chat archive into a project, or import a ChatGPT conversation JSON as a new project or into an existing project. The original source file and every prompt/response message are retained in the local story database.
@@ -87,8 +89,9 @@ Invalid or incomplete command arguments produce an explanation and do not become
 ## Backups, export, and deletion
 
 - **Export this project** downloads complete messages, branches, source-linked ledger records, corrections, and audit history. OAuth credentials are excluded.
-- **Create local backup** makes a consistent SQLite backup under the local data directory’s `backups` folder. **Download full backup** downloads the complete database snapshot; keep it private because it includes all projects and archives.
-- **Restore from backup** replaces the current story database after creating a pre-restore snapshot. A restore does not replace the protected credential store.
+- Story Studio creates one automatic SQLite snapshot per UTC day while it runs and retains the latest 14 successful automatic backups. Manual snapshots and pre-restore snapshots are preserved separately. Backup status and failures appear in Settings.
+- **Create local backup** makes a consistent SQLite snapshot under the local data directory’s `backups` folder. **Download full backup** downloads all projects, drafts, retry history, settings, and archives; keep it private because it includes all local story data.
+- **Restore local snapshot** validates the selected database, stops and drains active replies and indexing, creates a pre-restore snapshot, then restores the story database. You can also restore a downloaded full backup. Neither restore replaces the protected credential store.
 - Installed-app updates do not remove local projects or settings. The uninstaller removes app files, not the local story database or protected credentials.
 - **Delete conversation** is available beside each chat. Review the affected message and branch counts, then enter the exact title and `DELETE CHAT`. If that chat anchors alternate branches, those dependent timelines are included. Remaining continuity facts keep their surviving source links.
 - Project deletion requires typing the project name and `DELETE PROJECT`. It removes that project’s chats, branches, messages, ledger, audit history, checkpoints, and imported archives from the local database.

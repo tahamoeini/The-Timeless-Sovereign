@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +9,8 @@ import { isChatHistoryJson, parseChatHistory, parseChatHistoryJson } from './arc
 import { CodexAppServer } from './codex-app-server.mjs';
 import { CommandProcessor } from './commands.mjs';
 import { buildContextBundle } from './context.mjs';
-import { openDatabase } from './database.mjs';
+import { openDatabase, readBackupSnapshot, validateBackupSnapshot } from './database.mjs';
+import { acquireDataDirectoryLock } from './data-directory-lock.mjs';
 import { MemoryIndexer } from './memory-indexer.mjs';
 import { checkForUpdates } from './updates.mjs';
 
@@ -82,8 +83,12 @@ function safeModelList(models) {
 }
 
 export function createStoryStudioServer({ dataDirectory = defaultDataDirectory(), codex = null, auth = null, database = null, port = 4317, updateChecker = checkForUpdates } = {}) {
+  dataDirectory = path.resolve(dataDirectory);
   fs.mkdirSync(dataDirectory, { recursive: true });
-  const db = database ?? openDatabase(dataDirectory);
+  const releaseDataDirectoryLock = acquireDataDirectoryLock(dataDirectory);
+  let db;
+  try { db = database ?? openDatabase(dataDirectory); }
+  catch (error) { releaseDataDirectoryLock(); throw error; }
   const codexServer = codex ?? new CodexAppServer({ dataDirectory });
   const authService = auth ?? new AuthService({ dataDirectory, database: db });
   const commands = new CommandProcessor(db);
@@ -96,12 +101,135 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
   let closingRequested = false;
   let shutdownPromise = null;
   let codexConnectionPromise = null;
+  let restoreInProgress = false;
+  let backupTimer = null;
+  let lastBackupError = db.getSetting('backup.auto.lastError', '');
 
   function trackBackgroundTask(task) {
     let tracked;
     tracked = Promise.resolve(task).catch(() => {}).finally(() => backgroundTasks.delete(tracked));
     backgroundTasks.add(tracked);
     return tracked;
+  }
+
+  function backupDirectory() { return path.join(dataDirectory, 'backups'); }
+
+  function listBackups() {
+    let filenames = [];
+    try { filenames = fs.readdirSync(backupDirectory()); } catch { return []; }
+    return filenames.filter((filename) => /^(?:auto-\d{4}-\d{2}-\d{2}|manual-[0-9a-f-]{36}|pre-restore-[0-9a-f-]{36})\.db$/i.test(filename))
+      .map((filename) => {
+        try {
+          const info = fs.statSync(path.join(backupDirectory(), filename));
+          if (!info.isFile() || info.size === 0) return null;
+          const kind = filename.startsWith('auto-') ? 'automatic' : filename.startsWith('manual-') ? 'manual' : 'pre-restore';
+          return { id: filename.slice(0, -3), kind, createdAt: info.mtime.toISOString(), size: info.size };
+        } catch { return null; }
+      }).filter(Boolean).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  function recordBackupFailure(error) {
+    lastBackupError = String(error?.message ?? error).slice(0, 500);
+    try { db.setSetting('backup.auto.lastError', lastBackupError); } catch { /* disk failure may prevent recording its own status */ }
+  }
+
+  function retainAutomaticBackups() {
+    const automatic = listBackups().filter((backup) => backup.kind === 'automatic');
+    const successful = [];
+    for (const backup of automatic) {
+      const fullPath = path.join(backupDirectory(), `${backup.id}.db`);
+      try {
+        validateBackupSnapshot(fullPath);
+        successful.push(backup);
+      } catch (error) {
+        try { fs.unlinkSync(fullPath); }
+        catch (deleteError) { recordBackupFailure(deleteError); }
+        if (error) recordBackupFailure(error);
+      }
+    }
+    for (const backup of successful.slice(14)) {
+      try { fs.unlinkSync(path.join(backupDirectory(), `${backup.id}.db`)); }
+      catch (error) { recordBackupFailure(error); }
+    }
+  }
+
+  function createAutomaticBackupIfDue() {
+    const day = new Date().toISOString().slice(0, 10);
+    const directory = backupDirectory();
+    const filename = `auto-${day}.db`;
+    const destination = path.join(directory, filename);
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      if (fs.existsSync(destination)) {
+        const existing = fs.statSync(destination);
+        if (existing.isFile() && existing.size > 0) {
+          try {
+            validateBackupSnapshot(destination);
+            if (!db.getSetting('backup.auto.lastSuccess', null)) db.setSetting('backup.auto.lastSuccess', existing.mtime.toISOString());
+            retainAutomaticBackups();
+            return;
+          } catch { fs.rmSync(destination, { force: true }); }
+        }
+        fs.rmSync(destination, { force: true });
+      }
+      db.createBackupFile(destination);
+      validateBackupSnapshot(destination);
+      const completedAt = new Date().toISOString();
+      db.setSetting('backup.auto.lastSuccess', completedAt);
+      db.setSetting('backup.auto.lastError', '');
+      lastBackupError = '';
+      retainAutomaticBackups();
+    } catch (error) {
+      try { fs.rmSync(destination, { force: true }); } catch { /* the snapshot may not have been created */ }
+      recordBackupFailure(error);
+    }
+  }
+
+  function backupStatus() {
+    const latest = listBackups()[0] ?? null;
+    return {
+      latest,
+      latestAutomatic: listBackups().find((backup) => backup.kind === 'automatic') ?? null,
+      lastSuccessfulAt: db.getSetting('backup.auto.lastSuccess', null),
+      error: lastBackupError || db.getSetting('backup.auto.lastError', '') || null
+    };
+  }
+
+  async function withRestoreBarrier(restore) {
+    if (restoreInProgress) throw Object.assign(new Error('A backup restore is already in progress.'), { status: 409 });
+    restoreInProgress = true;
+    indexer.pause();
+    try {
+      for (const active of activeTurns.values()) {
+        active.cancelled = true;
+        if (active.codexThreadId) {
+          try { await codexServer.interrupt(active.codexThreadId); } catch { /* the turn will settle when its stream closes */ }
+        }
+      }
+      await codexServer.stop();
+      await Promise.allSettled([...threadQueues.values()]);
+      await Promise.allSettled([...backgroundTasks]);
+      if (activeTurns.size || indexer.hasActiveJobs()) throw new Error('Story work did not drain. Wait for active replies and indexing to stop, then retry restore.');
+      fs.mkdirSync(backupDirectory(), { recursive: true });
+      const recoveryId = `pre-restore-${randomUUID()}`;
+      const recoveryPath = path.join(backupDirectory(), `${recoveryId}.db`);
+      try {
+        db.createBackupFile(recoveryPath);
+        validateBackupSnapshot(recoveryPath);
+      } catch (error) {
+        try { fs.rmSync(recoveryPath, { force: true }); } catch { /* preserve the recovery error */ }
+        throw error;
+      }
+      const priorCursorVersion = Number(db.getSetting('transcript.cursorVersion', '2'));
+      const result = restore();
+      db.setSetting('transcript.cursorVersion', String(Number.isSafeInteger(priorCursorVersion) && priorCursorVersion >= 2 ? priorCursorVersion + 1 : 3));
+      lastBackupError = db.getSetting('backup.auto.lastError', '');
+      createAutomaticBackupIfDue();
+      return { ...result, recoveryBackupId: recoveryId };
+    } finally {
+      indexer.resume();
+      restoreInProgress = false;
+    }
   }
 
   async function authorizationStatus() {
@@ -152,39 +280,26 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     if (shutdownPromise) return shutdownPromise;
     closingRequested = true;
     shutdownPromise = (async () => {
-      await codexServer.stop();
-      await Promise.allSettled([...threadQueues.values()]);
-      await Promise.allSettled([...backgroundTasks]);
-      await new Promise((resolve) => server.close(() => resolve()));
-      db.close();
+      if (backupTimer) clearInterval(backupTimer);
+      try {
+        await Promise.allSettled([codexServer.stop()]);
+        await Promise.allSettled([...threadQueues.values()]);
+        await Promise.allSettled([...backgroundTasks]);
+        if (server?.listening) await new Promise((resolve) => server.close(() => resolve()));
+      } finally {
+        try { db.close(); }
+        finally { releaseDataDirectoryLock(); }
+      }
     })();
     return shutdownPromise;
-  }
-
-  async function ensureThreadLoaded(thread) {
-    const instructions = 'This is a fiction-only story conversation. Do not inspect, read, write, or execute files; do not perform coding tasks; do not use tools or external services. Continue only from the supplied source-backed story context. Treat uncertain claims as uncertain and ask when continuity is missing.';
-    if (thread.codexThreadId) {
-      return codexServer.resumeThread({ codexThreadId: thread.codexThreadId, developerInstructions: instructions });
-    }
-    let codexThreadId;
-    if (thread.sourceThreadId) {
-      const source = db.getThread(thread.sourceThreadId);
-      if (!source) throw new Error('The source conversation for this continuation is unavailable.');
-      const parentId = await ensureThreadLoaded(source);
-      codexThreadId = await codexServer.forkThread({ codexThreadId: parentId, developerInstructions: instructions });
-    } else {
-      codexThreadId = await codexServer.startThread({
-        model: db.getSetting('model.selected', null), developerInstructions: instructions, ephemeral: false
-      });
-    }
-    db.setCodexThreadId(thread.id, codexThreadId);
-    return codexThreadId;
   }
 
   function threadPayload(threadId, { includeTranscript = true } = {}) {
     const thread = db.getThread(threadId);
     if (!thread) return null;
     const project = db.getProject(thread.projectId);
+    const storedCursorVersion = Number(db.getSetting('transcript.cursorVersion', '2'));
+    const cursorVersion = Number.isSafeInteger(storedCursorVersion) && storedCursorVersion >= 2 ? storedCursorVersion : 2;
     const memoryScope = project.memoryScope === 'thread' ? 'thread' : 'project';
     const visibleMemoryItem = (item) => memoryScope === 'project' || (item.sourceMessageIds.length > 0 && item.sourceMessageIds.every((id) =>
       db.getMessage(id)?.threadId === thread.id
@@ -198,6 +313,8 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       project,
       ...(includeTranscript ? { transcript: db.getTranscript(thread.id) } : {}),
       transcriptRevision: db.getThreadRevision(thread.id),
+      cursorVersion,
+      draft: db.getDraft(thread.id),
       ledger: allLedger.filter(visibleMemoryItem).map((item) => ({ ...item, effective: currentIds.has(item.id) })),
       memory,
       memoryScope,
@@ -230,15 +347,24 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     }
   }
 
-  async function runNarrativeTurn(thread, userMessage, res) {
-    const active = { threadId: thread.id, userMessage, assistantMessage: null, codexThreadId: null, cancelled: false };
+  async function runNarrativeTurn(thread, userMessage, res, attempt = null) {
+    const active = { threadId: thread.id, userMessage, assistantMessage: null, codexThreadId: null, cancelled: false, attemptId: attempt?.id ?? null };
     activeTurns.set(thread.id, active);
     try {
-      await ensureCodexConnected();
-      if (active.cancelled || closingRequested) throw new Error('The response was stopped before generation began.');
+      const assistantMessage = db.addAssistantMessage(thread.id, userMessage.id, attempt?.id ?? null);
+      active.assistantMessage = assistantMessage;
+      if (active.cancelled || closingRequested || restoreInProgress) throw new Error('The response was stopped before generation began.');
       const currentThread = db.getThread(thread.id);
       if (currentThread.paused) throw new Error('This thread is paused. Use /resume before continuing.');
       const bundle = buildContextBundle(db, thread.id, userMessage);
+      sse(res, 'assistant-saved', {
+        message: assistantMessage,
+        sources: bundle.sourceMessageIds,
+        ledgerItems: bundle.ledgerItemIds,
+        inspector: bundle.inspector
+      });
+      await ensureCodexConnected();
+      if (active.cancelled || closingRequested || restoreInProgress) throw new Error('The response was stopped before generation began.');
       const selectedModel = db.getSetting('model.selected', null);
       const reasoningEffort = db.getSetting('model.reasoning_effort', '');
       if (reasoningEffort) {
@@ -248,12 +374,14 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
           throw new Error(`The saved thinking level “${reasoningEffort}” is no longer supported by the selected Codex model. Choose a supported level in Settings.`);
         }
       }
-      const codexThreadId = await ensureThreadLoaded(currentThread);
-      if (active.cancelled || closingRequested) throw new Error('The response was stopped before generation began.');
+      const instructions = 'This is a fiction-only story conversation. Do not inspect, read, write, or execute files; do not perform coding tasks; do not use tools or external services. Continue only from the supplied source-backed story context. Treat uncertain claims as uncertain and ask when continuity is missing.';
+      const codexThreadId = await codexServer.startThread({
+        model: selectedModel,
+        developerInstructions: instructions,
+        ephemeral: true
+      });
+      if (active.cancelled || closingRequested || restoreInProgress) throw new Error('The response was stopped before generation began.');
       active.codexThreadId = codexThreadId;
-      const assistantMessage = db.addAssistantMessage(thread.id, userMessage.id);
-      active.assistantMessage = assistantMessage;
-      sse(res, 'assistant-saved', { message: assistantMessage, sources: bundle.sourceMessageIds, ledgerItems: bundle.ledgerItemIds });
       const result = await codexServer.streamTurn({
         threadId: codexThreadId,
         text: bundle.text,
@@ -265,7 +393,10 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
         },
         onActivity: (activity) => sse(res, 'activity', activity)
       });
+      if (active.cancelled || restoreInProgress) throw new Error('The response was interrupted before it could be saved.');
       const saved = db.completeAssistantMessage(assistantMessage.id, result.text);
+      if (!saved) throw new Error('The reply was interrupted before it could be saved.');
+      if (attempt) db.updateGenerationAttempt(attempt.id, { status: 'complete' });
       sse(res, 'complete', { message: saved, memory: db.memoryStatus(thread.projectId, thread.branchId) });
       trackBackgroundTask(indexer.processMessage(userMessage.id).catch((error) => db.markMemoryJobError(
         db.listMemoryJobs(thread.projectId, thread.branchId, true).find((job) => job.messageId === userMessage.id)?.id,
@@ -273,18 +404,20 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       )));
       trackBackgroundTask(indexer.processRecent(8));
     } catch (error) {
-      const status = active.cancelled ? 'interrupted' : 'failed';
+      const interrupted = active.cancelled || closingRequested || restoreInProgress;
+      const status = interrupted ? 'interrupted' : 'failed';
       if (active.assistantMessage) db.failAssistantMessage(active.assistantMessage.id, status);
+      if (attempt) db.updateGenerationAttempt(attempt.id, { status });
       const publicMessage = error instanceof AuthError ? error.message : String(error?.message ?? error);
-      const activity = db.addSystemActivity(thread.id, active.cancelled ? 'Generation was interrupted. The saved user turn and any partial assistant text remain in the transcript.' : `Generation failed: ${publicMessage}`, 'status');
-      sse(res, 'failure', { message: publicMessage, interrupted: active.cancelled, activity });
+      const activity = db.addSystemActivity(thread.id, interrupted ? 'Generation was interrupted. The saved user turn and any partial assistant text remain in the transcript.' : `Generation failed: ${publicMessage}`, 'status');
+      sse(res, 'failure', { message: publicMessage, interrupted, activity });
     } finally {
       activeTurns.delete(thread.id);
     }
   }
 
   async function sendMessage(threadId, content, res) {
-    if (closingRequested) throw Object.assign(new Error('Story Studio is stopping.'), { status: 503 });
+    if (closingRequested || restoreInProgress) throw Object.assign(new Error(restoreInProgress ? 'Story Studio is restoring a backup. Try again when recovery finishes.' : 'Story Studio is stopping.'), { status: 503 });
     const thread = db.getThread(threadId);
     if (!thread) throw Object.assign(new Error('Conversation not found.'), { status: 404 });
     if (typeof content !== 'string' || !content.trim()) throw Object.assign(new Error('Write a message before sending.'), { status: 400 });
@@ -293,7 +426,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const result = commands.process(threadId, content);
       sseStart(res);
       sse(res, 'saved', { message: result.userMessage });
-      sse(res, 'complete', { activity: result.activity, output: result.output, command: true });
+      sse(res, 'command-complete', { activity: result.activity, output: result.output });
       res.end();
       return;
     }
@@ -314,9 +447,47 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     res.end();
   }
 
+  async function retryTurn(threadId, body, res) {
+    if (closingRequested || restoreInProgress) throw Object.assign(new Error('Story Studio is stopping or restoring a backup.'), { status: 503 });
+    const userMessageId = String(body.userMessageId ?? '');
+    const requestId = String(body.clientRequestId ?? '');
+    if (!requestId || requestId.length > 120) throw Object.assign(new Error('A retry request identifier is required.'), { status: 400 });
+    const thread = db.getThread(threadId);
+    if (!thread) throw Object.assign(new Error('Conversation not found.'), { status: 404 });
+    const userMessage = db.getMessage(userMessageId);
+    if (!userMessage || userMessage.threadId !== threadId || userMessage.role !== 'user' || userMessage.kind !== 'story') {
+      throw Object.assign(new Error('Choose a saved user story turn in this conversation to retry.'), { status: 400 });
+    }
+    const retryable = db.getTranscript(threadId).some((message) =>
+      message.role === 'assistant' && message.sourceMessageId === userMessageId && ['failed', 'interrupted'].includes(message.status)
+    );
+    const existing = db.getGenerationAttempt(requestId);
+    if (existing && (existing.threadId !== threadId || existing.userMessageId !== userMessageId)) {
+      throw Object.assign(new Error('This retry request identifier is already in use.'), { status: 409 });
+    }
+    if (!existing && !retryable) throw Object.assign(new Error('This user turn has no failed reply to retry.'), { status: 409 });
+    const { attempt, created } = db.createGenerationAttempt({ requestId, threadId, userMessageId });
+    sseStart(res);
+    if (!created) {
+      sse(res, 'retry-existing', { attempt, message: attempt.assistantMessageId ? db.getMessage(attempt.assistantMessageId) : null });
+      res.end();
+      return;
+    }
+    sse(res, 'retry-started', { attempt, userMessage });
+    const previous = threadQueues.get(threadId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(() => closingRequested ? undefined : runNarrativeTurn(thread, userMessage, res, attempt));
+    threadQueues.set(threadId, next);
+    try { await next; }
+    finally { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); }
+    res.end();
+  }
+
   async function handleApi(req, res, url) {
     const method = req.method ?? 'GET';
     const pathname = url.pathname;
+    if (restoreInProgress && !['GET', 'HEAD'].includes(method.toUpperCase())) {
+      return json(res, 503, { error: 'Story Studio is restoring a backup. Try again when recovery finishes.' });
+    }
     if (method === 'GET' && pathname === '/api/bootstrap') {
       const authState = await authorizationStatus();
       const projects = db.listProjects();
@@ -331,6 +502,7 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
         },
         authorization: authState,
         codex: codexServer.getConnectionStatus(),
+        backupStatus: backupStatus(),
         database: { integrity: db.integrityCheck(), fts: db.hasFts, location: db.dbPath },
         features: { projectImport: true, archiveImport: true, backup: true, search: true }
       });
@@ -449,9 +621,26 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const result = threadPayload(threadSnapshotMatch[0], { includeTranscript: false });
       if (!result) return json(res, 404, { error: 'Conversation not found.' });
       const after = Number(url.searchParams.get('after') ?? 0);
-      if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: 'Message cursor must be a non-negative integer.' });
-      result.delta = db.getThreadMessagesAfter(threadSnapshotMatch[0], after);
+      const cursorVersion = Number(url.searchParams.get('cursorVersion') ?? 0);
+      if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: 'Message revision cursor must be a non-negative integer.' });
+      result.resetRequired = cursorVersion !== result.cursorVersion;
+      result.delta = result.resetRequired
+        ? db.getTranscript(threadSnapshotMatch[0])
+        : db.getThreadMessagesAfter(threadSnapshotMatch[0], after);
       return json(res, 200, result);
+    }
+    const draftMatch = pathMatch(pathname, /^\/api\/threads\/([^/]+)\/draft$/);
+    if (draftMatch && method === 'POST') {
+      const body = await readJson(req);
+      if (typeof body.content !== 'string' || body.content.length > MAX_MESSAGE_CHARS) {
+        return json(res, 400, { error: 'Draft text must be a string of at most 250,000 characters.' });
+      }
+      try { return json(res, 200, db.saveDraft(draftMatch[0], body.content)); }
+      catch (error) { return json(res, 404, { error: error.message }); }
+    }
+    if (draftMatch && method === 'DELETE') {
+      if (!db.getThread(draftMatch[0])) return json(res, 404, { error: 'Conversation not found.' });
+      return json(res, 200, db.clearDraft(draftMatch[0]));
     }
     const messageGetMatch = pathMatch(pathname, /^\/api\/messages\/([^/]+)$/);
     if (messageGetMatch && method === 'GET') {
@@ -468,6 +657,11 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     if (sendMatch && method === 'POST') {
       const body = await readJson(req);
       return sendMessage(sendMatch[0], body.content, res);
+    }
+    const retryMatch = pathMatch(pathname, /^\/api\/threads\/([^/]+)\/retry$/);
+    if (retryMatch && method === 'POST') {
+      const body = await readJson(req);
+      return retryTurn(retryMatch[0], body, res);
     }
     const cancelMatch = pathMatch(pathname, /^\/api\/threads\/([^/]+)\/cancel$/);
     if (cancelMatch && method === 'POST') {
@@ -491,11 +685,18 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
       const projectId = url.searchParams.get('projectId');
       const branchId = url.searchParams.get('branchId');
       const query = url.searchParams.get('q') ?? '';
+      const threadId = url.searchParams.get('threadId');
       const project = db.getProject(projectId);
       if (!project) return json(res, 404, { error: 'Project not found.' });
       const branch = db.listBranches(projectId).find((item) => item.id === branchId);
       if (!branch) return json(res, 400, { error: 'Select a branch in this project.' });
-      const results = db.searchMessages(projectId, branchId, query, 60).map((message) => ({ ...message, thread: db.getThread(message.threadId) }));
+      if (project.memoryScope === 'thread' && !threadId) return json(res, 400, { error: 'Choose a conversation for conversation-local search.' });
+      if (threadId) {
+        const thread = db.getThread(threadId);
+        if (!thread || thread.projectId !== projectId || thread.branchId !== branchId) return json(res, 400, { error: 'Choose a conversation in the selected project and branch.' });
+      }
+      const results = db.searchMessages(projectId, branchId, query, 60, { threadId })
+        .map((message) => ({ ...message, thread: db.getThread(message.threadId) }));
       return json(res, 200, { query, results });
     }
     if (method === 'POST' && pathname === '/api/memory/retry') {
@@ -598,20 +799,43 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     if (method === 'POST' && pathname === '/api/backup/restore') {
       const body = await readJson(req);
       if (body.confirmation !== 'RESTORE ALL') return json(res, 400, { error: 'Type RESTORE ALL to replace every local story project with this backup.' });
-      await codexServer.stop();
-      const beforePath = path.join(dataDirectory, 'backups', `before-restore-${Date.now()}.db`);
-      fs.mkdirSync(path.dirname(beforePath), { recursive: true });
-      db.createBackupFile(beforePath);
-      const projects = db.restoreBackup(body.document);
-      return json(res, 200, { projects, recoveryBackup: beforePath });
+      try {
+        const restored = await withRestoreBarrier(() => ({ projects: db.restoreBackup(body.document) }));
+        return json(res, 200, restored);
+      } catch (error) {
+        return json(res, error.status ?? 400, { error: error.message });
+      }
     }
     if (method === 'POST' && pathname === '/api/backup/snapshot') {
-      const directory = path.join(dataDirectory, 'backups');
-      fs.mkdirSync(directory, { recursive: true });
-      const filename = `story-studio-${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
+      const directory = backupDirectory();
+      const id = `manual-${randomUUID()}`;
+      const filename = `${id}.db`;
       const fullPath = path.join(directory, filename);
-      db.createBackupFile(fullPath);
-      return json(res, 201, { filename, path: fullPath });
+      try {
+        fs.mkdirSync(directory, { recursive: true });
+        db.createBackupFile(fullPath);
+        validateBackupSnapshot(fullPath);
+        return json(res, 201, { id, filename, createdAt: fs.statSync(fullPath).mtime.toISOString() });
+      } catch (error) {
+        try { fs.rmSync(fullPath, { force: true }); } catch { /* preserve the backup error */ }
+        recordBackupFailure(error);
+        return json(res, 500, { error: `The local backup could not be created: ${error.message}` });
+      }
+    }
+    if (method === 'GET' && pathname === '/api/backups') return json(res, 200, { backups: listBackups(), status: backupStatus() });
+    const localBackupRestoreMatch = pathMatch(pathname, /^\/api\/backups\/([^/]+)\/restore$/);
+    if (localBackupRestoreMatch && method === 'POST') {
+      const body = await readJson(req);
+      if (body.confirmation !== 'RESTORE ALL') return json(res, 400, { error: 'Type RESTORE ALL to replace every local story project with this backup.' });
+      const selected = listBackups().find((backup) => backup.id === localBackupRestoreMatch[0]);
+      if (!selected) return json(res, 404, { error: 'That local backup is no longer available.' });
+      try {
+        const document = readBackupSnapshot(path.join(backupDirectory(), `${selected.id}.db`));
+        const restored = await withRestoreBarrier(() => ({ projects: db.restoreBackup(document) }));
+        return json(res, 200, restored);
+      } catch (error) {
+        return json(res, error.status ?? 400, { error: error.message });
+      }
     }
     if (method === 'GET' && pathname === '/api/integrity') {
       return json(res, 200, { integrity: db.integrityCheck(), fts: db.hasFts, database: db.dbPath });
@@ -674,6 +898,10 @@ export function createStoryStudioServer({ dataDirectory = defaultDataDirectory()
     res.writeHead(200, { 'Content-Type': file[1], 'Cache-Control': 'no-cache' });
     return res.end(fs.readFileSync(fullPath));
   });
+
+  createAutomaticBackupIfDue();
+  backupTimer = setInterval(createAutomaticBackupIfDue, 60 * 60 * 1000);
+  backupTimer.unref?.();
 
   return {
     server,
