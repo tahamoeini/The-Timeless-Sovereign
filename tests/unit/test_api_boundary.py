@@ -177,6 +177,55 @@ class ApiBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(dated_timeline.status_code, 200, dated_timeline.text)
         self.assertEqual(dated_timeline.json(), [])
+        claim = self.request(
+            "POST",
+            "/api/v1/workspaces/api-workspace/commands",
+            headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 3, "idempotency_key": "record-known-city",
+                "command_type": "add_claim", "reason": "Record a known property",
+                "payload": {
+                    "claim_id": "api-city", "subject_entity_id": "api-entity", "predicate": "current city",
+                    "object_value": "Paris", "epistemic_status": "known", "review_status": "accepted",
+                },
+            },
+        )
+        self.assertEqual(claim.status_code, 200, claim.text)
+        rule = self.request(
+            "POST",
+            "/api/v1/workspaces/api-workspace/commands",
+            headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 4, "idempotency_key": "create-api-rule",
+                "command_type": "create_rule", "reason": "Add a reviewed constraint",
+                "payload": {
+                    "rule_id": "api-require-paris", "name": "Known location",
+                    "rule_mode": "require", "severity": "hard", "subject_entity_id": "api-entity",
+                    "predicate": "current city", "object_value": "Paris", "predicate_cardinality": "single",
+                },
+            },
+        )
+        self.assertEqual(rule.status_code, 200, rule.text)
+        pending_rule = self.request(
+            "GET", "/api/v1/workspaces/api-workspace/rules/evaluations?branch_id=main", headers=self.headers,
+        )
+        self.assertEqual(pending_rule.json()[0]["evaluation"]["status"], "unknown")
+        self.assertEqual(pending_rule.json()[0]["evaluation"]["reason_code"], "rule_not_accepted")
+        reviewed = self.request(
+            "POST",
+            "/api/v1/workspaces/api-workspace/commands",
+            headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 5, "idempotency_key": "accept-api-rule",
+                "command_type": "review_rule", "reason": "Accept the reviewed constraint",
+                "payload": {"rule_id": "api-require-paris", "review_status": "accepted"},
+            },
+        )
+        self.assertEqual(reviewed.status_code, 200, reviewed.text)
+        evaluations = self.request(
+            "GET", "/api/v1/workspaces/api-workspace/rules/evaluations?branch_id=main", headers=self.headers,
+        )
+        self.assertEqual(evaluations.json()[0]["evaluation"]["status"], "satisfied")
 
     def create_story_conversation(self) -> int:
         workspace = self.request(

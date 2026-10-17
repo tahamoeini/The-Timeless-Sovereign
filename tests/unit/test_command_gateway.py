@@ -232,6 +232,87 @@ class CommandGatewayTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.gateway.list_journal_events("story", from_date="2025-04-10", to_date="2025-04-01")
 
+    def test_rules_evaluate_known_claims_and_isolate_branch_conflicts(self):
+        self.create_entity("create-aria")
+        self.command("known-city", 1, "add_claim", {
+            "claim_id": "aria-city-paris", "subject_entity_id": "aria", "predicate": "current city",
+            "object_value": "Paris", "epistemic_status": "known", "review_status": "accepted",
+        })
+        rule_payload = {
+            "subject_entity_id": "aria", "predicate": "current city", "predicate_cardinality": "single",
+        }
+        self.command("require-paris", 2, "create_rule", {
+            **rule_payload, "rule_id": "needs-paris", "name": "Aria is in Paris",
+            "rule_mode": "require", "object_value": "Paris", "severity": "hard", "review_status": "accepted",
+        })
+        self.command("require-london", 3, "create_rule", {
+            **rule_payload, "rule_id": "needs-london", "name": "Aria is in London",
+            "rule_mode": "require", "object_value": "London", "severity": "soft", "review_status": "accepted",
+        })
+        self.command("forbid-paris", 4, "create_rule", {
+            **rule_payload, "rule_id": "avoid-paris", "name": "Aria is not in Paris",
+            "rule_mode": "forbid", "object_value": "Paris", "review_status": "accepted",
+        })
+        self.command("forbid-london", 5, "create_rule", {
+            **rule_payload, "rule_id": "avoid-london", "name": "Aria is not in London",
+            "rule_mode": "forbid", "object_value": "London", "review_status": "accepted",
+        })
+
+        main = {item["rule"]["rule_id"]: item["evaluation"]["status"] for item in self.gateway.evaluate_rules("story")}
+        self.assertEqual(main, {
+            "needs-paris": "satisfied", "needs-london": "violated",
+            "avoid-paris": "violated", "avoid-london": "satisfied",
+        })
+
+        self.gateway.create_branch("story", "main", "alternate", 6, "rules-branch")
+        self.command("branch-city", 6, "add_claim", {
+            "claim_id": "aria-city-london", "subject_entity_id": "aria", "predicate": "current city",
+            "object_value": "London", "epistemic_status": "known", "review_status": "accepted",
+        }, branch="alternate")
+        branch = {item["rule"]["rule_id"]: item["evaluation"]["status"] for item in self.gateway.evaluate_rules("story", "alternate")}
+        self.assertEqual(branch["needs-paris"], "unknown")
+        self.assertEqual(branch["needs-london"], "unknown")
+        self.assertEqual(self.gateway.evaluate_rules("story")[0]["evaluation"]["status"], "satisfied")
+
+    def test_rules_remain_inactive_until_review_and_ai_cannot_accept_them(self):
+        self.create_entity("create-aria")
+        payload = {
+            "rule_id": "review-required", "name": "Aria stays in Paris", "rule_mode": "require",
+            "severity": "hard", "subject_entity_id": "aria", "predicate": "current city",
+            "object_value": "Paris", "predicate_cardinality": "single",
+        }
+        with self.assertRaises(ValidationError):
+            self.command("ai-rule", 1, "create_rule", {**payload, "review_status": "accepted"}, actor="ai:local")
+        self.command("proposed-rule", 1, "create_rule", payload)
+        result = self.gateway.evaluate_rules("story")[0]
+        self.assertEqual(result["evaluation"]["status"], "unknown")
+        self.assertEqual(result["evaluation"]["reason_code"], "rule_not_accepted")
+        with self.assertRaises(ValidationError):
+            self.gateway.execute(
+                workspace_id="story", branch_id="main", idempotency_key="ai-review-rule", expected_revision=2,
+                command_type="review_rule", payload={"rule_id": "review-required", "review_status": "accepted"},
+                actor="ai:local", reason="AI must not approve rules",
+            )
+        self.assertEqual(self.gateway.current_revision("story"), 2)
+
+    def test_private_claims_cannot_satisfy_a_public_rule(self):
+        self.create_entity("create-aria")
+        self.command("private-city", 1, "add_claim", {
+            "claim_id": "private-city-claim", "subject_entity_id": "aria", "predicate": "current city",
+            "object_value": "Paris", "epistemic_status": "known", "review_status": "accepted",
+            "visibility": "author_only",
+        })
+        self.command("public-rule", 2, "create_rule", {
+            "rule_id": "public-city-rule", "name": "Aria is in Paris", "rule_mode": "require",
+            "severity": "hard", "subject_entity_id": "aria", "predicate": "current city",
+            "object_value": "Paris", "predicate_cardinality": "single", "review_status": "accepted",
+        })
+
+        result = self.gateway.evaluate_rules("story")[0]["evaluation"]
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["reason_code"], "insufficient_evidence")
+        self.assertEqual(result["evidence_claim_ids"], [])
+
     def test_source_import_rejects_binary_empty_and_unsupported_content(self):
         invalid_payloads = [
             {"display_name": "archive.zip", "media_type": "application/zip", "content": "not an archive"},

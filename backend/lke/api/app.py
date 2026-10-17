@@ -303,6 +303,10 @@ def create_app(
     ):
         return gateway.list_journal_events(workspace_id, branch_id, from_date, to_date)
 
+    @app.get("/api/v1/workspaces/{workspace_id}/rules/evaluations")
+    def evaluate_rules(workspace_id: str, branch_id: str = "main"):
+        return gateway.evaluate_rules(workspace_id, branch_id)
+
     @app.get("/api/v1/workspaces/{workspace_id}/revisions")
     def revisions(workspace_id: str, branch_id: str = "main"):
         return gateway.revisions(workspace_id, branch_id)

@@ -932,7 +932,7 @@ class CommandGateway:
                 (workspace_id, branch_id),
             ).fetchall()
             claim_rows = self.db.connection.execute(
-                "SELECT claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status "
+                "SELECT claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility "
                 "FROM claims WHERE workspace_id=? AND branch_id=?",
                 (workspace_id, branch_id),
             ).fetchall()

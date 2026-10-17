@@ -32,11 +32,13 @@ Canonical writes are submitted to the gateway; direct writes from models, projec
 
 ## Implemented command set
 
-`create_entity`, `update_entity`, `add_relation`, `review_relation`, `add_claim`, `review_claim`, `add_belief`, `import_source`, `add_evidence`, `create_conversation`, `append_story_turn`, `create_journal_event`, and `revise_journal_event` are implemented in schema v3. `create_branch` creates a revision-bound snapshot of canonical records, story history, and journal-event versions with its own audit/outbox record.
+`create_entity`, `update_entity`, `add_relation`, `review_relation`, `add_claim`, `review_claim`, `add_belief`, `import_source`, `add_evidence`, `create_conversation`, `append_story_turn`, `create_journal_event`, `revise_journal_event`, `create_rule`, and `review_rule` are implemented in schema v4. `create_branch` creates a revision-bound snapshot of canonical records, story history, rules, and journal-event versions with its own audit/outbox record.
 
 `append_story_turn` writes the user's prompt and local-model response in one command, recording provider, model, narrative order, context manifest, and context revision. Generated text is conversation history, not an accepted fact or state change. Its retry fingerprint excludes nondeterministic model output and the per-request manifest ID while binding the workspace, branch, prompt, model, order, and expected revision.
 
 `create_journal_event` records a user-provided account with participants, exact/range/relative/unknown timing, and optional workspace source plus an exact quote. It does not assert that the account is verified. `revise_journal_event` requires the current event version and appends a correction; it cannot overwrite earlier wording. Separate event IDs remain separate when accounts conflict. AI actors cannot create or revise personal accounts.
+
+`create_rule` records a proposed require/forbid condition on one entity, predicate, and value; `review_rule` is required before evaluation is active. The deterministic evaluator uses accepted public claims marked `known`. Unknown or private data never proves a rule, and conflicting values for an explicitly single-valued predicate return unknown. AI actors cannot accept rules. Rule evaluations are read-only projections and do not mutate canonical state.
 
 Delete, merge, promotion, generalized domain-event/state, approval, and reviewed story-state-delta commands are not implemented yet.
 

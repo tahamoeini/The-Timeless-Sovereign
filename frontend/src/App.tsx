@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, ContextManifest, Entity, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, Entity, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -119,14 +119,14 @@ export default function App() {
     }
   };
 
-  async function commitJournalCommand(commandType: string, payload: Record<string, unknown>, reason: string, successText: string) {
+  async function commitDomainCommand(commandType: string, payload: Record<string, unknown>, reason: string, successText: string) {
     if (busy) throw new Error("Another workspace change is already in progress.");
     setBusy(true);
     try {
       await runCommand(commandType, payload, reason);
       setNotice({ tone: "success", text: successText });
     } catch (error) {
-      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The journal change could not be saved." });
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The change could not be saved." });
       throw error;
     } finally {
       setBusy(false);
@@ -210,6 +210,16 @@ export default function App() {
     finally { setBusy(false); }
   }
 
+  async function reviewRule(id: string, status: "accepted" | "rejected") {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runCommand("review_rule", { rule_id: id, review_status: status }, `User ${status} rule`);
+      setNotice({ tone: "success", text: `Rule ${status}.` });
+    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "Rule review failed." }); }
+    finally { setBusy(false); }
+  }
+
   async function createScenario() {
     if (!workspaceId) return;
     setBusy(true);
@@ -267,8 +277,8 @@ export default function App() {
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
-            {page === "journal" && <JournalPage workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitJournalCommand} />}
-            {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} onBranch={createScenario} />}
+            {page === "journal" && <JournalPage workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
+            {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} busy={busy} onBranch={createScenario} onCommit={commitDomainCommand} onReviewRule={reviewRule} />}
           </>}
         </div>
       </main>
@@ -897,7 +907,7 @@ function formatJournalTime(event: Pick<JournalEventVersion, "temporal_kind" | "o
   return event.time_note ? `Date not known · ${event.time_note}` : "Date not known";
 }
 
-function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, onBranch }: {
+function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, busy, onBranch, onCommit, onReviewRule }: {
   workspaceId: string;
   branchId: string;
   branches: Branch[];
@@ -905,7 +915,10 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   entities: Entity[];
   relations: Relation[];
   claims: Claim[];
+  busy: boolean;
   onBranch: () => void;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+  onReviewRule: (id: string, status: "accepted" | "rejected") => Promise<void>;
 }) {
   const branch = branches.find((item) => item.branch_id === branchId);
   const parentBranchId = branch?.parent_branch_id || "";
@@ -913,6 +926,20 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   const parentHasAdvanced = Boolean(parentBranch && branch?.parent_revision !== null && branch?.parent_revision !== undefined && parentBranch.head_revision > branch.parent_revision);
   const [baseline, setBaseline] = useState<{ entities: Entity[]; relations: Relation[]; claims: Claim[] } | null>(null);
   const [baselineError, setBaselineError] = useState("");
+  const [ruleEvaluations, setRuleEvaluations] = useState<RuleEvaluation[]>([]);
+  const [ruleError, setRuleError] = useState("");
+  const [rulesLoading, setRulesLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setRulesLoading(true);
+    setRuleError("");
+    request<RuleEvaluation[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/rules/evaluations?branch_id=${encodeURIComponent(branchId)}`)
+      .then((rows) => { if (active) setRuleEvaluations(rows); })
+      .catch((reason) => { if (active) setRuleError(reason instanceof Error ? reason.message : "Rule checks could not be loaded."); })
+      .finally(() => { if (active) setRulesLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, branchId, revision]);
 
   useEffect(() => {
     if (!parentBranchId) {
@@ -993,5 +1020,73 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
         <div className="branch-note">These are deterministic record differences from the current parent branch. Rule-based forecasting and option scoring are still pending.</div>
       </section>
     </div>
+    <section className="panel scenario-rule-panel"><div className="panel-heading"><div><h2>Rule checks</h2><p>Test reviewed constraints against known claims in this branch.</p></div><span className="panel-count">{ruleEvaluations.filter((item) => item.rule.review_status === "accepted" && item.evaluation.status === "violated").length} violated</span></div>
+      <div className="scenario-rule-layout"><ScenarioRuleForm entities={entities} busy={busy} onCommit={onCommit} /><div className="scenario-rule-results">
+        {ruleError && <p className="inline-error" role="alert">{ruleError}</p>}
+        {rulesLoading ? <p className="empty-hint" role="status">Checking branch rules…</p>
+          : ruleEvaluations.length ? ruleEvaluations.map((item) => <ScenarioRuleResult key={item.rule.rule_id} item={item} claims={claims} busy={busy} onReview={onReviewRule} />)
+            : !ruleError && <p className="empty-hint">No rules are recorded on this branch. Add a rule to check a required or forbidden fact.</p>}
+      </div></div>
+      <div className="branch-note">Only accepted rules and accepted claims marked as known can produce a definite result. Missing, unreviewed, or uncertain information stays unknown. Rule checks do not score options or predict outcomes.</div>
+    </section>
   </>;
+}
+
+function ScenarioRuleForm({ entities, busy, onCommit }: {
+  entities: Entity[];
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    try {
+      await onCommit("create_rule", {
+        name: data.get("name"),
+        description: data.get("description"),
+        rule_mode: data.get("rule_mode"),
+        severity: data.get("severity"),
+        subject_entity_id: data.get("subject_entity_id"),
+        predicate: data.get("predicate"),
+        object_value: data.get("object_value"),
+        predicate_cardinality: data.get("predicate_cardinality"),
+        review_status: "proposed",
+      }, "Add a proposed branch rule", "Rule saved for review. It will be evaluated after you accept it.");
+      form.reset();
+    } catch { /* The workspace notice reports why the rule was not saved. */ }
+  }
+
+  return <section className="scenario-rule-form"><div className="scenario-rule-form-heading"><h3>Add a rule</h3><p>New rules wait for your review.</p></div>
+    <form onSubmit={(event) => void submit(event)}>
+      <label className="field-label">Rule name<input name="name" required maxLength={200} placeholder="e.g. Keep the archive intact" /></label>
+      <label className="field-label">Applies to<select name="subject_entity_id" required defaultValue={entities[0]?.entity_id || ""}>{entities.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{entity.label}</option>)}</select></label>
+      <div className="scenario-rule-condition"><label className="field-label">Property<input name="predicate" required maxLength={200} placeholder="e.g. archive status" /></label><label className="field-label">Value<input name="object_value" required maxLength={4000} placeholder="e.g. preserved" /></label></div>
+      <label className="field-label">Constraint<select name="rule_mode"><option value="require">This value must be known</option><option value="forbid">This value must not be known</option></select></label>
+      <label className="field-label">Priority<select name="severity"><option value="hard">Hard constraint</option><option value="soft">Soft preference</option></select></label>
+      <label className="field-label">Property meaning<select name="predicate_cardinality"><option value="multiple">Can hold several values</option><option value="single">Can hold only one value</option></select></label>
+      <label className="field-label">Why this rule matters (optional)<textarea name="description" rows={2} maxLength={1000} placeholder="A short explanation" /></label>
+      <button className="primary-button full-button" disabled={busy || entities.length === 0}>Save rule for review <span>↗</span></button>
+    </form>
+    {entities.length === 0 && <small className="field-note">Add a concept on this branch before creating a rule.</small>}
+  </section>;
+}
+
+function ScenarioRuleResult({ item, claims, busy, onReview }: {
+  item: RuleEvaluation;
+  claims: Claim[];
+  busy: boolean;
+  onReview: (id: string, status: "accepted" | "rejected") => Promise<void>;
+}) {
+  const { rule, evaluation } = item;
+  const state = rule.review_status === "proposed" ? "Needs review" : rule.review_status === "rejected" ? "Rejected · inactive" : evaluation.status;
+  const evidence = evaluation.evidence_claim_ids.map((id) => claims.find((claim) => claim.claim_id === id)).filter((claim): claim is Claim => Boolean(claim));
+  return <article className={`scenario-rule-result ${rule.review_status === "accepted" ? evaluation.status : rule.review_status}`}>
+    <div className="scenario-rule-result-top"><div><span className={`rule-severity ${rule.severity}`}>{rule.severity === "hard" ? "HARD" : "SOFT"}</span><h3>{rule.name}</h3></div><span className={`rule-state ${rule.review_status === "accepted" ? evaluation.status : rule.review_status}`}>{state}</span></div>
+    <p className="scenario-rule-expression"><strong>{rule.subject_label}</strong> · {rule.predicate} · {rule.object_value}<small>{rule.rule_mode === "require" ? "Required value" : "Forbidden value"} · {rule.predicate_cardinality === "single" ? "single-valued property" : "multi-valued property"}</small></p>
+    {rule.description && <p className="scenario-rule-description">{rule.description}</p>}
+    <p className="scenario-rule-explanation">{rule.review_status === "rejected" ? "This rule was rejected and is not evaluated." : evaluation.explanation}</p>
+    {evidence.length > 0 && <small className="scenario-rule-evidence">Evidence: {evidence.map((claim) => `${claim.predicate} · ${claim.object_value}`).join("; ")}</small>}
+    {rule.review_status === "proposed" && <div className="scenario-rule-actions"><button onClick={() => void onReview(rule.rule_id, "rejected")} disabled={busy}>Reject</button><button className="accept-button" onClick={() => void onReview(rule.rule_id, "accepted")} disabled={busy}>Accept rule</button></div>}
+  </article>;
 }

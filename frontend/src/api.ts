@@ -36,6 +36,30 @@ export type Claim = {
   narrative_order: number;
   evidence: string[];
 };
+export type RuleEvaluation = {
+  rule: {
+    rule_id: string;
+    name: string;
+    description: string;
+    rule_mode: "require" | "forbid";
+    severity: "hard" | "soft";
+    subject_entity_id: string;
+    subject_label: string;
+    predicate: string;
+    object_value: string;
+    predicate_cardinality: "single" | "multiple";
+    review_status: "proposed" | "accepted" | "rejected";
+    created_revision: number;
+  };
+  evaluation: {
+    status: "satisfied" | "violated" | "unknown";
+    reason_code: string;
+    explanation: string;
+    evidence_claim_ids: string[];
+    uncertain_claim_ids: string[];
+    unreviewed_claim_ids: string[];
+  };
+};
 
 export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };
 export type SourceDetails = Source & { content: string };

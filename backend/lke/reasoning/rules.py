@@ -21,6 +21,7 @@ def evaluate_rule(rule: dict[str, Any], claims: list[dict[str, Any]]) -> dict[st
         claim for claim in claims
         if claim["subject_entity_id"] == rule["subject_entity_id"]
         and claim["predicate"] == rule["predicate"]
+        and claim.get("visibility", "public") == "public"
     ]
     reviewed = [claim for claim in related if claim["review_status"] == "accepted"]
     known = [claim for claim in reviewed if claim["epistemic_status"] == "known"]
