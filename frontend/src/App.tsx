@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, ContextManifest, Entity, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, Entity, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -220,6 +220,19 @@ export default function App() {
     finally { setBusy(false); }
   }
 
+  async function reviewScenarioAssumption(scenarioId: string, optionId: string, assumptionId: string, version: number, status: "accepted" | "rejected") {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runCommand("review_scenario_assumption", {
+        scenario_id: scenarioId, option_id: optionId, assumption_id: assumptionId,
+        expected_version: version, review_status: status,
+      }, `User ${status} scenario assumption`);
+      setNotice({ tone: "success", text: `Scenario assumption ${status}.` });
+    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "Assumption review failed." }); }
+    finally { setBusy(false); }
+  }
+
   async function createScenario() {
     if (!workspaceId) return;
     setBusy(true);
@@ -278,7 +291,7 @@ export default function App() {
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
             {page === "journal" && <JournalPage workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
-            {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} busy={busy} onBranch={createScenario} onCommit={commitDomainCommand} onReviewRule={reviewRule} />}
+            {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
           </>}
         </div>
       </main>
