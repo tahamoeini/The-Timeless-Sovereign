@@ -12,12 +12,14 @@ from uuid import uuid4
 
 from .database import Database
 from .errors import ConflictError, IdempotencyConflictError, NotFoundError, ValidationError
+from ..reasoning import evaluate_rule
 
 
 _ALLOWED_COMMANDS = {
     "create_entity", "update_entity", "add_relation", "review_relation", "add_claim",
     "review_claim", "add_belief", "import_source", "add_evidence",
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
+    "create_rule", "review_rule",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -170,6 +172,7 @@ class CommandGateway:
                     ("entities", "entity_id,entity_type,label,properties_json,created_revision,updated_revision"),
                     ("relations", "relation_id,source_entity_id,target_entity_id,relation_type,properties_json,review_status,created_revision"),
                     ("claims", "claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility,narrative_order,evidence_json,created_revision"),
+                    ("rules", "rule_id,name,description,rule_mode,severity,subject_entity_id,predicate,object_value,predicate_cardinality,review_status,created_revision"),
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
@@ -573,6 +576,59 @@ class CommandGateway:
                 raise NotFoundError("Claim does not exist in this branch")
             return {"claim_id": claim_id, "review_status": status}, "claim.reviewed", True
 
+        if command_type == "create_rule":
+            rule_id = _required_text(payload.get("rule_id") or str(uuid4()), "rule_id", 100)
+            name = _required_text(payload.get("name"), "name", 200)
+            description = payload.get("description", "")
+            if not isinstance(description, str) or len(description) > 1000:
+                raise ValidationError("description must be text of at most 1000 characters")
+            mode = payload.get("rule_mode")
+            if not isinstance(mode, str) or mode not in {"require", "forbid"}:
+                raise ValidationError("rule_mode must be require or forbid")
+            severity = payload.get("severity", "hard")
+            if not isinstance(severity, str) or severity not in {"hard", "soft"}:
+                raise ValidationError("severity must be hard or soft")
+            subject_id = _required_text(payload.get("subject_entity_id"), "subject_entity_id", 100)
+            predicate = _required_text(payload.get("predicate"), "predicate", 200)
+            object_value = _required_text(payload.get("object_value"), "object_value", 4000)
+            cardinality = payload.get("predicate_cardinality", "multiple")
+            if not isinstance(cardinality, str) or cardinality not in {"single", "multiple"}:
+                raise ValidationError("predicate_cardinality must be single or multiple")
+            status = payload.get("review_status", "proposed")
+            if not isinstance(status, str) or status not in {"proposed", "accepted", "rejected"}:
+                raise ValidationError("invalid review_status")
+            if actor.startswith("ai:") and status == "accepted":
+                raise ValidationError("AI actors may propose rules but cannot accept them")
+            subject = connection.execute(
+                "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, subject_id),
+            ).fetchone()
+            if not subject:
+                raise NotFoundError("Rule subject does not exist in this branch")
+            connection.execute(
+                "INSERT INTO rules(workspace_id,branch_id,rule_id,name,description,rule_mode,severity,"
+                "subject_entity_id,predicate,object_value,predicate_cardinality,review_status,created_revision) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, rule_id, name, description.strip(), mode, severity,
+                 subject_id, predicate, object_value, cardinality, status, revision),
+            )
+            return {"rule_id": rule_id, "review_status": status}, "rule.created", True
+
+        if command_type == "review_rule":
+            rule_id = _required_text(payload.get("rule_id"), "rule_id", 100)
+            status = payload.get("review_status")
+            if not isinstance(status, str) or status not in {"accepted", "rejected"}:
+                raise ValidationError("review_status must be accepted or rejected")
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot review or accept rules")
+            result = connection.execute(
+                "UPDATE rules SET review_status=? WHERE workspace_id=? AND branch_id=? AND rule_id=?",
+                (status, workspace_id, branch_id, rule_id),
+            )
+            if result.rowcount != 1:
+                raise NotFoundError("Rule does not exist in this branch")
+            return {"rule_id": rule_id, "review_status": status}, "rule.reviewed", True
+
         if command_type == "add_belief":
             belief_id = _required_text(payload.get("belief_id") or str(uuid4()), "belief_id", 100)
             actor_id = _required_text(payload.get("actor_entity_id"), "actor_entity_id", 100)
@@ -857,6 +913,34 @@ class CommandGateway:
         if not exists:
             raise NotFoundError("Workspace does not exist")
         return [dict(row) for row in rows]
+
+    def evaluate_rules(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+        with self.db.lock:
+            branch = self.db.connection.execute(
+                "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not branch:
+                raise NotFoundError("Branch does not exist in this workspace")
+            rule_rows = self.db.connection.execute(
+                "SELECT r.rule_id,r.name,r.description,r.rule_mode,r.severity,r.subject_entity_id,"
+                "e.label AS subject_label,r.predicate,r.object_value,r.predicate_cardinality,"
+                "r.review_status,r.created_revision FROM rules r "
+                "JOIN entities e ON e.workspace_id=r.workspace_id AND e.branch_id=r.branch_id "
+                "AND e.entity_id=r.subject_entity_id WHERE r.workspace_id=? AND r.branch_id=? "
+                "ORDER BY r.created_revision,r.rule_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+            claim_rows = self.db.connection.execute(
+                "SELECT claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status "
+                "FROM claims WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchall()
+        claims = [dict(row) for row in claim_rows]
+        return [
+            {"rule": dict(row), "evaluation": evaluate_rule(dict(row), claims)}
+            for row in rule_rows
+        ]
 
     def list_journal_events(
         self,

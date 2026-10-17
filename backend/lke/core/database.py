@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class Database:
@@ -55,6 +55,9 @@ class Database:
                 current = 2
             if current < 3:
                 self._apply_migration(3, _SCHEMA_V3)
+                current = 3
+            if current < 4:
+                self._apply_migration(4, _SCHEMA_V4)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -328,4 +331,30 @@ CREATE TRIGGER journal_events_no_update BEFORE UPDATE ON journal_events
 BEGIN SELECT RAISE(ABORT, 'journal event versions are append-only'); END;
 CREATE TRIGGER journal_events_no_delete BEFORE DELETE ON journal_events
 BEGIN SELECT RAISE(ABORT, 'journal event versions are append-only'); END;
+"""
+
+
+_SCHEMA_V4 = """
+CREATE TABLE rules (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 200),
+    description TEXT NOT NULL DEFAULT '',
+    rule_mode TEXT NOT NULL CHECK(rule_mode IN ('require','forbid')),
+    severity TEXT NOT NULL CHECK(severity IN ('hard','soft')),
+    subject_entity_id TEXT NOT NULL,
+    predicate TEXT NOT NULL CHECK(length(trim(predicate)) BETWEEN 1 AND 200),
+    object_value TEXT NOT NULL CHECK(length(trim(object_value)) BETWEEN 1 AND 4000),
+    predicate_cardinality TEXT NOT NULL CHECK(predicate_cardinality IN ('single','multiple')),
+    review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    PRIMARY KEY(workspace_id,branch_id,rule_id),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,branch_id,subject_entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id)
+);
+CREATE INDEX rules_branch_review_idx
+    ON rules(workspace_id,branch_id,review_status,severity);
 """
