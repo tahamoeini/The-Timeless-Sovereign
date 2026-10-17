@@ -39,3 +39,4 @@ apps/desktop/src-tauri/binaries/*
 Thumbs.db
 .vscode/
 .idea/
+.playwright-cli/
