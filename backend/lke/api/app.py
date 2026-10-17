@@ -8,7 +8,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
@@ -19,7 +19,9 @@ from lke.core.errors import ConflictError, IdempotencyConflictError, LKEError, N
 from lke.retrieval import ContextCompiler
 
 
-_ALLOWED_ORIGINS = {"tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"}
+_TAURI_ORIGINS = {"tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"}
+_DEV_ORIGINS = {"http://127.0.0.1:5173", "http://localhost:5173"}
+_MAX_API_REQUEST_BYTES = 11 * 1024 * 1024
 
 
 class WorkspaceCreate(BaseModel):
@@ -65,6 +67,7 @@ def create_app(database: Database | None = None, auth_token: str | None = None) 
     db = database or Database(data_dir / "knowledge.sqlite3")
     gateway = CommandGateway(db)
     context_compiler = ContextCompiler(db)
+    allowed_origins = _TAURI_ORIGINS | (_DEV_ORIGINS if os.environ.get("LKE_DEV_MODE") == "1" else set())
     token = auth_token or os.environ.get("LKE_API_TOKEN") or secrets.token_urlsafe(32)
 
     app = FastAPI(title="Living Knowledge Engine", version="0.1.0", docs_url=None, redoc_url=None)
@@ -78,11 +81,30 @@ def create_app(database: Database | None = None, auth_token: str | None = None) 
         if not _loopback(request.client.host if request.client else None):
             return JSONResponse({"detail": "Loopback access only"}, status_code=403)
         origin = request.headers.get("origin")
-        if origin and origin not in _ALLOWED_ORIGINS:
+        if origin and origin not in allowed_origins:
             return JSONResponse({"detail": "Origin is not allowed"}, status_code=403)
+        if request.method == "OPTIONS":
+            requested_method = request.headers.get("access-control-request-method", "").upper()
+            requested_headers = {item.strip().lower() for item in request.headers.get("access-control-request-headers", "").split(",") if item.strip()}
+            if requested_method not in {"GET", "POST"} or not requested_headers <= {"authorization", "content-type"}:
+                return JSONResponse({"detail": "Preflight request is not allowed"}, status_code=403)
+            return Response(status_code=204, headers={
+                "Access-Control-Allow-Origin": origin or "null",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Max-Age": "300",
+                "Vary": "Origin",
+            })
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > _MAX_API_REQUEST_BYTES:
+            return JSONResponse({"detail": "Request body is too large"}, status_code=413)
         if request.url.path != "/api/v1/health" and request.headers.get("authorization") != f"Bearer {token}":
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
@@ -122,6 +144,10 @@ def create_app(database: Database | None = None, auth_token: str | None = None) 
             idempotency_key=body.idempotency_key,
             reason=body.reason,
         )
+
+    @app.get("/api/v1/workspaces/{workspace_id}/branches")
+    def list_branches(workspace_id: str):
+        return gateway.list_branches(workspace_id)
 
     @app.get("/api/v1/workspaces/{workspace_id}/entities")
     def list_entities(workspace_id: str, branch_id: str = "main", q: str | None = None):
@@ -180,6 +206,3 @@ def main() -> None:
 
     port = int(os.environ.get("LKE_API_PORT", "48123"))
     uvicorn.run(create_app(), host="127.0.0.1", port=port, access_log=False)
-
-
-app = create_app()

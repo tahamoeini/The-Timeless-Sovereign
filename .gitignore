@@ -3,6 +3,7 @@ node_modules/
 dist/
 build/
 target/
+.build/
 .vite/
 *.tsbuildinfo
 
@@ -28,6 +29,10 @@ workspace-data/
 *.db
 *.db-wal
 *.db-shm
+
+# Generated Tauri sidecar executables
+apps/desktop/src-tauri/binaries/*
+!apps/desktop/src-tauri/binaries/.gitkeep
 
 # OS and editor
 .DS_Store

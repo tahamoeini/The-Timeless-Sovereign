@@ -2,13 +2,13 @@
 
 ## Development prerequisites
 
-Python 3.12 or later is required for the backend. The product baseline also calls for Node.js and Rust/Tauri tooling for the desktop shell; those manifests and clean-machine packaging are not complete yet. Install Python dependencies into an isolated virtual environment with `python -m pip install -e .`.
+Python 3.12 or later is required for the backend. The current Vite line requires Node.js 20.19+ or 22.12+; Rust/Tauri tooling is required for the desktop shell. Install Python dependencies into an isolated virtual environment with `python -m pip install -e .`, then install frontend dependencies with `npm install`. Before desktop dev/build, bundle the local API with `python -m pip install -e ".[package]"` and `./scripts/build-sidecar.ps1`.
 
 Run core integrity checks with `python -m unittest discover -s tests\unit -v`.
 
 ## Local API
 
-The API is intended to bind only to `127.0.0.1`. It rejects non-loopback peers and unknown browser origins. Data endpoints require a bearer token. The desktop host must generate a per-run token and deliver it to the sidecar and UI through a private channel. Do not publish the token in logs, URLs, the database, or imported documents. The Tauri host and token handoff are not implemented, so do not expose this adapter for general use yet.
+The API binds only to `127.0.0.1`. It rejects non-loopback peers and unknown browser origins. Data endpoints require a bearer token. The Tauri host generates a per-run token and delivers it to the sidecar and main webview through a Tauri command. Do not publish the token in logs, URLs, the database, or imported documents. The Tauri binary and sidecar have not yet been built or runtime-tested.
 
 The default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3` (resolved from the user's home `AppData/Local/LKE`); `LKE_DATA_DIR` can select another private local directory for development. Core callers can supply an explicit database path. SQLite uses WAL and full synchronous commits for file-backed stores.
 

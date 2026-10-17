@@ -13,7 +13,7 @@ The canonical model is general-purpose. `canon` is a story-specific authority co
 | Claim | Subject-predicate-object assertion | Keeps evidence, epistemic state, and review state separate |
 | Relation | Typed, directed link between entities | Branch-scoped; reviewable |
 | Event / State | Occurrence and computed state at a domain time | Time and evidence required as available |
-| Belief / Knowledge | What an actor knows, believes, denies, or lacks | Actor- and time-scoped |
+| Belief / Knowledge | What an actor knows, believes, denies, or lacks | Actor- and awareness-order-scoped |
 | Rule | Constraint or evaluable condition | Domain-owned |
 | Revision / Branch | Versioned change and isolated alternate path | Append-only history; explicit promotion |
 | Conversation / Turn | Actual exchange and ordering | Imported with deduplication metadata |
@@ -33,4 +33,4 @@ Stable entity IDs are scoped to a workspace and branch snapshot. Creating a bran
 
 ## SQLite v1 implementation
 
-The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `sources`, `evidence`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. It does not yet implement the full target tables for aliases, events, states, actor beliefs, conversations, rules, scenarios, approvals, or detailed temporal types. Those are not to be represented as completed merely because the concepts appear in this contract.
+The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Claims and awareness records have a relative narrative-order field for preventing future-knowledge leakage. It does not yet implement the full target tables for aliases, events, states, conversations, rules, scenarios, approvals, or valid-time intervals. Those are not to be represented as completed merely because the concepts appear in this contract.

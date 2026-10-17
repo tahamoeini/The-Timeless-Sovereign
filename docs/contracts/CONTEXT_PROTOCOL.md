@@ -23,7 +23,7 @@ Every generation request uses a versioned context request. Retrieval is a read-o
 ## Compilation order
 
 1. Verify workspace, branch, current revision, and authorization.
-2. Apply deterministic actor, time, branch, review-status, and access filters.
+2. Apply deterministic actor, awareness-order, narrative-order, branch, review-status, and access filters. Actor contexts include only claims with an explicit, eligible belief record for that actor; a claim's general visibility alone never grants an NPC omniscience.
 3. Retrieve exact IDs and aliases, then full-text matches; semantic and graph retrieval are optional projections.
 4. Deduplicate while retaining distinct evidence and contradictory accounts.
 5. Rank within token budget; record included and excluded candidates with reasons.
@@ -33,6 +33,6 @@ Every generation request uses a versioned context request. Retrieval is a read-o
 
 The `lke.context.v1` result records its ID, request, compiler version, workspace/branch/revision, provider scope, included record IDs, evidence IDs, provenance, epistemic/review labels, token estimate, exclusions, and unresolved conflicts. Context built against a stale revision must be rejected or visibly recompiled.
 
-NPC retrieval is actor- and time-scoped. A character does not receive omniscient world knowledge, a future fact, or another workspace's content. A retrieved absence is not evidence that a relation does not exist.
+NPC retrieval is actor- and time-scoped. A character does not receive a future fact, a fact the character has not explicitly encountered, author-only material, or another workspace's content. A retrieved absence is not evidence that a relation does not exist. The current implementation supports relative narrative order and explicit beliefs; valid-time intervals and richer event timelines remain pending.
 
 The compiler and manifest format are specified here; semantic retrieval and token accounting are not implemented yet.

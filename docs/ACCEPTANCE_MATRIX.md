@@ -14,24 +14,26 @@ The release gates are measurable behaviors, not claims that a test name exists. 
 | Evidence grounding | Quote must exist in immutable source text | Core unit test passes |
 | Canon integrity | AI proposal cannot mark claim/relation accepted | Core unit test passes for claims/relations |
 | Manual override | Reprocessing preserves reviewed override | Not implemented |
-| Temporal query | Future knowledge excluded from past/actor context | Not implemented |
+| Temporal query | Relative narrative order and awareness exclude future or unknown facts | Core unit test passes; richer valid-time ranges pending |
 | Character agency | User-controlled action is never invented or committed | Not implemented |
 | Transcript deduplication | Same transcript imported twice adds no turns/events | Not implemented |
 | Provider failure | Runtime failure leaves no partial canonical commit | Provider path not implemented |
-| Local API boundary | Auth, origin, loopback, and sidecar token tests | Adapter added; tests pending |
+| Local API boundary | Auth, origin, loopback, and sidecar token tests | API boundary tests added; runtime package checks pending |
+| User workflows | Create workspace, add concepts, review claims/links, preview actor context, branch scenario | React interface scaffold added; browser validation pending |
+| Windows desktop package | Tauri shell and bundled backend start/stop on a clean machine | Build scaffolds added; package not built |
 | File ingestion safety | Size/type/path/archive limits and hostile fixtures | Not implemented |
 | Graph/matrix consistency | All views reflect one canonical relation after edits | UI/projection worker not implemented |
 | Backup/restore equivalence | Restore elsewhere matches sources, revisions, and official state | Not implemented; release blocker |
 | Local-only path | Full core workflow without cloud or paid API | Core is local; complete workflow not implemented |
 | Windows install | Clean-machine install without preinstalled Python | Not implemented; release blocker |
 
-The currently runnable command is:
+The currently runnable core and API test command is:
 
 ```powershell
 python -m unittest discover -s tests\unit -v
 ```
 
-The present suite has 10 passing core tests. This is not an end-to-end product acceptance run.
+The present suite has 11 passing core tests. This is not an end-to-end product acceptance run.
 
 ## Quality targets
 

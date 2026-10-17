@@ -452,6 +452,8 @@ class CommandGateway:
             content = payload.get("content")
             if not isinstance(content, str):
                 raise ValidationError("content must be text")
+            if len(content.encode("utf-8")) > 10 * 1024 * 1024:
+                raise ValidationError("text sources are limited to 10 MiB")
             media_type = _required_text(payload.get("media_type", "text/plain"), "media_type", 200)
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
             old = connection.execute(
@@ -517,6 +519,19 @@ class CommandGateway:
             ).fetchall()
         return [{"workspace_id": row["workspace_id"], "name": row["name"],
                  "created_at": row["created_at"], "main_revision": row["head_revision"]} for row in rows]
+
+    def list_branches(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self.db.lock:
+            rows = self.db.connection.execute(
+                "SELECT branch_id,parent_branch_id,parent_revision,base_revision,head_revision,created_at "
+                "FROM branches WHERE workspace_id=? ORDER BY created_at,branch_id",
+                (workspace_id,),
+            ).fetchall()
+        if not rows:
+            raise NotFoundError("Workspace does not exist")
+        return [{"branch_id": r["branch_id"], "parent_branch_id": r["parent_branch_id"],
+                 "parent_revision": r["parent_revision"], "base_revision": r["base_revision"],
+                 "head_revision": r["head_revision"], "created_at": r["created_at"]} for r in rows]
 
     def search_entities(self, workspace_id: str, branch_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
         match = _fts_query(query)

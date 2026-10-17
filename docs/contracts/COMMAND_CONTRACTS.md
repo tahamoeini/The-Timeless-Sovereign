@@ -32,7 +32,7 @@ Canonical writes are submitted to the gateway; direct writes from models, projec
 
 ## Implemented command set
 
-`create_entity`, `update_entity`, `add_relation`, `add_claim`, `import_source`, and `add_evidence` are implemented in schema v1. `create_branch` creates a revision-bound snapshot with its own audit/outbox record. Delete, merge, promotion, actor-state, conversation, and approval commands are not implemented yet.
+`create_entity`, `update_entity`, `add_relation`, `review_relation`, `add_claim`, `review_claim`, `add_belief`, `import_source`, and `add_evidence` are implemented in schema v1. `create_branch` creates a revision-bound snapshot with its own audit/outbox record. Delete, merge, promotion, event, conversation, and approval commands are not implemented yet.
 
 ## Failure behavior
 

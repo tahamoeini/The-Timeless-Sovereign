@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Living Knowledge Engine",
+  "version": "0.1.0",
+  "identifier": "org.lke.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../../../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Living Knowledge Engine",
+        "width": 1280,
+        "height": 850,
+        "minWidth": 900,
+        "minHeight": 650,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:5173 http://127.0.0.1:5173; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "externalBin": ["binaries/lke-api"],
+    "licenseFile": "../../../LICENSE",
+    "shortDescription": "Local-first knowledge and story workspace",
+    "category": "Productivity"
+  }
+}

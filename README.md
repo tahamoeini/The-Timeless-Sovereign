@@ -6,7 +6,7 @@ The canonical store is versioned SQLite. Every official change passes through a 
 
 ## Current state
 
-This repository has been reset to the LKE baseline. The initial Python core supports workspaces, isolated snapshot branches, entities, relations, claims, text sources, evidence, full-text search, revisions, audit records, and an outbox. It is an implementation foundation, not yet the complete installable v0.1 product described in the plan. See [the acceptance matrix](docs/ACCEPTANCE_MATRIX.md) for what is implemented and what still needs an end-to-end implementation and proof.
+This repository has been reset to the LKE baseline. The Python core supports workspaces, isolated snapshot branches, entities, relations, claims, actor beliefs, text sources, evidence, full-text search, relative-order actor context, revisions, audit records, and an outbox. The React interface scaffold supports workspace creation, local text import, concept and relationship review, actor-context preview, and isolated branches. It remains an implementation foundation, not the complete installable v0.1 product. See [the acceptance matrix](docs/ACCEPTANCE_MATRIX.md) for implementation and verification status.
 
 ## Development
 
@@ -16,6 +16,7 @@ Python 3.12 or newer is required for the backend. Install the project and its AP
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .
+npm install
 ```
 
 Run the canonical-core tests with the bundled or installed Python:
@@ -24,7 +25,7 @@ Run the canonical-core tests with the bundled or installed Python:
 python -m unittest discover -s tests\unit -v
 ```
 
-The desktop shell, ingestion pipeline, AI adapters, narrative experience, scenario lab, and backup/restore workflow are not yet complete. Their contracts and validation criteria are documented beside the implementation.
+The desktop shell, source extraction, Ollama integration, persistent story and journal workflows, scenario evaluation, exchange import/export, full backup/restore, and packaged Windows installation are not yet complete. Their contracts and validation criteria are documented beside the implementation.
 
 ## Product and technical contracts
 

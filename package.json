@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config frontend/vite.config.ts --root frontend",
-    "build": "tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts --root frontend",
-    "preview": "vite preview --config frontend/vite.config.ts --root frontend",
+    "dev": "vite --config frontend/vite.config.ts",
+    "build": "tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "preview": "vite preview --config frontend/vite.config.ts",
     "tauri": "tauri --config apps/desktop/src-tauri/tauri.conf.json"
   },
   "dependencies": {

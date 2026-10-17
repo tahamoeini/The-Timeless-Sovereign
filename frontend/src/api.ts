@@ -37,6 +37,8 @@ export type Claim = {
   evidence: string[];
 };
 
+export type SourceResult = { source_id: string; display_name: string; excerpt: string };
+
 export type RuntimeConfig = { baseUrl: string; token: string };
 
 let runtime: RuntimeConfig | null = null;
@@ -52,7 +54,17 @@ async function resolveRuntime(): Promise<RuntimeConfig> {
     if (!baseUrl || !token) throw new Error("Start the desktop app, or configure a local API URL and token for development.");
     runtime = { baseUrl, token };
   }
-  return runtime;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      const response = await fetch(`${runtime.baseUrl}/api/v1/health`);
+      if (response.ok) return runtime;
+    } catch {
+      // The sidecar may need a moment to bind its selected loopback port.
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 200));
+  }
+  runtime = null;
+  throw new Error("The local LKE service did not start. Restart the app and try again.");
 }
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -19,7 +19,8 @@ lke-api = "lke.api.app:main"
 
 [project.optional-dependencies]
 documents = ["docling>=2,<3"]
-test = []
+package = ["pyinstaller>=6,<7"]
+test = ["httpx>=0.27,<1"]
 
 [tool.setuptools]
 package-dir = {"" = "backend"}

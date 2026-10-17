@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Claim, Entity, newId, Relation, request, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
@@ -88,41 +88,59 @@ export default function App() {
     await refresh();
   };
 
+  const commitStoryCommand = async (commandType: string, payload: Record<string, unknown>, reason: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runCommand(commandType, payload, reason);
+      setNotice({ tone: "success", text: "Character knowledge saved to this branch." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The change could not be saved." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   async function addEntity(event: FormEvent<HTMLFormElement>) {
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     await submit(event, async () => {
       await runCommand("create_entity", { entity_type: data.get("entity_type"), label: data.get("label"), properties: {} }, "Add a reviewed workspace item");
-      event.currentTarget.reset();
+      form.reset();
       setNotice({ tone: "success", text: "Added to this branch." });
     });
   }
 
   async function addRelation(event: FormEvent<HTMLFormElement>) {
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     await submit(event, async () => {
       await runCommand("add_relation", { source_entity_id: data.get("source"), target_entity_id: data.get("target"), relation_type: data.get("relation_type"), review_status: "proposed" }, "Propose a relationship for review");
-      event.currentTarget.reset();
+      form.reset();
       setNotice({ tone: "success", text: "Relationship saved as a proposal." });
     });
   }
 
   async function addClaim(event: FormEvent<HTMLFormElement>) {
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     await submit(event, async () => {
       await runCommand("add_claim", { subject_entity_id: data.get("subject"), predicate: data.get("predicate"), object_value: data.get("object_value"), visibility: "public", review_status: "proposed" }, "Propose a claim for review");
-      event.currentTarget.reset();
+      form.reset();
       setNotice({ tone: "success", text: "Claim saved as a proposal." });
     });
   }
 
   async function importText(event: FormEvent<HTMLFormElement>) {
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     await submit(event, async () => {
       const file = data.get("file");
       const content = file instanceof File ? await file.text() : String(data.get("content") || "");
       if (new TextEncoder().encode(content).length > 10 * 1024 * 1024) throw new Error("Text imports are limited to 10 MB.");
       await runCommand("import_source", { display_name: file instanceof File ? file.name : data.get("display_name"), content, media_type: "text/plain" }, "Import a local text source");
-      event.currentTarget.reset();
+      form.reset();
       setNotice({ tone: "success", text: "Source is stored locally. No extraction has been run." });
     });
   }
@@ -189,10 +207,10 @@ export default function App() {
             <div className="welcome-points"><span>◉ Evidence stays linked</span><span>◈ Explore safely in branches</span><span>⌁ Your data stays yours</span></div>
           </section> : <>
             {page === "knowledge" && <KnowledgePage
-              entities={entities} relations={relations} claims={visibleClaims} busy={busy} query={query} setQuery={setQuery}
+              workspaceId={workspaceId} entities={entities} relations={relations} claims={visibleClaims} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
-            {page === "story" && <StoryPage entities={entities} workspaceId={workspaceId} branchId={branchId} />}
+            {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} onNavigate={setPage} onCommit={commitStoryCommand} />}
             {page === "journal" && <JournalPage importText={importText} busy={busy} />}
             {page === "scenario" && <ScenarioPage branchId={branchId} revision={revision} entities={entities} relations={relations} onBranch={createScenario} />}
           </>}
@@ -202,12 +220,12 @@ export default function App() {
   );
 }
 
-function PageHeader({ kicker, title, summary, action }: { kicker: string; title: string; summary: string; action?: React.ReactNode }) {
+function PageHeader({ kicker, title, summary, action }: { kicker: string; title: string; summary: string; action?: ReactNode }) {
   return <div className="page-heading"><div><div className="eyebrow">{kicker}</div><h1>{title}</h1><p>{summary}</p></div>{action}</div>;
 }
 
 function KnowledgePage(props: {
-  entities: Entity[]; relations: Relation[]; claims: Claim[]; busy: boolean; query: string; setQuery: (query: string) => void;
+  workspaceId: string; entities: Entity[]; relations: Relation[]; claims: Claim[]; busy: boolean; query: string; setQuery: (query: string) => void;
   addEntity: (event: FormEvent<HTMLFormElement>) => Promise<void>; addRelation: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   addClaim: (event: FormEvent<HTMLFormElement>) => Promise<void>; importText: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   review: (kind: "claim" | "relation", id: string, status: "accepted" | "rejected") => Promise<void>;
@@ -219,7 +237,7 @@ function KnowledgePage(props: {
     <div className="toolbar"><div className="tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
     {tab === "map" && <div className="knowledge-grid"><section className="panel graph-panel"><div className="panel-heading"><div><h2>Concept map</h2><p>Accepted links and proposals share one editable source.</p></div><span className="panel-count">{props.entities.length} nodes</span></div><Graph entities={props.entities} relations={props.relations} /><div className="graph-legend"><span><i className="legend-node" />Concept</span><span><i className="legend-line" />Accepted relationship</span><span><i className="legend-line proposed" />Needs review</span></div></section>
       <div className="stacked-panels"><EntityForm busy={props.busy} onSubmit={props.addEntity} /><RelationForm entities={props.entities} busy={props.busy} onSubmit={props.addRelation} /></div></div>}
-    {tab === "evidence" && <div className="knowledge-grid"><SourceForm busy={props.busy} onSubmit={props.importText} /><section className="panel"><div className="panel-heading"><div><h2>Imported sources</h2><p>Source text is preserved locally; extraction and review are separate steps.</p></div></div><p className="empty-hint">Imported source search and evidence navigation will appear here. Current v0.1 stores plain text and Markdown content.</p></section></div>}
+    {tab === "evidence" && <div className="knowledge-grid"><SourceForm busy={props.busy} onSubmit={props.importText} /><SourceResults workspaceId={props.workspaceId} query={props.query} /> </div>}
     {tab === "review" && <div className="review-list"><ReviewList claims={props.claims} relations={props.relations} review={props.review} busy={props.busy} /></div>}
     <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility}</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>
   </>;
@@ -245,6 +263,29 @@ function SourceForm({ busy, onSubmit }: { busy: boolean; onSubmit: (event: FormE
   return <section className="panel compact-form"><div className="panel-heading"><div><h2>Add a source</h2><p>Plain text or Markdown, stored in your workspace</p></div></div><form onSubmit={onSubmit}><label>Choose a local text file<input name="file" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" /></label><div className="form-divider">or paste text</div><label>Source title<input name="display_name" placeholder="e.g. Chapter one" /></label><label>Text content<textarea name="content" rows={8} placeholder="Paste a passage or a note…" /></label><button className="primary-button full-button" disabled={busy}>Save source locally <span>↗</span></button></form><small className="field-note">Text imports are limited to 10 MB. PDFs and Office files are not enabled yet.</small></section>;
 }
 
+function SourceResults({ workspaceId, query }: { workspaceId: string; query: string }) {
+  const [sources, setSources] = useState<{ source_id: string; display_name: string; excerpt: string }[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!query.trim()) { setSources([]); setError(""); return; }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void request<{ source_id: string; display_name: string; excerpt: string }[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/sources?q=${encodeURIComponent(query)}`)
+        .then((rows) => { if (active) { setSources(rows); setError(""); } })
+        .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Source search failed."); });
+    }, 180);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [workspaceId, query]);
+  return <section className="panel"><div className="panel-heading"><div><h2>Imported sources</h2><p>Source text is preserved locally; extraction and review are separate steps.</p></div></div>
+    {error && <p className="inline-error">{error}</p>}
+    {!query.trim()
+      ? <p className="empty-hint">Search above to find text in your imported sources. Current v0.1 stores plain text and Markdown.</p>
+      : sources.length
+        ? sources.map((source) => <article className="source-result" key={source.source_id}><strong>{source.display_name}</strong><small>{source.source_id}</small><p>{source.excerpt}</p></article>)
+        : !error && <p className="empty-hint">No matching source passages.</p>}
+  </section>;
+}
+
 function ReviewList({ claims, relations, review, busy }: { claims: Claim[]; relations: Relation[]; review: (kind: "claim" | "relation", id: string, status: "accepted" | "rejected") => Promise<void>; busy: boolean }) {
   const pendingClaims = claims.filter((item) => item.review_status === "proposed");
   const pendingRelations = relations.filter((item) => item.review_status === "proposed");
@@ -268,22 +309,35 @@ function Graph({ entities, relations }: { entities: Entity[]; relations: Relatio
   </svg></div>;
 }
 
-function StoryPage({ entities, workspaceId, branchId }: { entities: Entity[]; workspaceId: string; branchId: string }) {
+function StoryPage({ entities, claims, workspaceId, branchId, onNavigate, onCommit }: { entities: Entity[]; claims: Claim[]; workspaceId: string; branchId: string; onNavigate: (page: Page) => void; onCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<void> }) {
   const characters = entities.filter((item) => ["character", "person"].includes(item.entity_type));
   const [actor, setActor] = useState("");
   const [order, setOrder] = useState(0);
   const [context, setContext] = useState<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] } | null>(null);
   const [error, setError] = useState("");
+  const selectedActor = characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "";
   async function preview() {
     setError("");
-    try { setContext(await request(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/context`, { method: "POST", body: JSON.stringify({ branch_id: branchId, actor_entity_id: actor, as_of_narrative_order: order, token_budget: 4000 }) })); }
+    try { setContext(await request<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] }>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/context`, { method: "POST", body: JSON.stringify({ branch_id: branchId, actor_entity_id: selectedActor, as_of_narrative_order: order, token_budget: 4000 }) })); }
     catch (e) { setError(e instanceof Error ? e.message : "Context could not be built."); }
+  }
+  async function recordBelief(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setError("");
+    try {
+      await onCommit("add_belief", { actor_entity_id: selectedActor, claim_id: data.get("claim_id"), stance: data.get("stance"), awareness_order: Number(data.get("awareness_order")) }, "Record a character's reviewed knowledge state");
+      form.reset();
+    } catch (e) { setError(e instanceof Error ? e.message : "Knowledge could not be recorded."); }
   }
   return <>
     <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Build an informed world, keep character knowledge in view, and review every change before it becomes canon." />
-    <div className="story-grid"><section className="panel story-canvas"><div className="scene-topline"><span className="scene-indicator">WORLD</span><span>Branch: {branchId === "main" ? "Main story" : branchId}</span></div><div className="story-placeholder"><div className="story-sigil">✳</div><h2>A story begins with what is known.</h2><p>Add characters, evidence, and reviewed claims in Knowledge Explorer. Then inspect the exact information each character has learned at a chosen point in the story.</p><button className="secondary-button" onClick={() => window.dispatchEvent(new CustomEvent("lke:navigate", { detail: "knowledge" }))}>Open knowledge explorer <span>↗</span></button></div></section>
+    <div className="story-grid"><section className="panel story-canvas"><div className="scene-topline"><span className="scene-indicator">WORLD</span><span>Branch: {branchId === "main" ? "Main story" : branchId}</span></div><div className="story-placeholder"><div className="story-sigil">✳</div><h2>A story begins with what is known.</h2><p>Add characters, evidence, and reviewed claims in Knowledge Explorer. Then inspect the exact information each character has learned at a chosen point in the story.</p><button className="secondary-button" onClick={() => onNavigate("knowledge")}>Open knowledge explorer <span>↗</span></button></div></section>
       <section className="panel context-panel"><div className="panel-heading"><div><h2>Character perspective</h2><p>Preview the bounded context before generation.</p></div><span className="privacy-tag">LOCAL</span></div>
-        {characters.length ? <><label className="field-label">Character<select value={actor || characters[0].entity_id} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label><label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label><button className="primary-button full-button" onClick={() => { if (!actor) setActor(characters[0].entity_id); void preview(); }}>Build context preview <span>↗</span></button></> : <p className="empty-hint">Create a character entity to preview their knowledge.</p>}
+        {characters.length ? <><label className="field-label">Character<select value={selectedActor} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label><label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label><button className="primary-button full-button" onClick={() => void preview()}>Build context preview <span>↗</span></button>
+          <form className="belief-form" onSubmit={(event) => void recordBelief(event)}><div className="form-divider">record a knowledge change</div><label className="field-label">Reviewed claim<select name="claim_id" required>{claims.filter((item) => item.review_status === "accepted").map((item) => <option key={item.claim_id} value={item.claim_id}>{item.predicate}: {item.object_value}</option>)}</select></label><label className="field-label">Character's stance<select name="stance"><option value="knows">Knows</option><option value="believes">Believes</option><option value="denies">Denies</option><option value="unaware">Has not learned</option></select></label><label className="field-label">Awareness order<input name="awareness_order" type="number" min={0} defaultValue={order} /></label><button className="secondary-button full-button" disabled={!claims.some((item) => item.review_status === "accepted")}>Record character knowledge <span>+</span></button></form>
+        </> : <p className="empty-hint">Create a character entity to preview their knowledge.</p>}
         {error && <p className="inline-error">{error}</p>}{context && <div className="context-result"><div className="context-result-heading"><strong>Included knowledge</strong><small>{context.included.length} reviewed claims</small></div>{context.included.length ? context.included.map((item, index) => <div className="context-claim" key={`${item.subject}-${index}`}><span>{item.subject}</span><strong>{item.predicate} {item.object}</strong><small>Character {item.actor_stance}</small></div>) : <p className="empty-hint">No eligible claims at this point in the story.</p>}<small className="excluded-count">{context.excluded.length} excluded for review, time, awareness, or privacy.</small></div>}
       </section></div>
   </>;
