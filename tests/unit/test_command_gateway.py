@@ -204,6 +204,34 @@ class CommandGatewayTests(unittest.TestCase):
         self.assertEqual(self.gateway.current_revision("story"), 1)
         self.assertEqual(self.gateway.list_journal_events("story"), [])
 
+    def test_journal_timeline_filters_overlapping_dates_without_guessing_uncertain_time(self):
+        self.command("exact-date", 0, "create_journal_event", {
+            "event_id": "dated", "title": "A dated event", "temporal_kind": "exact", "occurred_from": "2025-04-05",
+        })
+        self.command("date-range", 1, "create_journal_event", {
+            "event_id": "ranged", "title": "An event within a range", "temporal_kind": "range",
+            "occurred_from": "2025-04-07", "occurred_to": "2025-04-09",
+        })
+        self.command("relative-time", 2, "create_journal_event", {
+            "event_id": "relative", "title": "A relative-time event", "temporal_kind": "relative",
+            "time_note": "the winter after graduation",
+        })
+        self.command("unknown-time", 3, "create_journal_event", {
+            "event_id": "unknown", "title": "An undated event", "temporal_kind": "unknown",
+        })
+
+        self.assertEqual(
+            [event["event_id"] for event in self.gateway.list_journal_events("story", from_date="2025-04-05", to_date="2025-04-05")],
+            ["dated"],
+        )
+        self.assertEqual(
+            [event["event_id"] for event in self.gateway.list_journal_events("story", from_date="2025-04-06", to_date="2025-04-07")],
+            ["ranged"],
+        )
+        self.assertEqual(self.gateway.list_journal_events("story", from_date="2024-01-01", to_date="2024-12-31"), [])
+        with self.assertRaises(ValidationError):
+            self.gateway.list_journal_events("story", from_date="2025-04-10", to_date="2025-04-01")
+
     def test_source_import_rejects_binary_empty_and_unsupported_content(self):
         invalid_payloads = [
             {"display_name": "archive.zip", "media_type": "application/zip", "content": "not an archive"},

@@ -170,6 +170,13 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(timeline.status_code, 200, timeline.text)
         self.assertEqual(timeline.json()[0]["event_id"], "found-key")
         self.assertEqual(timeline.json()[0]["source_name"], "API source")
+        dated_timeline = self.request(
+            "GET",
+            "/api/v1/workspaces/api-workspace/journal-events?branch_id=main&from_date=2024-01-01",
+            headers=self.headers,
+        )
+        self.assertEqual(dated_timeline.status_code, 200, dated_timeline.text)
+        self.assertEqual(dated_timeline.json(), [])
 
     def create_story_conversation(self) -> int:
         workspace = self.request(

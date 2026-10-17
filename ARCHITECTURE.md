@@ -34,7 +34,7 @@ Every canonical write follows `Propose → Validate → Authorize → Commit →
 
 SQLite is the only source of truth. FTS5 is a rebuildable text projection. A branch is an immutable snapshot at a parent revision followed by branch-local writes; changing a branch does not modify its parent. A branch promotion is a distinct, reviewed operation. v0.1 does not auto-merge conflicting branches.
 
-Recorded time, branch revisions, relative narrative order, actor beliefs, revisioned story conversations/turns, and a manually curated journal timeline are implemented. Journal accounts support exact, ranged, relative, or unknown time and optional source quotes; corrections append history and branch snapshots retain every version. Story turns store the exact context manifest and revision used for local generation. General event extraction, entity resolution for journal participants, temporal question answering, scene state deltas, approvals, and scenario domain records remain part of the target model.
+Recorded time, branch revisions, relative narrative order, actor beliefs, revisioned story conversations/turns, and a manually curated journal timeline are implemented. Journal accounts support exact, ranged, relative, or unknown time and optional source quotes; date-window filters include only overlapping dated accounts, corrections append history, and branch snapshots retain every version. Story turns store the exact context manifest and revision used for local generation. General event extraction, entity resolution for journal participants, temporal question answering, scene state deltas, approvals, and scenario domain records remain part of the target model.
 
 ## Local API boundary
 

@@ -741,6 +741,8 @@ function JournalPage({ workspaceId, branchId, revision, sources, importText, bus
   const [selectedSource, setSelectedSource] = useState<SourceDetails | null>(null);
   const [events, setEvents] = useState<JournalEvent[]>([]);
   const [editingEvent, setEditingEvent] = useState<JournalEvent | null>(null);
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -752,12 +754,15 @@ function JournalPage({ workspaceId, branchId, revision, sources, importText, bus
     let active = true;
     setEventsLoading(true);
     setEventsError("");
-    request<JournalEvent[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/journal-events?branch_id=${encodeURIComponent(branchId)}`)
+    const filters = new URLSearchParams({ branch_id: branchId });
+    if (fromDate) filters.set("from_date", fromDate);
+    if (toDate) filters.set("to_date", toDate);
+    request<JournalEvent[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/journal-events?${filters.toString()}`)
       .then((rows) => { if (active) setEvents(rows); })
       .catch((reason) => { if (active) setEventsError(reason instanceof Error ? reason.message : "The memory timeline could not be loaded."); })
       .finally(() => { if (active) setEventsLoading(false); });
     return () => { active = false; };
-  }, [workspaceId, branchId, revision]);
+  }, [workspaceId, branchId, revision, fromDate, toDate]);
 
   useEffect(() => {
     if (!orderedSources.length) {
@@ -802,6 +807,8 @@ function JournalPage({ workspaceId, branchId, revision, sources, importText, bus
     {selectedSource && !loading && <article className="journal-reader"><div className="journal-reader-heading"><div><h3>{selectedSource.display_name}</h3><small>{selectedSource.media_type} · saved {new Date(selectedSource.created_at).toLocaleString()}</small></div><span className="status-pill">ORIGINAL SOURCE</span></div><pre>{displayedContent}</pre>{selectedSource.content.length > contentLimit && <button className="secondary-button journal-expand" onClick={() => setShowFullText((value) => !value)}>{showFullText ? "Show less" : `Show full text (${selectedSource.content.length.toLocaleString()} characters)`}</button>}</article>}
   </section></div>
     <section className="panel journal-timeline"><div className="panel-heading"><div><h2>Memory timeline</h2><p>Each entry remains an account with its own source and timing. Conflicting dates stay separate.</p></div><span className="panel-count">{events.length} accounts · {branchId}</span></div>
+      <div className="journal-date-filter"><span>Show dated accounts that overlap</span><label>From<input type="date" value={fromDate} max={toDate || undefined} onChange={(inputEvent) => setFromDate(inputEvent.target.value)} /></label><label>Through<input type="date" value={toDate} min={fromDate || undefined} onChange={(inputEvent) => setToDate(inputEvent.target.value)} /></label><button className="link-button" disabled={!fromDate && !toDate} onClick={() => { setFromDate(""); setToDate(""); }}>Clear dates</button></div>
+      <small className="journal-date-filter-note">Relative and unknown timing stays outside a calendar filter.</small>
       <div className="journal-memory-grid"><div className="journal-event-list" aria-label="Memory timeline">
         {eventsError && <p className="inline-error" role="alert">{eventsError}</p>}
         {eventsLoading ? <p className="empty-hint" role="status">Loading saved accounts…</p>

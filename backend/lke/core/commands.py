@@ -36,6 +36,20 @@ def _required_text(value: Any, field: str, limit: int = 500) -> str:
     return value.strip()
 
 
+def _optional_iso_date(value: Any, field: str) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValidationError(f"{field} must be an ISO calendar date")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise ValidationError(f"{field} must be an ISO calendar date") from error
+    if parsed.isoformat() != value:
+        raise ValidationError(f"{field} must use YYYY-MM-DD format")
+    return value
+
+
 def _fts_query(query: str) -> str:
     tokens = [match.group(1) or match.group(2) for match in _SEARCH_TOKEN.finditer(query)]
     if not tokens:
@@ -370,21 +384,8 @@ class CommandGateway:
         if not isinstance(temporal_kind, str) or temporal_kind not in {"exact", "range", "relative", "unknown"}:
             raise ValidationError("temporal_kind must be exact, range, relative, or unknown")
 
-        def parse_date(value: Any, field: str) -> str | None:
-            if value is None or value == "":
-                return None
-            if not isinstance(value, str):
-                raise ValidationError(f"{field} must be an ISO calendar date")
-            try:
-                parsed = date.fromisoformat(value)
-            except ValueError as error:
-                raise ValidationError(f"{field} must be an ISO calendar date") from error
-            if parsed.isoformat() != value:
-                raise ValidationError(f"{field} must use YYYY-MM-DD format")
-            return value
-
-        occurred_from = parse_date(payload.get("occurred_from"), "occurred_from")
-        occurred_to = parse_date(payload.get("occurred_to"), "occurred_to")
+        occurred_from = _optional_iso_date(payload.get("occurred_from"), "occurred_from")
+        occurred_to = _optional_iso_date(payload.get("occurred_to"), "occurred_to")
         if temporal_kind == "exact" and (not occurred_from or occurred_to):
             raise ValidationError("An exact event needs one date")
         if temporal_kind == "range" and (not occurred_from or not occurred_to):
@@ -857,7 +858,17 @@ class CommandGateway:
             raise NotFoundError("Workspace does not exist")
         return [dict(row) for row in rows]
 
-    def list_journal_events(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+    def list_journal_events(
+        self,
+        workspace_id: str,
+        branch_id: str = "main",
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        from_date = _optional_iso_date(from_date, "from_date")
+        to_date = _optional_iso_date(to_date, "to_date")
+        if from_date and to_date and from_date > to_date:
+            raise ValidationError("from_date cannot be after to_date")
         with self.db.lock:
             branch = self.db.connection.execute(
                 "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
@@ -883,6 +894,14 @@ class CommandGateway:
         events = []
         for versions in grouped.values():
             current = versions[-1]
+            if from_date or to_date:
+                if current["temporal_kind"] not in {"exact", "range"}:
+                    continue
+                event_end = current["occurred_to"] or current["occurred_from"]
+                if from_date and event_end < from_date:
+                    continue
+                if to_date and current["occurred_from"] > to_date:
+                    continue
             events.append({**current, "history": versions[:-1]})
         events.sort(key=lambda item: (
             item["occurred_from"] is None,

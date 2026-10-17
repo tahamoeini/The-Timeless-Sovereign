@@ -295,8 +295,13 @@ def create_app(
         return gateway.get_source(workspace_id, source_id)
 
     @app.get("/api/v1/workspaces/{workspace_id}/journal-events")
-    def journal_events(workspace_id: str, branch_id: str = "main"):
-        return gateway.list_journal_events(workspace_id, branch_id)
+    def journal_events(
+        workspace_id: str,
+        branch_id: str = "main",
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ):
+        return gateway.list_journal_events(workspace_id, branch_id, from_date, to_date)
 
     @app.get("/api/v1/workspaces/{workspace_id}/revisions")
     def revisions(workspace_id: str, branch_id: str = "main"):
