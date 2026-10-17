@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, Entity, newId, OllamaModelStatus, Relation, request, Revision, Source, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, Entity, newId, OllamaModelStatus, Relation, request, Revision, Source, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -15,7 +15,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("story");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
-  const [branches, setBranches] = useState<Branch[]>([{ branch_id: "main", parent_branch_id: null, head_revision: 0 }]);
+  const [branches, setBranches] = useState<Branch[]>([{ branch_id: "main", parent_branch_id: null, parent_revision: null, base_revision: 0, head_revision: 0, created_at: new Date().toISOString() }]);
   const [workspaceName, setWorkspaceName] = useState("");
   const [branchId, setBranchId] = useState("main");
   const [revision, setRevision] = useState(0);
@@ -82,7 +82,7 @@ export default function App() {
       setWorkspaceName("");
       setWorkspaces((rows) => [...rows, { ...created, created_at: new Date().toISOString(), main_revision: 0 }]);
       setWorkspaceId(created.workspace_id);
-      setBranches([{ branch_id: "main", parent_branch_id: null, head_revision: 0 }]);
+      setBranches([{ branch_id: "main", parent_branch_id: null, parent_revision: null, base_revision: 0, head_revision: 0, created_at: new Date().toISOString() }]);
       setBranchId("main");
       revisionRef.current = 0;
       setRevision(0);
@@ -244,7 +244,7 @@ export default function App() {
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
             {page === "journal" && <JournalPage importText={importText} busy={busy} />}
-            {page === "scenario" && <ScenarioPage branchId={branchId} revision={revision} entities={entities} relations={relations} onBranch={createScenario} />}
+            {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} onBranch={createScenario} />}
           </>}
         </div>
       </main>
@@ -422,7 +422,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const characters = entities.filter((item) => ["character", "person"].includes(item.entity_type));
   const [actor, setActor] = useState("");
   const [order, setOrder] = useState(0);
-  const [context, setContext] = useState<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] } | null>(null);
+  const [context, setContext] = useState<ContextManifest | null>(null);
+  const [contextExportNotice, setContextExportNotice] = useState("");
   const [error, setError] = useState("");
   const [storyError, setStoryError] = useState("");
   const [conversations, setConversations] = useState<StoryConversationSummary[]>([]);
@@ -500,14 +501,36 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
 
   async function preview() {
     setError("");
+    setContextExportNotice("");
     try {
-      setContext(await request<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] }>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/context`, {
+      setContext(await request<ContextManifest>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/context`, {
         method: "POST",
         body: JSON.stringify({ branch_id: branchId, actor_entity_id: selectedActor, as_of_narrative_order: order, token_budget: 4000 }),
       }));
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : "Context could not be built.");
     }
+  }
+
+  function exportContext() {
+    if (!context) return;
+    const branchFilePart = branchId.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80) || "branch";
+    const exportPackage = {
+      protocol: "lke.context-export.v1",
+      exported_at: new Date().toISOString(),
+      workspace_id: context.workspace_id,
+      branch_id: context.branch_id,
+      base_revision: context.base_revision,
+      context_manifest: context,
+    };
+    const file = new Blob([JSON.stringify(exportPackage, null, 2)], { type: "application/json;charset=utf-8" });
+    const fileUrl = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = fileUrl;
+    link.download = `lke-context-${branchFilePart}-r${context.base_revision}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
+    setContextExportNotice("Context package saved. Review its facts and exclusions before sharing it.");
   }
 
   async function startConversation(event: FormEvent<HTMLFormElement>) {
@@ -672,6 +695,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <div className="context-result-heading"><strong>Included knowledge</strong><small>{context.included.length} reviewed claims</small></div>
           {context.included.length ? context.included.map((item, index) => <div className="context-claim" key={`${item.subject}-${index}`}><span>{item.subject}</span><strong>{item.predicate} {item.object}</strong><small>Character {item.actor_stance}</small></div>) : <p className="empty-hint">No eligible claims at this point in the story.</p>}
           <small className="excluded-count">{context.excluded.length} excluded for review, time, awareness, or privacy.</small>
+          <button className="secondary-button context-export-button" onClick={exportContext}>Save portable context JSON <span>↓</span></button>
+          <small className="context-export-note">Includes the exact manifest, selected branch, and source revision.</small>
+          {contextExportNotice && <p className="context-export-success" role="status">{contextExportNotice}</p>}
         </div>}
       </section>
     </div>
@@ -682,6 +708,101 @@ function JournalPage({ importText, busy }: { importText: (event: FormEvent<HTMLF
   return <><PageHeader kicker="Personal memory" title="Journal & Memory" summary="Keep original notes intact and build an evidence-linked account over time." /><div className="journal-grid"><SourceForm busy={busy} onSubmit={importText} /><section className="panel journal-empty"><div className="journal-mark">▤</div><h2>Your notes remain yours.</h2><p>Imported text is preserved as a source. Dated events, conflicting accounts, and memory summaries will appear here as those workflows are added.</p><span className="status-pill">SOURCE STORAGE READY · EXTRACTION IN PROGRESS</span></section></div></>;
 }
 
-function ScenarioPage({ branchId, revision, entities, relations, onBranch }: { branchId: string; revision: number; entities: Entity[]; relations: Relation[]; onBranch: () => void }) {
-  return <><PageHeader kicker="Alternate futures" title="Decision & Scenario Lab" summary="Explore changes on a branch that keeps its starting point and never silently alters the main world." action={<button className="primary-button" onClick={() => void onBranch()}>Create scenario branch <span>↗</span></button>} /><div className="scenario-banner"><div className="branch-symbol">◇</div><div><strong>{branchId === "main" ? "You’re viewing the main branch" : `Exploring ${branchId}`}</strong><p>{branchId === "main" ? "Create a snapshot before changing assumptions or exploring an alternate event." : "Changes in this branch stay isolated from its parent."}</p></div><span className="revision-chip">Base view · revision {revision}</span></div><div className="scenario-grid"><section className="panel"><div className="panel-heading"><div><h2>Current structure</h2><p>Knowledge carried into this branch</p></div></div><div className="scenario-stats"><div><strong>{entities.length}</strong><small>concepts</small></div><div><strong>{relations.length}</strong><small>relationships</small></div><div><strong>{relations.filter((item) => item.review_status === "proposed").length}</strong><small>proposals</small></div></div><div className="branch-note">Branch writes use the same revision checks and audit trail as the main workspace.</div></section><section className="panel"><div className="panel-heading"><div><h2>Compare outcomes</h2><p>Assumptions and rule-based consequences</p></div></div><p className="empty-hint">Scenario evaluation and branch comparison are not implemented yet. The branch foundation is ready for isolated changes.</p></section></div></>;
+function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, onBranch }: {
+  workspaceId: string;
+  branchId: string;
+  branches: Branch[];
+  revision: number;
+  entities: Entity[];
+  relations: Relation[];
+  claims: Claim[];
+  onBranch: () => void;
+}) {
+  const branch = branches.find((item) => item.branch_id === branchId);
+  const parentBranchId = branch?.parent_branch_id || "";
+  const parentBranch = branches.find((item) => item.branch_id === parentBranchId);
+  const parentHasAdvanced = Boolean(parentBranch && branch?.parent_revision !== null && branch?.parent_revision !== undefined && parentBranch.head_revision > branch.parent_revision);
+  const [baseline, setBaseline] = useState<{ entities: Entity[]; relations: Relation[]; claims: Claim[] } | null>(null);
+  const [baselineError, setBaselineError] = useState("");
+
+  useEffect(() => {
+    if (!parentBranchId) {
+      setBaseline(null);
+      setBaselineError("");
+      return;
+    }
+    let active = true;
+    setBaseline(null);
+    setBaselineError("");
+    const parent = `branch_id=${encodeURIComponent(parentBranchId)}`;
+    void Promise.all([
+      request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/entities?${parent}`),
+      request<Relation[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/relations?${parent}`),
+      request<Claim[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/claims?${parent}`),
+    ]).then(([parentEntities, parentRelations, parentClaims]) => {
+      if (active) setBaseline({ entities: parentEntities, relations: parentRelations, claims: parentClaims });
+    }).catch((reason) => {
+      if (active) setBaselineError(reason instanceof Error ? reason.message : "The parent snapshot could not be loaded.");
+    });
+    return () => { active = false; };
+  }, [workspaceId, parentBranchId]);
+
+  const entityIds = new Set((baseline?.entities || []).map((item) => item.entity_id));
+  const relationById = new Map((baseline?.relations || []).map((item) => [item.relation_id, item]));
+  const claimById = new Map((baseline?.claims || []).map((item) => [item.claim_id, item]));
+  const addedEntities = baseline ? entities.filter((item) => !entityIds.has(item.entity_id)) : [];
+  const addedRelations = baseline ? relations.filter((item) => !relationById.has(item.relation_id)) : [];
+  const changedRelations = baseline ? relations.filter((item) => {
+    const previous = relationById.get(item.relation_id);
+    return previous && previous.review_status !== item.review_status;
+  }) : [];
+  const addedClaims = baseline ? claims.filter((item) => !claimById.has(item.claim_id)) : [];
+  const changedClaims = baseline ? claims.filter((item) => {
+    const previous = claimById.get(item.claim_id);
+    return previous && previous.review_status !== item.review_status;
+  }) : [];
+  const relationLabel = (relation: Relation) => {
+    const source = entities.find((item) => item.entity_id === relation.source_entity_id)?.label || relation.source_entity_id;
+    const target = entities.find((item) => item.entity_id === relation.target_entity_id)?.label || relation.target_entity_id;
+    return `${source} · ${relation.relation_type} · ${target}`;
+  };
+  const claimLabel = (claim: Claim) => {
+    const subject = entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id;
+    return `${subject} · ${claim.predicate} · ${claim.object_value}`;
+  };
+  const differenceCount = addedEntities.length + addedRelations.length + changedRelations.length + addedClaims.length + changedClaims.length;
+
+  return <>
+    <PageHeader kicker="Alternate futures" title="Decision & Scenario Lab" summary="Explore changes on a branch that keeps its starting point and never silently alters the main world." action={<button className="primary-button" onClick={() => void onBranch()}>Create scenario branch <span>↗</span></button>} />
+    <div className="scenario-banner"><div className="branch-symbol">◇</div><div><strong>{branchId === "main" ? "You’re viewing the main branch" : `Exploring ${branchId}`}</strong><p>{branchId === "main" ? "Create a snapshot before changing assumptions or exploring an alternate event." : "Changes in this branch stay isolated from its parent."}</p></div><span className="revision-chip">Revision {revision}</span></div>
+    <div className="scenario-grid">
+      <section className="panel">
+        <div className="panel-heading"><div><h2>Current structure</h2><p>Knowledge carried into this branch</p></div></div>
+        <div className="scenario-stats"><div><strong>{entities.length}</strong><small>concepts</small></div><div><strong>{relations.length}</strong><small>relationships</small></div><div><strong>{claims.length}</strong><small>claims</small></div></div>
+        <div className="branch-note">Branch writes use the same revision checks and audit trail as the main workspace.</div>
+      </section>
+      <section className="panel">
+        <div className="panel-heading"><div><h2>Branch differences</h2><p>{parentBranchId ? `Compared with the current ${parentBranchId} state; this branch started at revision ${branch?.parent_revision ?? branch?.base_revision ?? 0}.` : "The main branch is the starting point for scenarios."}</p></div>{parentBranchId && <span className="panel-count">{baseline ? `${differenceCount} changes` : "Comparing…"}</span>}</div>
+        {!parentBranchId
+          ? <p className="empty-hint">Choose a scenario branch from the top menu, or create one from this starting point.</p>
+          : baselineError
+            ? <p className="inline-error">{baselineError}</p>
+            : !baseline
+              ? <p className="empty-hint">Loading the parent branch records…</p>
+              : <>
+                {parentHasAdvanced && <p className="branch-stale-note">The parent has changed since this branch was created. Differences below use its current state.</p>}
+                {differenceCount === 0
+                  ? <p className="empty-hint">No record differences from the current parent state.</p>
+                  : <div className="branch-differences">
+                  {addedEntities.map((item) => <div className="branch-difference" key={`entity-${item.entity_id}`}><span>New concept</span><strong>{item.label}</strong><small>{item.entity_type}</small></div>)}
+                  {addedRelations.map((item) => <div className="branch-difference" key={`relation-${item.relation_id}`}><span>New relationship · {item.review_status}</span><strong>{relationLabel(item)}</strong></div>)}
+                  {changedRelations.map((item) => <div className="branch-difference" key={`relation-status-${item.relation_id}`}><span>Relationship review changed</span><strong>{relationLabel(item)}</strong><small>{relationById.get(item.relation_id)?.review_status} → {item.review_status}</small></div>)}
+                  {addedClaims.map((item) => <div className="branch-difference" key={`claim-${item.claim_id}`}><span>New claim · {item.review_status}</span><strong>{claimLabel(item)}</strong></div>)}
+                  {changedClaims.map((item) => <div className="branch-difference" key={`claim-status-${item.claim_id}`}><span>Claim review changed</span><strong>{claimLabel(item)}</strong><small>{claimById.get(item.claim_id)?.review_status} → {item.review_status}</small></div>)}
+                  </div>}
+              </>}
+        <div className="branch-note">These are deterministic record differences from the current parent branch. Rule-based forecasting and option scoring are still pending.</div>
+      </section>
+    </div>
+  </>;
 }

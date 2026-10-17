@@ -50,6 +50,12 @@ This file records decisions made against the LKE v1.1 baseline. Unverified choic
 
 **Reason:** conversations must survive restarts and branch locally while remaining auditable. Keeping the manifest beside the prose makes later review possible without treating model output as verified knowledge. Live Ollama generation and character-agency compliance still require runtime evaluation.
 
+## ADR-009 — Context sharing starts with an inspectable local package
+
+**Decision:** export an actor-aware context manifest as a versioned local JSON file containing the workspace, branch, source revision, included facts, and exclusions. Do not send it to an external provider from this flow.
+
+**Reason:** this makes the current context portable while preserving user control over whether and where to share it. External provider authentication, transcript import, and redaction remain separate, unimplemented integrations.
+
 ## Deferred decisions
 
 The exact document parser, embedding model, GraphRAG integration, external OpenAI/Codex path, minimum hardware, agent safe-apply policy, and final backup container remain open until their evaluation criteria and packaging tests are run. See [the integration register](docs/INTEGRATION_REGISTER.md).

@@ -38,7 +38,7 @@ export type Claim = {
 };
 
 export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };
-export type Branch = { branch_id: string; parent_branch_id: string | null; head_revision: number };
+export type Branch = { branch_id: string; parent_branch_id: string | null; parent_revision: number | null; base_revision: number; head_revision: number; created_at: string };
 export type Revision = { revision: number; parent_revision: number | null; actor: string; reason: string; created_at: string; payload: Record<string, unknown> };
 export type SourceResult = { source_id: string; display_name: string; excerpt: string };
 export type StoryTurn = {
