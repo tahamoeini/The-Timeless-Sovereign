@@ -920,7 +920,7 @@ function formatJournalTime(event: Pick<JournalEventVersion, "temporal_kind" | "o
   return event.time_note ? `Date not known · ${event.time_note}` : "Date not known";
 }
 
-function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, busy, onBranch, onCommit, onReviewRule }: {
+function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, sources, busy, onBranch, onCommit, onReviewRule, onReviewAssumption }: {
   workspaceId: string;
   branchId: string;
   branches: Branch[];
@@ -928,10 +928,12 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   entities: Entity[];
   relations: Relation[];
   claims: Claim[];
+  sources: Source[];
   busy: boolean;
   onBranch: () => void;
   onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
   onReviewRule: (id: string, status: "accepted" | "rejected") => Promise<void>;
+  onReviewAssumption: (scenarioId: string, optionId: string, assumptionId: string, version: number, status: "accepted" | "rejected") => Promise<void>;
 }) {
   const branch = branches.find((item) => item.branch_id === branchId);
   const parentBranchId = branch?.parent_branch_id || "";
@@ -942,6 +944,32 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   const [ruleEvaluations, setRuleEvaluations] = useState<RuleEvaluation[]>([]);
   const [ruleError, setRuleError] = useState("");
   const [rulesLoading, setRulesLoading] = useState(true);
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [selectedScenarioId, setSelectedScenarioId] = useState("");
+  const [scenariosLoading, setScenariosLoading] = useState(true);
+  const [scenarioError, setScenarioError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    if (!workspaceId) {
+      setScenarios([]);
+      setScenariosLoading(false);
+      return () => { active = false; };
+    }
+    setScenariosLoading(true);
+    setScenarioError("");
+    request<Scenario[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/scenarios?branch_id=${encodeURIComponent(branchId)}`)
+      .then((rows) => { if (active) setScenarios(rows); })
+      .catch((reason) => { if (active) setScenarioError(reason instanceof Error ? reason.message : "Scenarios could not be loaded."); })
+      .finally(() => { if (active) setScenariosLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, branchId, revision]);
+
+  useEffect(() => {
+    if (!scenarios.some((scenario) => scenario.scenario_id === selectedScenarioId)) {
+      setSelectedScenarioId(scenarios[0]?.scenario_id || "");
+    }
+  }, [scenarios, selectedScenarioId]);
 
   useEffect(() => {
     let active = true;
@@ -1030,9 +1058,24 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
                   {changedClaims.map((item) => <div className="branch-difference" key={`claim-status-${item.claim_id}`}><span>Claim review changed</span><strong>{claimLabel(item)}</strong><small>{claimById.get(item.claim_id)?.review_status} → {item.review_status}</small></div>)}
                   </div>}
               </>}
-        <div className="branch-note">These are deterministic record differences from the current parent branch. Rule-based forecasting and option scoring are still pending.</div>
+        <div className="branch-note">These are deterministic record differences from the current parent branch. Options and assumptions below are stored separately from the branch’s canonical facts.</div>
       </section>
     </div>
+    <section className="panel scenario-create-panel"><div className="panel-heading"><div><h2>Frame a decision</h2><p>Record the problem, constraints, options, and evidence before comparing outcomes.</p></div><span className="panel-count">Scenario input</span></div>
+      <ScenarioCreateForm claims={claims} entities={entities} sources={sources} busy={busy} onCommit={onCommit} onCreated={setSelectedScenarioId} />
+    </section>
+    <section className="panel scenario-options-panel"><div className="panel-heading"><div><h2>Conditional comparison</h2><p>Rule results are deterministic checks; model-generated advice is not included here.</p></div>
+      {scenarios.length > 0 && <label className="scenario-select-label">Scenario<select value={selectedScenarioId} onChange={(event) => setSelectedScenarioId(event.target.value)}>{scenarios.map((scenario) => <option key={scenario.scenario_id} value={scenario.scenario_id}>{scenario.title}</option>)}</select></label>}
+    </div>
+      {scenarioError && <p className="inline-error" role="alert">{scenarioError}</p>}
+      {scenariosLoading ? <p className="empty-hint" role="status">Loading decision scenarios…</p>
+        : !scenarios.length ? <p className="empty-hint">Add a decision above to compare its options on this branch.</p>
+          : scenarios.find((scenario) => scenario.scenario_id === selectedScenarioId) && <ScenarioDetails
+            scenario={scenarios.find((scenario) => scenario.scenario_id === selectedScenarioId)!}
+            entities={entities} claims={claims} busy={busy} onCommit={onCommit}
+            onReviewAssumption={onReviewAssumption}
+          />}
+    </section>
     <section className="panel scenario-rule-panel"><div className="panel-heading"><div><h2>Rule checks</h2><p>Test reviewed constraints against known claims in this branch.</p></div><span className="panel-count">{ruleEvaluations.filter((item) => item.rule.review_status === "accepted" && item.evaluation.status === "violated").length} violated</span></div>
       <div className="scenario-rule-layout"><ScenarioRuleForm entities={entities} busy={busy} onCommit={onCommit} /><div className="scenario-rule-results">
         {ruleError && <p className="inline-error" role="alert">{ruleError}</p>}
@@ -1040,9 +1083,191 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
           : ruleEvaluations.length ? ruleEvaluations.map((item) => <ScenarioRuleResult key={item.rule.rule_id} item={item} claims={claims} busy={busy} onReview={onReviewRule} />)
             : !ruleError && <p className="empty-hint">No rules are recorded on this branch. Add a rule to check a required or forbidden fact.</p>}
       </div></div>
-      <div className="branch-note">Only accepted rules and accepted claims marked as known can produce a definite result. Missing, unreviewed, or uncertain information stays unknown. Rule checks do not score options or predict outcomes.</div>
+      <div className="branch-note">Only accepted rules and accepted claims marked as known can produce a definite baseline result. Accepted option assumptions can produce conditional results; missing, unreviewed, or uncertain information stays unknown.</div>
     </section>
   </>;
+}
+
+function ScenarioCreateForm({ claims, entities, sources, busy, onCommit, onCreated }: {
+  claims: Claim[];
+  entities: Entity[];
+  sources: Source[];
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+  onCreated: (scenarioId: string) => void;
+}) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const options = ["a", "b", "c"].map((key) => ({
+      option_id: `option_${crypto.randomUUID().slice(0, 10)}`,
+      label: String(data.get(`option_${key}_label`) || "").trim(),
+      description: String(data.get(`option_${key}_description`) || "").trim(),
+    })).filter((option) => option.label);
+    if (options.length < 2 || options.length > 3) {
+      return;
+    }
+    const scenarioId = `scenario_${crypto.randomUUID().slice(0, 12)}`;
+    try {
+      await onCommit("create_scenario", {
+        scenario_id: scenarioId,
+        title: data.get("title"),
+        problem: data.get("problem"),
+        constraints: String(data.get("constraints") || "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+        options,
+        evidence_claim_ids: data.getAll("evidence_claim_ids").map(String),
+        evidence_source_ids: data.getAll("evidence_source_ids").map(String),
+      }, "Create a decision scenario", "Decision scenario saved on this branch.");
+      form.reset();
+      onCreated(scenarioId);
+    } catch { /* The workspace notice reports why the scenario was not saved. */ }
+  }
+
+  return <form className="scenario-create-form" onSubmit={(event) => void submit(event)}>
+    <div className="scenario-create-basics">
+      <label className="field-label">Decision title<input name="title" required maxLength={200} placeholder="e.g. How should we fund the archive?" /></label>
+      <label className="field-label">Problem<textarea name="problem" rows={2} required maxLength={4000} placeholder="Describe the decision and what needs to be resolved." /></label>
+      <label className="field-label">Constraints<textarea name="constraints" rows={2} maxLength={3000} placeholder="One constraint per line (optional)" /></label>
+    </div>
+    <div className="scenario-create-options">
+      {["a", "b", "c"].map((key, index) => <div className="scenario-option-input" key={key}>
+        <span>Option {String.fromCharCode(65 + index)}{index < 2 ? " · required" : " · optional"}</span>
+        <input name={`option_${key}_label`} maxLength={200} required={index < 2} placeholder={index === 0 ? "Proceed" : index === 1 ? "Wait" : "A third option"} />
+        <textarea name={`option_${key}_description`} rows={2} maxLength={1000} placeholder="What this option involves" />
+      </div>)}
+    </div>
+    <div className="scenario-evidence-pickers">
+      <details><summary>Link related claims ({claims.length})</summary>
+        <div className="scenario-evidence-list">{claims.length ? claims.map((claim) => <label key={claim.claim_id}><input type="checkbox" name="evidence_claim_ids" value={claim.claim_id} /><span>{entities.find((entity) => entity.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} · {claim.predicate} · {claim.object_value}<small>{claim.review_status} · {claim.epistemic_status}</small></span></label>) : <small>No claims are recorded on this branch.</small>}</div>
+      </details>
+      <details><summary>Link sources ({sources.length})</summary>
+        <div className="scenario-evidence-list">{sources.length ? sources.map((source) => <label key={source.source_id}><input type="checkbox" name="evidence_source_ids" value={source.source_id} /><span>{source.display_name}<small>{source.media_type}</small></span></label>) : <small>No sources are available in this workspace.</small>}</div>
+      </details>
+      <button className="primary-button" type="submit" disabled={busy}>Save decision frame <span>↗</span></button>
+    </div>
+  </form>;
+}
+
+function ScenarioDetails({ scenario, entities, claims, busy, onCommit, onReviewAssumption }: {
+  scenario: Scenario;
+  entities: Entity[];
+  claims: Claim[];
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+  onReviewAssumption: (scenarioId: string, optionId: string, assumptionId: string, version: number, status: "accepted" | "rejected") => Promise<void>;
+}) {
+  return <>
+    <div className="scenario-brief">
+      <div><span className="scenario-section-label">DECISION</span><p>{scenario.problem}</p></div>
+      <div><span className="scenario-section-label">CONSTRAINTS</span>{scenario.constraints.length
+        ? <ul>{scenario.constraints.map((constraint, index) => <li key={`${index}-${constraint}`}>{constraint}</li>)}</ul>
+        : <p className="empty-hint">No constraints recorded.</p>}</div>
+      <div><span className="scenario-section-label">RELATED EVIDENCE</span><div className="scenario-evidence-summary">
+        {scenario.evidence_claims.map((claim) => <span key={claim.claim_id}>{claim.subject_label} · {claim.predicate} · {claim.object_value}</span>)}
+        {scenario.evidence_sources.map((source) => <span key={source.source_id}>{source.display_name}</span>)}
+        {!scenario.evidence_claims.length && !scenario.evidence_sources.length && <small>No evidence is linked yet.</small>}
+      </div></div>
+    </div>
+    <div className="scenario-option-grid">{scenario.options.map((option) => <ScenarioOptionCard
+      key={option.option_id} scenarioId={scenario.scenario_id} option={option} entities={entities}
+      claims={claims} busy={busy} onCommit={onCommit} onReviewAssumption={onReviewAssumption}
+    />)}</div>
+  </>;
+}
+
+function ScenarioOptionCard({ scenarioId, option, entities, claims, busy, onCommit, onReviewAssumption }: {
+  scenarioId: string;
+  option: ScenarioOption;
+  entities: Entity[];
+  claims: Claim[];
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+  onReviewAssumption: (scenarioId: string, optionId: string, assumptionId: string, version: number, status: "accepted" | "rejected") => Promise<void>;
+}) {
+  const [editingAssumption, setEditingAssumption] = useState<ScenarioAssumption | null>(null);
+  const acceptedRules = option.rule_evaluations.filter((item) => item.rule.review_status === "accepted");
+  const pendingRuleCount = option.rule_evaluations.filter((item) => item.rule.review_status === "proposed").length;
+  const violatedHardRules = acceptedRules.filter((item) => item.rule.severity === "hard" && item.evaluation.status === "violated").length;
+  return <article className="scenario-option-card">
+    <div className="scenario-option-heading"><div><span className="scenario-section-label">OPTION</span><h3>{option.label}</h3></div><span className="scenario-option-summary">{violatedHardRules ? `${violatedHardRules} hard constraint${violatedHardRules === 1 ? "" : "s"} violated` : "No known hard violations"}</span></div>
+    {option.description && <p className="scenario-option-description">{option.description}</p>}
+    <div className="scenario-option-assumptions"><div className="scenario-subheading"><h4>Assumptions</h4><span>{option.assumptions.length}</span></div>
+      {option.assumptions.length ? option.assumptions.map((assumption) => {
+        const history = option.assumption_history.filter((item) => item.assumption_id === assumption.assumption_id);
+        return <article className={`scenario-assumption ${assumption.review_status}`} key={assumption.assumption_id}>
+          <div className="scenario-assumption-heading"><strong>{assumption.subject_label} · {assumption.predicate} · {assumption.object_value}</strong><span>{assumption.review_status} · v{assumption.version}</span></div>
+          <small>{assumption.assumption_action === "replace" ? "Replace a single-valued baseline property" : "Add a value to a multi-valued property"}</small>
+          {assumption.review_status === "proposed" && <div className="scenario-rule-actions">
+            <button onClick={() => void onReviewAssumption(scenarioId, option.option_id, assumption.assumption_id, assumption.version, "rejected")} disabled={busy}>Reject</button>
+            <button className="accept-button" onClick={() => void onReviewAssumption(scenarioId, option.option_id, assumption.assumption_id, assumption.version, "accepted")} disabled={busy}>Accept assumption</button>
+          </div>}
+          <button className="quiet-button scenario-edit-trigger" onClick={() => setEditingAssumption(assumption)}>Revise this assumption</button>
+          {history.length > 1 && <details className="scenario-assumption-history"><summary>Earlier versions ({history.length - 1})</summary>{history.slice(0, -1).map((version) => <p key={version.version}>v{version.version} · {version.object_value} · {version.review_status}</p>)}</details>}
+        </article>;
+      }) : <p className="empty-hint">No assumptions have been added to this option.</p>}
+      <ScenarioAssumptionForm scenarioId={scenarioId} option={option} entities={entities} busy={busy} onCommit={onCommit}
+        editing={editingAssumption} onCancel={() => setEditingAssumption(null)} />
+    </div>
+    <div className="scenario-option-outcomes"><div className="scenario-subheading"><h4>Rule outcomes</h4><span>{pendingRuleCount ? `${pendingRuleCount} rule${pendingRuleCount === 1 ? "" : "s"} awaiting review` : "deterministic"}</span></div>
+      {acceptedRules.length ? acceptedRules.map((item) => <ScenarioOptionRuleResult key={item.rule.rule_id} item={item} option={option} claims={claims} />)
+        : <p className="empty-hint">Accept a rule below to see its outcome for this option.</p>}
+    </div>
+  </article>;
+}
+
+function ScenarioAssumptionForm({ scenarioId, option, entities, busy, onCommit, editing, onCancel }: {
+  scenarioId: string;
+  option: ScenarioOption;
+  entities: Entity[];
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+  editing: ScenarioAssumption | null;
+  onCancel: () => void;
+}) {
+  const currentEditing = editing;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const action = String(data.get("assumption_action")) as "add" | "replace";
+    try {
+      await onCommit("set_scenario_assumption", {
+        scenario_id: scenarioId,
+        option_id: option.option_id,
+        assumption_id: currentEditing?.assumption_id || `assumption_${crypto.randomUUID().slice(0, 12)}`,
+        ...(currentEditing ? { expected_version: currentEditing.version } : {}),
+        subject_entity_id: data.get("subject_entity_id"),
+        predicate: data.get("predicate"),
+        object_value: data.get("object_value"),
+        assumption_action: action,
+        predicate_cardinality: action === "replace" ? "single" : "multiple",
+      }, currentEditing ? "Revise a scenario assumption" : "Add a scenario assumption", currentEditing ? "A new assumption version was saved." : "Assumption saved for this option.");
+      form.reset();
+      if (currentEditing) onCancel();
+    } catch { /* The workspace notice reports why the assumption was not saved. */ }
+  }
+
+  return <form className="scenario-assumption-form" key={`${currentEditing?.assumption_id || "new"}-${currentEditing?.version || 0}`} onSubmit={(event) => void submit(event)}>
+    {currentEditing && <div className="scenario-editing-note">Revising assumption v{currentEditing.version}<button type="button" onClick={onCancel}>Cancel</button></div>}
+    <label className="field-label">Concept<select name="subject_entity_id" required defaultValue={currentEditing?.subject_entity_id || entities[0]?.entity_id || ""}>{entities.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{entity.label}</option>)}</select></label>
+    <div className="scenario-assumption-fields"><label className="field-label">Property<input name="predicate" required maxLength={200} defaultValue={currentEditing?.predicate} placeholder="e.g. funding status" /></label><label className="field-label">Assumed value<input name="object_value" required maxLength={4000} defaultValue={currentEditing?.object_value} placeholder="e.g. paused" /></label></div>
+    <label className="field-label">How it changes the scenario<select name="assumption_action" defaultValue={currentEditing?.assumption_action || "replace"}><option value="replace">Replace one known value (single-valued)</option><option value="add">Add another value (multi-valued)</option></select></label>
+    <button className="quiet-button scenario-assumption-save" disabled={busy || entities.length === 0}>{currentEditing ? "Save revised assumption" : "Add assumption"}</button>
+  </form>;
+}
+
+function ScenarioOptionRuleResult({ item, option, claims }: { item: RuleEvaluation; option: ScenarioOption; claims: Claim[] }) {
+  const { rule, evaluation } = item;
+  const evidenceClaims = evaluation.evidence_claim_ids.map((id) => claims.find((claim) => claim.claim_id === id)).filter((claim): claim is Claim => Boolean(claim));
+  const assumedValues = evaluation.assumption_ids.map((id) => option.assumptions.find((assumption) => assumption.assumption_id === id)).filter((assumption): assumption is ScenarioAssumption => Boolean(assumption));
+  return <article className={`scenario-outcome ${evaluation.status}`}>
+    <div className="scenario-outcome-heading"><strong>{rule.name}</strong><span className={`rule-state ${evaluation.status}`}>{evaluation.status}</span><small>{evaluation.conditional ? "conditional" : "baseline"}</small></div>
+    <p>{evaluation.explanation}</p>
+    {evidenceClaims.length > 0 && <small>Claims: {evidenceClaims.map((claim) => `${claim.predicate} · ${claim.object_value}`).join("; ")}</small>}
+    {assumedValues.length > 0 && <small>Assumptions: {assumedValues.map((assumption) => `${assumption.predicate} · ${assumption.object_value}`).join("; ")}</small>}
+  </article>;
 }
 
 function ScenarioRuleForm({ entities, busy, onCommit }: {
