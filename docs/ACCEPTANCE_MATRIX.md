@@ -18,12 +18,12 @@ The release gates are measurable behaviors, not claims that a test name exists. 
 | Character agency | User-controlled action is never invented or committed | User-control guard is sent in generation prompt and no story output writes canon; simulated-provider check passes, live-model compliance not verified |
 | Transcript deduplication | Same transcript imported twice adds no turns/events | Not implemented |
 | Provider failure | Runtime failure leaves no partial canonical commit | Simulated-provider failure returns 503 with no saved turn or revision change; live Ollama outage behavior remains unverified |
-| Story persistence | Create, close/reload, and continue a branch-scoped conversation | Schema v2 migration, atomic turn storage, retry, and branch snapshot tests pass; UI conversation creation is next browser check |
+| Story persistence | Create, close/reload, and continue a branch-scoped conversation | Schema v2 migration, atomic turn storage, retry, and branch snapshot tests pass; browser creation, branch selection, and reload persistence verified; local generation remains blocked until Ollama is running |
 | Local API boundary | Auth, origin, loopback, and sidecar token tests | Auth, allowed-origin, preflight, API round-trip tests, and standalone sidecar health/token smoke test pass |
-| User workflows | Create workspace, add concepts, review claims/links, preview actor context, branch scenario | Browser flow verified for workspace, entities, relations, source search, evidence-backed claim review, actor awareness, and branch isolation; live story generation not verified |
+| User workflows | Create workspace, add concepts, review claims/links, preview actor context, branch scenario, and reopen a saved story | Browser flow verified for workspace, entities, relations, source search, evidence-backed claim review, actor awareness, branch isolation, and saved story reload; live story generation not verified |
 | Windows desktop package | Tauri shell and bundled backend start/stop on a clean machine | Standalone sidecar built and smoke-tested; Tauri shell build blocked by missing MSVC linker; installer not built |
 | File ingestion safety | Size/type/path/archive limits and hostile fixtures | Not implemented |
-| Graph/matrix consistency | All views reflect one canonical relation after edits | UI/projection worker not implemented |
+| Graph/matrix/history consistency | Views reflect the selected branch's canonical relations and revisions | Browser verifies the concept map and matrix show the same directed relationship and the history view lists branch revisions; automated cross-view edit parity is pending |
 | Backup/restore equivalence | Restore elsewhere matches sources, revisions, and official state | Manifest, integrity, FTS, source, revision, and schema-v2 migration tests pass; separate-device drill pending |
 | Local-only path | Full core workflow without cloud or paid API | No cloud dependency in current core/story path; end-to-end model workflow needs a live local Ollama model |
 | Windows install | Clean-machine install without preinstalled Python | Not implemented; release blocker |

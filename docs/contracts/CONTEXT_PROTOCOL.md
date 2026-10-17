@@ -35,4 +35,4 @@ The `lke.context.v1` result records its ID, request, compiler version, workspace
 
 NPC retrieval is actor- and time-scoped. A character does not receive a future fact, a fact the character has not explicitly encountered, author-only material, or another workspace's content. A retrieved absence is not evidence that a relation does not exist. The current implementation supports relative narrative order and explicit beliefs; valid-time intervals and richer event timelines remain pending. Story generation checks that the requested base revision matches the compiled manifest, then rechecks it when atomically saving both turns. A concurrent change therefore rejects the generated response instead of attaching it to stale context.
 
-The compiler and manifest format are specified here; semantic retrieval and token accounting are not implemented yet.
+Each saved story turn retains the exact context manifest JSON and its manifest ID with the context revision, so a later review can inspect what was included and excluded. The compiler and manifest format are specified here; semantic retrieval and token accounting are not implemented yet.

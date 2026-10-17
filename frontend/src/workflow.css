@@ -271,3 +271,167 @@
     max-height: 380px;
   }
 }
+
+.matrix-panel {
+  overflow: hidden;
+}
+
+.matrix-scroll {
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.relation-matrix {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--text);
+  font-size: 10px;
+}
+
+.relation-matrix th,
+.relation-matrix td {
+  min-width: 132px;
+  max-width: 220px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.relation-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #20292a;
+  color: #aab8b3;
+  font-weight: 600;
+}
+
+.relation-matrix tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #1b2324;
+  color: #c6d3cd;
+  font-weight: 600;
+}
+
+.relation-matrix thead th:first-child {
+  left: 0;
+  z-index: 3;
+}
+
+.relation-matrix td.has-links {
+  background: #1b2523;
+}
+
+.matrix-link {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 6px;
+  border-left: 2px solid #83b79e;
+  padding: 2px 0 2px 7px;
+  color: #c1ded0;
+  overflow-wrap: anywhere;
+}
+
+.matrix-link.proposed {
+  border-color: #d0ad69;
+  color: #ddc68f;
+}
+
+.matrix-link small,
+.matrix-empty {
+  color: #7e8c87;
+  font-size: 8px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.history-panel {
+  max-height: 720px;
+  overflow: auto;
+}
+
+.revision-list {
+  position: relative;
+  display: grid;
+  gap: 0;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.revision-list::before {
+  position: absolute;
+  top: 7px;
+  bottom: 18px;
+  left: 6px;
+  width: 1px;
+  background: #34413d;
+  content: "";
+}
+
+.revision-row {
+  position: relative;
+  display: flex;
+  gap: 13px;
+  padding: 10px 0;
+}
+
+.revision-marker {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  border: 3px solid #5e957c;
+  border-radius: 50%;
+  background: #17201e;
+}
+
+.revision-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.revision-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.revision-heading strong {
+  color: #d1dbd6;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.revision-heading span {
+  flex: 0 0 auto;
+  color: #a5cfb7;
+  font-size: 9px;
+}
+
+.revision-copy small {
+  display: block;
+  margin-top: 5px;
+  color: #7e8c87;
+  font-size: 8px;
+}

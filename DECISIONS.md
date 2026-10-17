@@ -44,6 +44,12 @@ This file records decisions made against the LKE v1.1 baseline. Unverified choic
 
 **Reason:** this is the license proposed in the product baseline and is compatible with the intended permissive dependency preference.
 
+## ADR-008 — Story output remains a revision-bound proposal
+
+**Decision:** persist each user prompt and local-model response as branch-scoped conversation history through the command gateway. Store the exact actor-aware context manifest and source revision used for generation with the response. Generated prose does not update canonical claims, relations, character beliefs, or world state.
+
+**Reason:** conversations must survive restarts and branch locally while remaining auditable. Keeping the manifest beside the prose makes later review possible without treating model output as verified knowledge. Live Ollama generation and character-agency compliance still require runtime evaluation.
+
 ## Deferred decisions
 
 The exact document parser, embedding model, GraphRAG integration, external OpenAI/Codex path, minimum hardware, agent safe-apply policy, and final backup container remain open until their evaluation criteria and packaging tests are run. See [the integration register](docs/INTEGRATION_REGISTER.md).

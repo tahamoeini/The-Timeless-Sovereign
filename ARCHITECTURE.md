@@ -46,6 +46,6 @@ Ollama is the local provider adapter. It discovers local models and performs non
 
 ## Current implementation boundary
 
-Implemented: SQLite schema v2, workspace creation, branch snapshots including story history, command gateway for entities, relations, claims, text sources, evidence, conversations and story turns, FTS search, actor-aware context compilation, local Ollama adapter, revisions, append-only audit, transactional outbox, offline backup/restore, and a loopback API adapter.
+Implemented: SQLite schema v2, workspace creation, branch snapshots including story history, command gateway for entities, relations, claims, text sources, evidence, conversations and story turns, FTS search, actor-aware context compilation, local Ollama adapter, revisions, append-only audit, transactional outbox, offline backup/restore, and a loopback API adapter. The UI has a concept map, a relationship matrix and a branch-scoped revision history view over the same canonical records.
 
-Not yet implemented: completed Tauri desktop package, PDF/Office ingestion and extraction review, graph/matrix/timeline views, model-assisted change review and story state deltas, journal timeline, scenario evaluation, exchange import/export, separate-device restore drill, and clean-machine Windows installation. See [acceptance status](docs/ACCEPTANCE_MATRIX.md).
+Not yet implemented: completed Tauri desktop package, PDF/Office ingestion and extraction review, advanced graph exploration and timeline projections, model-assisted change review and story state deltas, journal timeline, scenario evaluation, exchange import/export, separate-device restore drill, and clean-machine Windows installation. See [acceptance status](docs/ACCEPTANCE_MATRIX.md).

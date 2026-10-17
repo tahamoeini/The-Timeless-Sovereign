@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, Entity, newId, OllamaModelStatus, Relation, request, Source, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, Entity, newId, OllamaModelStatus, Relation, request, Revision, Source, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -239,7 +239,7 @@ export default function App() {
             <div className="welcome-points"><span>◉ Evidence stays linked</span><span>◈ Explore safely in branches</span><span>⌁ Your data stays yours</span></div>
           </section> : <>
             {page === "knowledge" && <KnowledgePage
-              workspaceId={workspaceId} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
+              workspaceId={workspaceId} branchId={branchId} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
@@ -257,22 +257,88 @@ function PageHeader({ kicker, title, summary, action }: { kicker: string; title:
 }
 
 function KnowledgePage(props: {
-  workspaceId: string; entities: Entity[]; relations: Relation[]; claims: Claim[]; sources: Source[]; busy: boolean; query: string; setQuery: (query: string) => void;
+  workspaceId: string; branchId: string; entities: Entity[]; relations: Relation[]; claims: Claim[]; sources: Source[]; busy: boolean; query: string; setQuery: (query: string) => void;
   addEntity: (event: FormEvent<HTMLFormElement>) => Promise<void>; addRelation: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   addClaim: (event: FormEvent<HTMLFormElement>) => Promise<void>; importText: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   review: (kind: "claim" | "relation", id: string, status: "accepted" | "rejected") => Promise<void>;
 }) {
-  const [tab, setTab] = useState<"map" | "evidence" | "review">("map");
+  const [tab, setTab] = useState<"map" | "matrix" | "history" | "evidence" | "review">("map");
   return <>
     <PageHeader kicker="Your knowledge space" title="Knowledge Explorer" summary="Build a source-backed map of people, ideas, events, and their relationships." />
     <div className="metric-row"><Metric value={props.entities.length} label="Concepts" icon="◉" /><Metric value={props.relations.length} label="Relationships" icon="⟷" /><Metric value={props.claims.length} label="Claims" icon="≋" /><Metric value={props.claims.filter((item) => item.review_status === "proposed").length + props.relations.filter((item) => item.review_status === "proposed").length} label="Needs review" icon="◷" accent /></div>
-    <div className="toolbar"><div className="tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
+    <div className="toolbar"><div className="tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "matrix" ? "selected" : ""} onClick={() => setTab("matrix")}>Relationship matrix</button><button className={tab === "history" ? "selected" : ""} onClick={() => setTab("history")}>History</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
     {tab === "map" && <div className="knowledge-grid"><section className="panel graph-panel"><div className="panel-heading"><div><h2>Concept map</h2><p>Accepted links and proposals share one editable source.</p></div><span className="panel-count">{props.entities.length} nodes</span></div><Graph entities={props.entities} relations={props.relations} /><div className="graph-legend"><span><i className="legend-node" />Concept</span><span><i className="legend-line" />Accepted relationship</span><span><i className="legend-line proposed" />Needs review</span></div></section>
       <div className="stacked-panels"><EntityForm busy={props.busy} onSubmit={props.addEntity} /><RelationForm entities={props.entities} busy={props.busy} onSubmit={props.addRelation} /></div></div>}
+    {tab === "matrix" && <RelationMatrix entities={props.entities} relations={props.relations} />}
+    {tab === "history" && <RevisionHistory workspaceId={props.workspaceId} branchId={props.branchId} />}
     {tab === "evidence" && <div className="knowledge-grid"><SourceForm busy={props.busy} onSubmit={props.importText} /><SourceResults workspaceId={props.workspaceId} query={props.query} /> </div>}
     {tab === "review" && <div className="review-list"><ReviewList claims={props.claims} relations={props.relations} review={props.review} busy={props.busy} /></div>}
     <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} sources={props.sources} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility} · {claim.evidence.length} evidence</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>
   </>;
+}
+
+function RevisionHistory({ workspaceId, branchId }: { workspaceId: string; branchId: string }) {
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    void request<Revision[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/revisions?branch_id=${encodeURIComponent(branchId)}`)
+      .then((rows) => { if (active) { setRevisions(rows); setError(""); } })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "History could not be loaded."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, branchId]);
+
+  const ordered = [...revisions].reverse();
+  return <section className="panel history-panel">
+    <div className="panel-heading"><div><h2>Revision history</h2><p>Every saved change is listed for the selected branch.</p></div><span className="panel-count">{revisions.length} revisions</span></div>
+    {error && <p className="inline-error">{error}</p>}
+    {loading ? <p className="empty-hint">Loading revision history…</p>
+      : ordered.length ? <ol className="revision-list">{ordered.map((item) => <li className="revision-row" key={item.revision}>
+        <span className="revision-marker" aria-hidden="true" />
+        <div className="revision-copy">
+          <div className="revision-heading"><strong>{item.reason}</strong><span>Revision {item.revision}</span></div>
+          <small>{item.actor} · follows revision {item.parent_revision ?? "none"} · {new Date(item.created_at).toLocaleString()}</small>
+        </div>
+      </li>)}</ol>
+      : !error && <p className="empty-hint">No saved changes on this branch yet.</p>}
+  </section>;
+}
+
+function RelationMatrix({ entities, relations }: { entities: Entity[]; relations: Relation[] }) {
+  const cells = new Map<string, Relation[]>();
+  for (const relation of relations) {
+    const key = `${relation.source_entity_id}\u0000${relation.target_entity_id}`;
+    cells.set(key, [...(cells.get(key) || []), relation]);
+  }
+
+  return <section className="panel matrix-panel">
+    <div className="panel-heading"><div><h2>Relationship matrix</h2><p>Rows point to columns. Each cell is generated from the same branch-scoped relationships as the concept map.</p></div><span className="panel-count">{relations.length} links</span></div>
+    {entities.length === 0
+      ? <p className="empty-hint">Add concepts to see their relationships here.</p>
+      : <div className="matrix-scroll" role="region" aria-label="Relationship matrix" tabIndex={0}>
+        <table className="relation-matrix">
+          <caption className="visually-hidden">Directed relationships from each row concept to each column concept.</caption>
+          <thead><tr><th scope="col">From / to</th>{entities.map((entity) => <th scope="col" key={entity.entity_id}>{entity.label}</th>)}</tr></thead>
+          <tbody>{entities.map((source) => <tr key={source.entity_id}>
+            <th scope="row">{source.label}</th>
+            {entities.map((target) => {
+              const links = cells.get(`${source.entity_id}\u0000${target.entity_id}`) || [];
+              return <td key={target.entity_id} className={links.length ? "has-links" : ""}>
+                {links.length
+                  ? links.map((link) => <span className={`matrix-link ${link.review_status}`} key={link.relation_id} title={`${link.review_status} relationship`}>
+                    {link.relation_type}<small>{link.review_status === "accepted" ? "Accepted" : "Needs review"}</small>
+                  </span>)
+                  : <span className="matrix-empty" aria-label="No relationship">—</span>}
+              </td>;
+            })}
+          </tr>)}</tbody>
+        </table>
+      </div>}
+  </section>;
 }
 
 function Metric({ value, label, icon, accent = false }: { value: number; label: string; icon: string; accent?: boolean }) {

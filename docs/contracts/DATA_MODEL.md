@@ -33,6 +33,6 @@ Stable entity IDs are scoped to a workspace and branch snapshot. Creating a bran
 
 ## SQLite v2 implementation
 
-The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `story_conversations`, `story_turns`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Story turns carry provider/model provenance, narrative order, a context manifest ID, and the revision used for generation. Branch snapshots copy conversations and turns before allowing branch-local continuation. Claims and awareness records use relative narrative order to prevent future-knowledge leakage.
+The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `story_conversations`, `story_turns`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Story turns carry provider/model provenance, narrative order, the exact context manifest JSON and ID, and the revision used for generation. Branch snapshots copy conversations and turns before allowing branch-local continuation. Claims and awareness records use relative narrative order to prevent future-knowledge leakage.
 
 Aliases, events, states, scene state deltas, rules, scenarios, approvals, and valid-time intervals are still target-model items, not completed features.
