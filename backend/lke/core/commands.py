@@ -367,7 +367,7 @@ class CommandGateway:
                 seen_participants.add(identity)
 
         temporal_kind = payload.get("temporal_kind")
-        if temporal_kind not in {"exact", "range", "relative", "unknown"}:
+        if not isinstance(temporal_kind, str) or temporal_kind not in {"exact", "range", "relative", "unknown"}:
             raise ValidationError("temporal_kind must be exact, range, relative, or unknown")
 
         def parse_date(value: Any, field: str) -> str | None:
