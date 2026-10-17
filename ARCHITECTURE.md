@@ -34,7 +34,7 @@ Every canonical write follows `Propose → Validate → Authorize → Commit →
 
 SQLite is the only source of truth. FTS5 is a rebuildable text projection. A branch is an immutable snapshot at a parent revision followed by branch-local writes; changing a branch does not modify its parent. A branch promotion is a distinct, reviewed operation. v0.1 does not auto-merge conflicting branches.
 
-Recorded time, branch revisions, relative narrative order, actor beliefs, and revisioned story conversations/turns are implemented. Story turns store the exact context manifest and revision used for local generation. Valid-time ranges, richer event timelines, scene state deltas, approvals, and scenario domain records remain part of the target model.
+Recorded time, branch revisions, relative narrative order, actor beliefs, revisioned story conversations/turns, and a manually curated journal timeline are implemented. Journal accounts support exact, ranged, relative, or unknown time and optional source quotes; corrections append history and branch snapshots retain every version. Story turns store the exact context manifest and revision used for local generation. General event extraction, entity resolution for journal participants, temporal question answering, scene state deltas, approvals, and scenario domain records remain part of the target model.
 
 ## Local API boundary
 
@@ -46,6 +46,6 @@ Ollama is the local provider adapter. It discovers local models and performs non
 
 ## Current implementation boundary
 
-Implemented: SQLite schema v2, workspace creation, branch snapshots including story history, command gateway for entities, relations, claims, text sources, evidence, conversations and story turns, FTS search, actor-aware context compilation, revision-bound context export, local Ollama adapter, revisions, append-only audit, transactional outbox, offline backup/restore, and a loopback API adapter. The UI has a concept map, a relationship matrix, a branch-scoped revision history view, and deterministic comparison of scenario records against their current parent branch.
+Implemented: SQLite schema v3, workspace creation, branch snapshots including story and journal-event history, command gateway for entities, relations, claims, text sources, evidence, conversations, story turns and journal accounts, FTS search, actor-aware context compilation, revision-bound context export, local Ollama adapter, revisions, append-only audit, transactional outbox, offline backup/restore, and a loopback API adapter. The UI has a concept map, a relationship matrix, a branch-scoped revision history, a journal source reader and dated/uncertain event timeline, and deterministic comparison of scenario records against their current parent branch.
 
-Not yet implemented: completed Tauri desktop package, PDF/Office ingestion and extraction review, advanced graph exploration and timeline projections, model-assisted change review and story state deltas, journal timeline, scenario rules and outcome evaluation, transcript import, separate-device restore drill, and clean-machine Windows installation. See [acceptance status](docs/ACCEPTANCE_MATRIX.md).
+Not yet implemented: completed Tauri desktop package, PDF/Office ingestion and extraction review, model-assisted event extraction and review, general event/state and advanced timeline projections, story state deltas, scenario rules and outcome evaluation, transcript import, separate-device restore drill, and clean-machine Windows installation. See [acceptance status](docs/ACCEPTANCE_MATRIX.md).

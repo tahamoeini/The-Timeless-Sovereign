@@ -13,6 +13,7 @@ The canonical model is general-purpose. `canon` is a story-specific authority co
 | Claim | Subject-predicate-object assertion | Keeps evidence, epistemic state, and review state separate |
 | Relation | Typed, directed link between entities | Branch-scoped; reviewable |
 | Event / State | Occurrence and computed state at a domain time | Time and evidence required as available |
+| JournalEventVersion | A user's account of an episode, with optional source, participants, and exact, ranged, relative, or unknown timing | Branch-scoped, provenance-preserving, append-only corrections; not independently verified truth |
 | Belief / Knowledge | What an actor knows, believes, denies, or lacks | Actor- and awareness-order-scoped |
 | Rule | Constraint or evaluable condition | Domain-owned |
 | Revision / Branch | Versioned change and isolated alternate path | Append-only history; explicit promotion |
@@ -31,8 +32,8 @@ Records may carry valid time, recorded time, actor awareness time, narrative ord
 
 Stable entity IDs are scoped to a workspace and branch snapshot. Creating a branch snapshots records from an exact parent revision. Subsequent writes remain branch-local. A source archive is shared within a workspace; its evidence links and accepted knowledge are branch-aware. Promotion requires an explicit reviewed operation. Automatic conflicting merges are out of scope for v0.1.
 
-## SQLite v2 implementation
+## SQLite v3 implementation
 
-The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `story_conversations`, `story_turns`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Story turns carry provider/model provenance, narrative order, the exact context manifest JSON and ID, and the revision used for generation. Branch snapshots copy conversations and turns before allowing branch-local continuation. Claims and awareness records use relative narrative order to prevent future-knowledge leakage.
+The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `story_conversations`, `story_turns`, `journal_events`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Story turns carry provider/model provenance, narrative order, the exact context manifest JSON and ID, and the revision used for generation. Branch snapshots copy conversations, turns, and all journal-event versions before allowing branch-local continuation. Journal entries preserve source quotes, participant labels, and exact, ranged, relative, or unknown timing. A correction appends a version; earlier wording and conflicting accounts remain retrievable. Claims and awareness records use relative narrative order to prevent future-knowledge leakage.
 
-Aliases, events, states, scene state deltas, rules, scenarios, approvals, and valid-time intervals are still target-model items, not completed features.
+Journal event accounts are manually recorded and remain personal accounts even when linked to a source. They are not yet extracted into general domain events, linked to canonical entity identities, or used for temporal question answering. Aliases, computed states, scene state deltas, rules, scenario records, approvals, and generalized valid-time intervals remain target-model items.

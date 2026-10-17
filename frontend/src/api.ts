@@ -39,6 +39,24 @@ export type Claim = {
 
 export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };
 export type SourceDetails = Source & { content: string };
+export type JournalEventVersion = {
+  event_id: string;
+  version: number;
+  title: string;
+  details: string;
+  participants: string[];
+  temporal_kind: "exact" | "range" | "relative" | "unknown";
+  occurred_from: string | null;
+  occurred_to: string | null;
+  time_note: string;
+  source_id: string | null;
+  source_name: string | null;
+  source_quote: string | null;
+  supersedes_version: number | null;
+  created_revision: number;
+  created_at: string;
+};
+export type JournalEvent = JournalEventVersion & { history: JournalEventVersion[] };
 export type Branch = { branch_id: string; parent_branch_id: string | null; parent_revision: number | null; base_revision: number; head_revision: number; created_at: string };
 export type Revision = { revision: number; parent_revision: number | null; actor: string; reason: string; created_at: string; payload: Record<string, unknown> };
 export type SourceResult = { source_id: string; display_name: string; excerpt: string };

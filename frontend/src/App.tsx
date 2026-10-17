@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, ContextManifest, Entity, newId, OllamaModelStatus, Relation, request, Revision, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, Entity, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -118,6 +118,20 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  async function commitJournalCommand(commandType: string, payload: Record<string, unknown>, reason: string, successText: string) {
+    if (busy) throw new Error("Another workspace change is already in progress.");
+    setBusy(true);
+    try {
+      await runCommand(commandType, payload, reason);
+      setNotice({ tone: "success", text: successText });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The journal change could not be saved." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function addEntity(event: FormEvent<HTMLFormElement>) {
     const form = event.currentTarget;
@@ -253,7 +267,7 @@ export default function App() {
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
-            {page === "journal" && <JournalPage workspaceId={workspaceId} sources={sources} importText={importText} busy={busy} />}
+            {page === "journal" && <JournalPage workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitJournalCommand} />}
             {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} onBranch={createScenario} />}
           </>}
         </div>
@@ -714,13 +728,36 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   </>;
 }
 
-function JournalPage({ workspaceId, sources, importText, busy }: { workspaceId: string; sources: Source[]; importText: (event: FormEvent<HTMLFormElement>) => Promise<void>; busy: boolean }) {
+function JournalPage({ workspaceId, branchId, revision, sources, importText, busy, onCommit }: {
+  workspaceId: string;
+  branchId: string;
+  revision: number;
+  sources: Source[];
+  importText: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const [selectedSource, setSelectedSource] = useState<SourceDetails | null>(null);
+  const [events, setEvents] = useState<JournalEvent[]>([]);
+  const [editingEvent, setEditingEvent] = useState<JournalEvent | null>(null);
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const [eventsError, setEventsError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showFullText, setShowFullText] = useState(false);
   const orderedSources = useMemo(() => [...sources].sort((left, right) => right.created_at.localeCompare(left.created_at)), [sources]);
+
+  useEffect(() => {
+    let active = true;
+    setEventsLoading(true);
+    setEventsError("");
+    request<JournalEvent[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/journal-events?branch_id=${encodeURIComponent(branchId)}`)
+      .then((rows) => { if (active) setEvents(rows); })
+      .catch((reason) => { if (active) setEventsError(reason instanceof Error ? reason.message : "The memory timeline could not be loaded."); })
+      .finally(() => { if (active) setEventsLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, branchId, revision]);
 
   useEffect(() => {
     if (!orderedSources.length) {
@@ -751,14 +788,106 @@ function JournalPage({ workspaceId, sources, importText, busy }: { workspaceId: 
   const contentLimit = 20000;
   const displayedContent = selectedSource && !showFullText ? selectedSource.content.slice(0, contentLimit) : selectedSource?.content || "";
 
-  return <><PageHeader kicker="Personal memory" title="Journal & Memory" summary="Keep original notes intact and browse the records you have saved in this workspace." /><div className="journal-grid"><SourceForm busy={busy} onSubmit={importText} /><section className="panel journal-notes"><div className="panel-heading"><div><h2>Saved notes</h2><p>Original source text stays unchanged. Review is separate from storage.</p></div><span className="panel-count">{sources.length}</span></div>
+  async function saveEvent(command: string, payload: Record<string, unknown>, reason: string, successText: string) {
+    await onCommit(command, payload, reason, successText);
+    setEditingEvent(null);
+  }
+
+  return <><PageHeader kicker="Personal memory" title="Journal & Memory" summary="Save personal accounts with exact or uncertain timing, and keep source notes intact." /><div className="journal-grid"><SourceForm busy={busy} onSubmit={importText} /><section className="panel journal-notes"><div className="panel-heading"><div><h2>Saved notes</h2><p>Original source text stays unchanged. Review is separate from storage.</p></div><span className="panel-count">{sources.length}</span></div>
     {orderedSources.length ? <div className="journal-entry-list" aria-label="Saved notes">{orderedSources.map((source) => <button key={source.source_id} className={`journal-entry ${selectedSourceId === source.source_id ? "selected" : ""}`} onClick={() => setSelectedSourceId(source.source_id)}>
       <span className="journal-entry-type">{source.media_type === "text/markdown" ? "MD" : "TXT"}</span><span className="journal-entry-copy"><strong>{source.display_name}</strong><small>{new Date(source.created_at).toLocaleString()}</small></span><span className="journal-entry-arrow">↗</span>
     </button>)}</div> : <div className="journal-empty"><div className="journal-mark">▤</div><h2>Your notes remain yours.</h2><p>Save a note or import a text file. It will stay as original source material until you choose to build reviewed memories from it.</p></div>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {loading && <p className="empty-hint" role="status">Opening original note…</p>}
     {selectedSource && !loading && <article className="journal-reader"><div className="journal-reader-heading"><div><h3>{selectedSource.display_name}</h3><small>{selectedSource.media_type} · saved {new Date(selectedSource.created_at).toLocaleString()}</small></div><span className="status-pill">ORIGINAL SOURCE</span></div><pre>{displayedContent}</pre>{selectedSource.content.length > contentLimit && <button className="secondary-button journal-expand" onClick={() => setShowFullText((value) => !value)}>{showFullText ? "Show less" : `Show full text (${selectedSource.content.length.toLocaleString()} characters)`}</button>}</article>}
-  </section></div></>;
+  </section></div>
+    <section className="panel journal-timeline"><div className="panel-heading"><div><h2>Memory timeline</h2><p>Each entry remains an account with its own source and timing. Conflicting dates stay separate.</p></div><span className="panel-count">{events.length} accounts · {branchId}</span></div>
+      <div className="journal-memory-grid"><div className="journal-event-list" aria-label="Memory timeline">
+        {eventsError && <p className="inline-error" role="alert">{eventsError}</p>}
+        {eventsLoading ? <p className="empty-hint" role="status">Loading saved accounts…</p>
+          : events.length ? events.map((event) => <JournalEventCard key={event.event_id} event={event} onCorrect={() => setEditingEvent(event)} />)
+            : !eventsError && <p className="empty-hint">No events have been recorded on this branch. Add an account with a date, an approximate time, or unknown timing.</p>}
+      </div>
+      <JournalEventForm key={editingEvent?.event_id || "new-journal-event"} event={editingEvent} sources={sources} busy={busy} onSave={saveEvent} onCancel={() => setEditingEvent(null)} />
+      </div>
+    </section>
+  </>;
+}
+
+function JournalEventCard({ event, onCorrect }: { event: JournalEvent; onCorrect: () => void }) {
+  return <article className="journal-event-card"><div className="journal-event-topline"><span className={`journal-time-kind ${event.temporal_kind}`}>{event.temporal_kind === "exact" ? "DATED ACCOUNT" : event.temporal_kind === "range" ? "DATE RANGE" : event.temporal_kind === "relative" ? "APPROXIMATE TIME" : "TIME UNKNOWN"}</span><small>Version {event.version} · recorded at revision {event.created_revision}</small></div>
+    <h3>{event.title}</h3><div className="journal-event-time">{formatJournalTime(event)}</div>
+    {event.details && <p className="journal-event-details">{event.details}</p>}
+    {event.participants.length > 0 && <div className="journal-participants"><span>People mentioned</span>{event.participants.map((person) => <small key={person}>{person}</small>)}</div>}
+    {(event.source_name || event.source_quote) && <div className="journal-event-source"><strong>Source · {event.source_name || "Saved note"}</strong>{event.source_quote && <blockquote>{event.source_quote}</blockquote>}</div>}
+    <div className="journal-event-actions"><button className="link-button" onClick={onCorrect}>Correct this account</button>{event.history.length > 0 && <details className="journal-event-history"><summary>{event.history.length} earlier {event.history.length === 1 ? "version" : "versions"}</summary>{event.history.map((version) => <JournalEventHistory key={version.version} version={version} />)}</details>}</div>
+  </article>;
+}
+
+function JournalEventHistory({ version }: { version: JournalEventVersion }) {
+  return <div className="journal-history-version"><div><strong>Version {version.version} · {formatJournalTime(version)}</strong><small>Recorded at revision {version.created_revision} · {new Date(version.created_at).toLocaleString()}</small></div><p>{version.title}</p>{version.details && <p>{version.details}</p>}{version.source_quote && <blockquote>{version.source_quote}</blockquote>}</div>;
+}
+
+function JournalEventForm({ event, sources, busy, onSave, onCancel }: {
+  event: JournalEvent | null;
+  sources: Source[];
+  busy: boolean;
+  onSave: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [temporalKind, setTemporalKind] = useState<JournalEvent["temporal_kind"]>(event?.temporal_kind || "unknown");
+
+  async function submit(formEvent: FormEvent<HTMLFormElement>) {
+    formEvent.preventDefault();
+    const form = formEvent.currentTarget;
+    const values = new FormData(form);
+    const sourceId = String(values.get("source_id") || "");
+    const sourceQuote = String(values.get("source_quote") || "").trim();
+    const payload: Record<string, unknown> = {
+      title: values.get("title"),
+      details: values.get("details"),
+      participants: String(values.get("participants") || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+      temporal_kind: temporalKind,
+      occurred_from: String(values.get("occurred_from") || "") || null,
+      occurred_to: String(values.get("occurred_to") || "") || null,
+      time_note: values.get("time_note"),
+      source_id: sourceId || null,
+      source_quote: sourceQuote || null,
+    };
+    const command = event ? "revise_journal_event" : "create_journal_event";
+    if (event) {
+      payload.event_id = event.event_id;
+      payload.expected_event_version = event.version;
+    }
+    await onSave(command, payload, event ? `Correct journal event ${event.event_id}` : "Record a personal journal event", event ? "Saved a new version; the earlier account remains in its history." : "Recorded this account on the selected branch.");
+    if (!event) {
+      form.reset();
+      setTemporalKind("unknown");
+    }
+  }
+
+  return <section className="journal-event-form"><div className="journal-form-heading"><div><h3>{event ? "Correct an account" : "Record an event"}</h3><p>{event ? `This creates version ${event.version + 1}; the previous wording stays available.` : "This records your account, not an independently verified fact."}</p></div>{event && <button type="button" className="link-button" onClick={onCancel}>Cancel</button>}</div>
+    <form onSubmit={(formEvent) => void submit(formEvent)}>
+      <label className="field-label">What happened?<input name="title" required maxLength={200} defaultValue={event?.title || ""} placeholder="A short description" /></label>
+      <label className="field-label">More detail<textarea name="details" rows={3} maxLength={4000} defaultValue={event?.details || ""} placeholder="Add context without filling in details you are unsure about." /></label>
+      <label className="field-label">People mentioned<input name="participants" maxLength={1000} defaultValue={event?.participants.join(", ") || ""} placeholder="Separate names with commas" /></label>
+      <label className="field-label">How certain is the timing?<select name="temporal_kind" value={temporalKind} onChange={(inputEvent) => setTemporalKind(inputEvent.target.value as JournalEvent["temporal_kind"])}><option value="exact">I know the date</option><option value="range">It was within a date range</option><option value="relative">I know it approximately or by context</option><option value="unknown">I do not know the timing</option></select></label>
+      {temporalKind === "exact" && <label className="field-label">Date<input name="occurred_from" type="date" required defaultValue={event?.occurred_from || ""} /></label>}
+      {temporalKind === "range" && <div className="journal-date-range"><label className="field-label">From<input name="occurred_from" type="date" required defaultValue={event?.occurred_from || ""} /></label><label className="field-label">Through<input name="occurred_to" type="date" required defaultValue={event?.occurred_to || ""} /></label></div>}
+      {(temporalKind === "relative" || temporalKind === "unknown") && <label className="field-label">Timing note<input name="time_note" required={temporalKind === "relative"} maxLength={300} defaultValue={event?.time_note || ""} placeholder={temporalKind === "relative" ? "e.g. the winter after university" : "Optional note about what is unknown"} /></label>}
+      <label className="field-label">Saved source (optional)<select name="source_id" defaultValue={event?.source_id || ""}><option value="">No source attached · personal account</option>{sources.map((source) => <option key={source.source_id} value={source.source_id}>{source.display_name}</option>)}</select></label>
+      <label className="field-label">Exact quote from the source (optional)<textarea name="source_quote" rows={2} defaultValue={event?.source_quote || ""} placeholder="This wording must match the saved note." /></label>
+      <button className="primary-button full-button" disabled={busy || !sources.length && Boolean(event?.source_id)}>{event ? "Save correction" : "Add to memory timeline"} <span>↗</span></button>
+    </form>
+  </section>;
+}
+
+function formatJournalTime(event: Pick<JournalEventVersion, "temporal_kind" | "occurred_from" | "occurred_to" | "time_note">) {
+  const displayDate = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  if (event.temporal_kind === "exact" && event.occurred_from) return displayDate(event.occurred_from);
+  if (event.temporal_kind === "range" && event.occurred_from && event.occurred_to) return `${displayDate(event.occurred_from)} – ${displayDate(event.occurred_to)}`;
+  if (event.temporal_kind === "relative") return event.time_note;
+  return event.time_note ? `Date not known · ${event.time_note}` : "Date not known";
 }
 
 function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, onBranch }: {

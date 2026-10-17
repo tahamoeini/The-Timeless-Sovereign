@@ -20,6 +20,7 @@ The release gates are measurable behaviors, not claims that a test name exists. 
 | Transcript deduplication | Same transcript imported twice adds no turns/events | Not implemented |
 | Provider failure | Runtime failure leaves no partial canonical commit | Simulated-provider failure returns 503 with no saved turn or revision change; live Ollama outage behavior remains unverified |
 | Story persistence | Create, close/reload, and continue a branch-scoped conversation | Schema v2 migration, atomic turn storage, retry, and branch snapshot tests pass; browser creation, branch selection, and reload persistence verified; local generation remains blocked until Ollama is running |
+| Journal note access | List saved notes and open their original source text without crossing workspaces | Source detail and workspace-scope unit test passes; UI compiles; browser verification of the new Journal view and API route is pending |
 | Context export | Save a portable package with actor, branch, revision, included facts, and exclusions | Browser verifies the downloaded JSON envelope, context manifest, branch/revision provenance, included/excluded fields, and omission of source full text; external sharing and redaction remain user-controlled and unimplemented |
 | Local API boundary | Auth, origin, loopback, and sidecar token tests | Auth, allowed-origin, preflight, API round-trip tests, and standalone sidecar health/token smoke test pass |
 | User workflows | Create workspace, add concepts, review claims/links, preview actor context, branch scenario, and reopen a saved story | Browser flow verified for workspace, entities, relations, UTF-8 text source import and full-text search, evidence-backed claim review, actor awareness, branch isolation, and saved story reload; live story generation not verified |
@@ -36,7 +37,7 @@ The currently runnable core and API test command is:
 python -m unittest discover -s tests\unit -v
 ```
 
-The present suite has 28 tests. The latest run passed all 21 command-gateway, backup/restore, migration, and Ollama adapter tests. The 7 API-boundary tests passed in an earlier full run, but could not be rerun with the current bundled Windows Python because its asyncio event-loop setup blocks while creating a local loopback socket pair in this sandbox. The browser/API source-import flow was verified separately. Repeat the API tests in an environment with working local loopback sockets before release. Passing unit tests do not substitute for live-model, clean-machine, or full release acceptance runs.
+The present suite has 29 tests. The latest run passed all 22 command-gateway, backup/restore, migration, and Ollama adapter tests. The 7 API-boundary tests passed in an earlier full run, but could not be rerun with the current bundled Windows Python because its asyncio event-loop setup blocks while creating a local loopback socket pair in this sandbox; the new source-detail API assertion is therefore still unverified. The existing browser/API source-import flow was verified separately. Repeat the API tests in an environment with working local loopback sockets before release. Passing unit tests do not substitute for live-model, clean-machine, or full release acceptance runs.
 
 ## Quality targets
 

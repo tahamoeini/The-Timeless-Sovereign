@@ -142,6 +142,34 @@ class ApiBoundaryTests(unittest.TestCase):
             "GET", "/api/v1/workspaces/api-workspace/sources/api-source", headers=self.headers
         )
         self.assertEqual(detail.json()["content"], "Aria keeps the brass key.")
+        event = self.request(
+            "POST",
+            "/api/v1/workspaces/api-workspace/commands",
+            headers=self.headers,
+            json={
+                "branch_id": "main",
+                "expected_revision": 2,
+                "idempotency_key": "record-api-event",
+                "command_type": "create_journal_event",
+                "reason": "Record a sourced personal memory",
+                "payload": {
+                    "event_id": "found-key",
+                    "title": "Found the brass key",
+                    "participants": ["Aria"],
+                    "temporal_kind": "relative",
+                    "time_note": "before sunrise",
+                    "source_id": "api-source",
+                    "source_quote": "Aria keeps the brass key.",
+                },
+            },
+        )
+        self.assertEqual(event.status_code, 200, event.text)
+        timeline = self.request(
+            "GET", "/api/v1/workspaces/api-workspace/journal-events?branch_id=main", headers=self.headers
+        )
+        self.assertEqual(timeline.status_code, 200, timeline.text)
+        self.assertEqual(timeline.json()[0]["event_id"], "found-key")
+        self.assertEqual(timeline.json()[0]["source_name"], "API source")
 
     def create_story_conversation(self) -> int:
         workspace = self.request(

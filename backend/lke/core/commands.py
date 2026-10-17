@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -17,7 +17,7 @@ from .errors import ConflictError, IdempotencyConflictError, NotFoundError, Vali
 _ALLOWED_COMMANDS = {
     "create_entity", "update_entity", "add_relation", "review_relation", "add_claim",
     "review_claim", "add_belief", "import_source", "add_evidence",
-    "create_conversation", "append_story_turn",
+    "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -159,11 +159,13 @@ class CommandGateway:
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
+                    ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
                     ("evidence", "evidence_id,source_id,anchor,quote,context_fingerprint,created_revision"),
                 ):
+                    ordering = " ORDER BY event_id,version" if table == "journal_events" else ""
                     connection.execute(
                         f"INSERT INTO {table}(workspace_id,branch_id,{columns}) "
-                        f"SELECT workspace_id,?,{columns} FROM {table} WHERE workspace_id=? AND branch_id=?",
+                        f"SELECT workspace_id,?,{columns} FROM {table} WHERE workspace_id=? AND branch_id=?{ordering}",
                         (branch_id, workspace_id, parent_branch_id),
                     )
                 connection.execute(
@@ -335,6 +337,97 @@ class CommandGateway:
         if old["request_hash"] != request_hash:
             raise IdempotencyConflictError("Idempotency key was already used for another command")
         return json.loads(old["result_json"])
+
+    def _journal_event_fields(
+        self,
+        connection: sqlite3.Connection,
+        workspace_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        title = _required_text(payload.get("title"), "title", 200)
+        details = payload.get("details", "")
+        time_note = payload.get("time_note", "")
+        if not isinstance(details, str) or len(details) > 4000:
+            raise ValidationError("details must be text of at most 4000 characters")
+        if not isinstance(time_note, str) or len(time_note.strip()) > 300:
+            raise ValidationError("time_note must be text of at most 300 characters")
+        details = details.strip()
+        time_note = time_note.strip()
+
+        participants = payload.get("participants", [])
+        if not isinstance(participants, list) or len(participants) > 30:
+            raise ValidationError("participants must be a list of at most 30 names")
+        clean_participants: list[str] = []
+        seen_participants: set[str] = set()
+        for participant in participants:
+            name = _required_text(participant, "participant", 200)
+            identity = name.casefold()
+            if identity not in seen_participants:
+                clean_participants.append(name)
+                seen_participants.add(identity)
+
+        temporal_kind = payload.get("temporal_kind")
+        if temporal_kind not in {"exact", "range", "relative", "unknown"}:
+            raise ValidationError("temporal_kind must be exact, range, relative, or unknown")
+
+        def parse_date(value: Any, field: str) -> str | None:
+            if value is None or value == "":
+                return None
+            if not isinstance(value, str):
+                raise ValidationError(f"{field} must be an ISO calendar date")
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError as error:
+                raise ValidationError(f"{field} must be an ISO calendar date") from error
+            if parsed.isoformat() != value:
+                raise ValidationError(f"{field} must use YYYY-MM-DD format")
+            return value
+
+        occurred_from = parse_date(payload.get("occurred_from"), "occurred_from")
+        occurred_to = parse_date(payload.get("occurred_to"), "occurred_to")
+        if temporal_kind == "exact" and (not occurred_from or occurred_to):
+            raise ValidationError("An exact event needs one date")
+        if temporal_kind == "range" and (not occurred_from or not occurred_to):
+            raise ValidationError("A date range needs both a start and end date")
+        if temporal_kind == "range" and occurred_from and occurred_to and occurred_to < occurred_from:
+            raise ValidationError("The end date cannot be before the start date")
+        if temporal_kind in {"relative", "unknown"} and (occurred_from or occurred_to):
+            raise ValidationError("Relative or unknown events cannot include calendar dates")
+        if temporal_kind == "relative" and not time_note:
+            raise ValidationError("Describe the relative timing, for example 'the following winter'")
+
+        source_id = payload.get("source_id")
+        if source_id is not None and source_id != "":
+            source_id = _required_text(source_id, "source_id", 100)
+            source = connection.execute(
+                "SELECT content FROM sources WHERE workspace_id=? AND source_id=?",
+                (workspace_id, source_id),
+            ).fetchone()
+            if not source:
+                raise NotFoundError("Journal event source does not exist in this workspace")
+        else:
+            source_id = None
+        source_quote = payload.get("source_quote")
+        if source_quote is not None and source_quote != "":
+            source_quote = _required_text(source_quote, "source_quote", 10000)
+            if not source_id:
+                raise ValidationError("Choose a source before attaching an exact quote")
+            if source_quote not in source["content"]:
+                raise ValidationError("Journal event quote must be present in the imported source")
+        else:
+            source_quote = None
+
+        return {
+            "title": title,
+            "details": details,
+            "participants_json": _json(clean_participants),
+            "temporal_kind": temporal_kind,
+            "occurred_from": occurred_from,
+            "occurred_to": occurred_to,
+            "time_note": time_note,
+            "source_id": source_id,
+            "source_quote": source_quote,
+        }
 
     def _apply(
         self,
@@ -554,6 +647,51 @@ class CommandGateway:
             )
             return {"evidence_id": evidence_id, "source_id": source_id}, "evidence.created", True
 
+        if command_type in {"create_journal_event", "revise_journal_event"}:
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot create or revise personal journal accounts")
+            fields = self._journal_event_fields(connection, workspace_id, payload)
+            now = _now()
+            if command_type == "create_journal_event":
+                event_id = _required_text(payload.get("event_id") or str(uuid4()), "event_id", 100)
+                version = 1
+                supersedes_version = None
+                event_type = "journal.event_created"
+            else:
+                event_id = _required_text(payload.get("event_id"), "event_id", 100)
+                expected_version = payload.get("expected_event_version")
+                if type(expected_version) is not int or expected_version < 1:
+                    raise ValidationError("expected_event_version must be a positive integer")
+                current = connection.execute(
+                    "SELECT MAX(version) AS version FROM journal_events "
+                    "WHERE workspace_id=? AND branch_id=? AND event_id=?",
+                    (workspace_id, branch_id, event_id),
+                ).fetchone()["version"]
+                if current is None:
+                    raise NotFoundError("Journal event does not exist in this branch")
+                if current != expected_version:
+                    raise ConflictError(f"Expected event version {expected_version}; current version is {current}")
+                version = expected_version + 1
+                supersedes_version = expected_version
+                event_type = "journal.event_revised"
+
+            connection.execute(
+                "INSERT INTO journal_events(workspace_id,branch_id,event_id,version,title,details,participants_json,"
+                "temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    workspace_id, branch_id, event_id, version, fields["title"], fields["details"],
+                    fields["participants_json"], fields["temporal_kind"], fields["occurred_from"],
+                    fields["occurred_to"], fields["time_note"], fields["source_id"],
+                    fields["source_quote"], supersedes_version, revision, now,
+                ),
+            )
+            return {
+                "event_id": event_id,
+                "version": version,
+                "source_id": fields["source_id"],
+            }, event_type, True
+
         if command_type == "create_conversation":
             conversation_id = _required_text(payload.get("conversation_id") or str(uuid4()), "conversation_id", 100)
             actor_entity_id = _required_text(payload.get("actor_entity_id"), "actor_entity_id", 100)
@@ -718,6 +856,41 @@ class CommandGateway:
         if not exists:
             raise NotFoundError("Workspace does not exist")
         return [dict(row) for row in rows]
+
+    def list_journal_events(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+        with self.db.lock:
+            branch = self.db.connection.execute(
+                "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not branch:
+                raise NotFoundError("Branch does not exist in this workspace")
+            rows = self.db.connection.execute(
+                "SELECT e.event_id,e.version,e.title,e.details,e.participants_json,e.temporal_kind,"
+                "e.occurred_from,e.occurred_to,e.time_note,e.source_id,s.display_name AS source_name,"
+                "e.source_quote,e.supersedes_version,e.created_revision,e.created_at "
+                "FROM journal_events e LEFT JOIN sources s ON s.workspace_id=e.workspace_id AND s.source_id=e.source_id "
+                "WHERE e.workspace_id=? AND e.branch_id=? ORDER BY e.event_id,e.version",
+                (workspace_id, branch_id),
+            ).fetchall()
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = dict(row)
+            item["participants"] = json.loads(item.pop("participants_json"))
+            grouped.setdefault(item["event_id"], []).append(item)
+
+        events = []
+        for versions in grouped.values():
+            current = versions[-1]
+            events.append({**current, "history": versions[:-1]})
+        events.sort(key=lambda item: (
+            item["occurred_from"] is None,
+            item["occurred_from"] or "",
+            item["created_revision"],
+            item["event_id"],
+        ))
+        return events
 
     def get_source(self, workspace_id: str, source_id: str) -> dict[str, Any]:
         with self.db.lock:

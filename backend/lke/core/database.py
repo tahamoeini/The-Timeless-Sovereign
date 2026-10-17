@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class Database:
@@ -52,6 +52,9 @@ class Database:
                 current = 1
             if current < 2:
                 self._apply_migration(2, _SCHEMA_V2)
+                current = 2
+            if current < 3:
+                self._apply_migration(3, _SCHEMA_V3)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -283,4 +286,46 @@ CREATE TABLE story_turns (
 );
 CREATE INDEX story_turns_order_idx
     ON story_turns(workspace_id,branch_id,conversation_id,turn_order);
+"""
+
+
+_SCHEMA_V3 = """
+CREATE TABLE journal_events (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 200),
+    details TEXT NOT NULL DEFAULT '',
+    participants_json TEXT NOT NULL DEFAULT '[]',
+    temporal_kind TEXT NOT NULL CHECK(temporal_kind IN ('exact','range','relative','unknown')),
+    occurred_from TEXT,
+    occurred_to TEXT,
+    time_note TEXT NOT NULL DEFAULT '',
+    source_id TEXT,
+    source_quote TEXT,
+    supersedes_version INTEGER,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,event_id,version),
+    CHECK(
+        (temporal_kind='exact' AND occurred_from IS NOT NULL AND occurred_to IS NULL) OR
+        (temporal_kind='range' AND occurred_from IS NOT NULL AND occurred_to IS NOT NULL AND occurred_from <= occurred_to) OR
+        (temporal_kind IN ('relative','unknown') AND occurred_from IS NULL AND occurred_to IS NULL)
+    ),
+    CHECK(supersedes_version IS NULL OR supersedes_version=version-1),
+    CHECK(source_id IS NOT NULL OR source_quote IS NULL),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,source_id)
+        REFERENCES sources(workspace_id,source_id),
+    FOREIGN KEY(workspace_id,branch_id,event_id,supersedes_version)
+        REFERENCES journal_events(workspace_id,branch_id,event_id,version)
+);
+CREATE INDEX journal_events_timeline_idx
+    ON journal_events(workspace_id,branch_id,occurred_from,event_id,version);
+CREATE TRIGGER journal_events_no_update BEFORE UPDATE ON journal_events
+BEGIN SELECT RAISE(ABORT, 'journal event versions are append-only'); END;
+CREATE TRIGGER journal_events_no_delete BEFORE DELETE ON journal_events
+BEGIN SELECT RAISE(ABORT, 'journal event versions are append-only'); END;
 """
