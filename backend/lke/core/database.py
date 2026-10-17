@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class Database:
@@ -58,6 +58,9 @@ class Database:
                 current = 3
             if current < 4:
                 self._apply_migration(4, _SCHEMA_V4)
+                current = 4
+            if current < 5:
+                self._apply_migration(5, _SCHEMA_V5)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -357,4 +360,109 @@ CREATE TABLE rules (
 );
 CREATE INDEX rules_branch_review_idx
     ON rules(workspace_id,branch_id,review_status,severity);
+"""
+
+
+_SCHEMA_V5 = """
+CREATE TABLE scenarios (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 200),
+    problem TEXT NOT NULL CHECK(length(trim(problem)) BETWEEN 1 AND 4000),
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,scenario_id),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE
+);
+CREATE TABLE scenario_options (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    option_id TEXT NOT NULL,
+    label TEXT NOT NULL CHECK(length(trim(label)) BETWEEN 1 AND 200),
+    description TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL CHECK(position BETWEEN 0 AND 4),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    PRIMARY KEY(workspace_id,branch_id,scenario_id,option_id),
+    UNIQUE(workspace_id,branch_id,scenario_id,position),
+    FOREIGN KEY(workspace_id,branch_id,scenario_id)
+        REFERENCES scenarios(workspace_id,branch_id,scenario_id) ON DELETE CASCADE
+);
+CREATE TABLE scenario_claim_evidence (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    claim_id TEXT NOT NULL,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    PRIMARY KEY(workspace_id,branch_id,scenario_id,claim_id),
+    FOREIGN KEY(workspace_id,branch_id,scenario_id)
+        REFERENCES scenarios(workspace_id,branch_id,scenario_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,branch_id,claim_id)
+        REFERENCES claims(workspace_id,branch_id,claim_id)
+);
+CREATE TABLE scenario_source_evidence (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    PRIMARY KEY(workspace_id,branch_id,scenario_id,source_id),
+    FOREIGN KEY(workspace_id,branch_id,scenario_id)
+        REFERENCES scenarios(workspace_id,branch_id,scenario_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,source_id)
+        REFERENCES sources(workspace_id,source_id)
+);
+CREATE TABLE scenario_assumptions (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    option_id TEXT NOT NULL,
+    assumption_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    subject_entity_id TEXT NOT NULL,
+    predicate TEXT NOT NULL CHECK(length(trim(predicate)) BETWEEN 1 AND 200),
+    object_value TEXT NOT NULL CHECK(length(trim(object_value)) BETWEEN 1 AND 4000),
+    assumption_action TEXT NOT NULL CHECK(assumption_action IN ('add','replace')),
+    predicate_cardinality TEXT NOT NULL CHECK(predicate_cardinality IN ('single','multiple')),
+    review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    supersedes_version INTEGER,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,scenario_id,option_id,assumption_id,version),
+    CHECK((assumption_action='replace' AND predicate_cardinality='single') OR
+          (assumption_action='add' AND predicate_cardinality='multiple')),
+    CHECK(supersedes_version IS NULL OR supersedes_version=version-1),
+    FOREIGN KEY(workspace_id,branch_id,scenario_id,option_id)
+        REFERENCES scenario_options(workspace_id,branch_id,scenario_id,option_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,branch_id,subject_entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id),
+    FOREIGN KEY(workspace_id,branch_id,scenario_id,option_id,assumption_id,supersedes_version)
+        REFERENCES scenario_assumptions(workspace_id,branch_id,scenario_id,option_id,assumption_id,version)
+);
+CREATE INDEX scenario_assumptions_latest_idx
+    ON scenario_assumptions(workspace_id,branch_id,scenario_id,option_id,assumption_id,version DESC);
+
+CREATE TRIGGER scenarios_no_update BEFORE UPDATE ON scenarios
+BEGIN SELECT RAISE(ABORT, 'scenarios are append-only'); END;
+CREATE TRIGGER scenarios_no_delete BEFORE DELETE ON scenarios
+BEGIN SELECT RAISE(ABORT, 'scenarios are append-only'); END;
+CREATE TRIGGER scenario_options_no_update BEFORE UPDATE ON scenario_options
+BEGIN SELECT RAISE(ABORT, 'scenario options are append-only'); END;
+CREATE TRIGGER scenario_options_no_delete BEFORE DELETE ON scenario_options
+BEGIN SELECT RAISE(ABORT, 'scenario options are append-only'); END;
+CREATE TRIGGER scenario_claim_evidence_no_update BEFORE UPDATE ON scenario_claim_evidence
+BEGIN SELECT RAISE(ABORT, 'scenario evidence is append-only'); END;
+CREATE TRIGGER scenario_claim_evidence_no_delete BEFORE DELETE ON scenario_claim_evidence
+BEGIN SELECT RAISE(ABORT, 'scenario evidence is append-only'); END;
+CREATE TRIGGER scenario_source_evidence_no_update BEFORE UPDATE ON scenario_source_evidence
+BEGIN SELECT RAISE(ABORT, 'scenario evidence is append-only'); END;
+CREATE TRIGGER scenario_source_evidence_no_delete BEFORE DELETE ON scenario_source_evidence
+BEGIN SELECT RAISE(ABORT, 'scenario evidence is append-only'); END;
+CREATE TRIGGER scenario_assumptions_no_update BEFORE UPDATE ON scenario_assumptions
+BEGIN SELECT RAISE(ABORT, 'scenario assumption versions are append-only'); END;
+CREATE TRIGGER scenario_assumptions_no_delete BEFORE DELETE ON scenario_assumptions
+BEGIN SELECT RAISE(ABORT, 'scenario assumption versions are append-only'); END;
 """

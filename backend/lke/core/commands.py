@@ -19,7 +19,8 @@ _ALLOWED_COMMANDS = {
     "create_entity", "update_entity", "add_relation", "review_relation", "add_claim",
     "review_claim", "add_belief", "import_source", "add_evidence",
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
-    "create_rule", "review_rule",
+    "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
+    "review_scenario_assumption",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -177,6 +178,11 @@ class CommandGateway:
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
                     ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
+                    ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at"),
+                    ("scenario_options", "scenario_id,option_id,label,description,position,created_revision"),
+                    ("scenario_claim_evidence", "scenario_id,claim_id,created_revision"),
+                    ("scenario_source_evidence", "scenario_id,source_id,created_revision"),
+                    ("scenario_assumptions", "scenario_id,option_id,assumption_id,version,subject_entity_id,predicate,object_value,assumption_action,predicate_cardinality,review_status,supersedes_version,created_revision,created_at"),
                     ("evidence", "evidence_id,source_id,anchor,quote,context_fingerprint,created_revision"),
                 ):
                     ordering = " ORDER BY event_id,version" if table == "journal_events" else ""
@@ -629,6 +635,180 @@ class CommandGateway:
                 raise NotFoundError("Rule does not exist in this branch")
             return {"rule_id": rule_id, "review_status": status}, "rule.reviewed", True
 
+        if command_type == "create_scenario":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot create scenarios directly")
+            scenario_id = _required_text(payload.get("scenario_id") or str(uuid4()), "scenario_id", 100)
+            title = _required_text(payload.get("title"), "title", 200)
+            problem = _required_text(payload.get("problem"), "problem", 4000)
+            raw_constraints = payload.get("constraints", [])
+            if not isinstance(raw_constraints, list) or len(raw_constraints) > 20:
+                raise ValidationError("constraints must be a list of at most 20 items")
+            constraints = [_required_text(item, "constraint", 500) for item in raw_constraints]
+
+            raw_options = payload.get("options")
+            if not isinstance(raw_options, list) or not 2 <= len(raw_options) <= 3:
+                raise ValidationError("A scenario must have two or three options")
+            options = []
+            option_ids: set[str] = set()
+            for index, raw_option in enumerate(raw_options):
+                if not isinstance(raw_option, dict):
+                    raise ValidationError("Each scenario option must be an object")
+                option_id = _required_text(raw_option.get("option_id") or str(uuid4()), "option_id", 100)
+                label = _required_text(raw_option.get("label"), "option label", 200)
+                description = raw_option.get("description", "")
+                if not isinstance(description, str) or len(description.strip()) > 1000:
+                    raise ValidationError("option description must be text of at most 1000 characters")
+                if option_id in option_ids:
+                    raise ValidationError("Scenario option ids must be unique")
+                option_ids.add(option_id)
+                options.append((option_id, label, description.strip(), index))
+
+            claim_ids = payload.get("evidence_claim_ids", [])
+            source_ids = payload.get("evidence_source_ids", [])
+            if not isinstance(claim_ids, list) or len(claim_ids) > 100:
+                raise ValidationError("evidence_claim_ids must be a list of at most 100 ids")
+            if not isinstance(source_ids, list) or len(source_ids) > 100:
+                raise ValidationError("evidence_source_ids must be a list of at most 100 ids")
+            claim_ids = list(dict.fromkeys(_required_text(value, "claim_id", 100) for value in claim_ids))
+            source_ids = list(dict.fromkeys(_required_text(value, "source_id", 100) for value in source_ids))
+            for claim_id in claim_ids:
+                exists = connection.execute(
+                    "SELECT 1 FROM claims WHERE workspace_id=? AND branch_id=? AND claim_id=?",
+                    (workspace_id, branch_id, claim_id),
+                ).fetchone()
+                if not exists:
+                    raise NotFoundError("Scenario evidence claim does not exist in this branch")
+            for source_id in source_ids:
+                exists = connection.execute(
+                    "SELECT 1 FROM sources WHERE workspace_id=? AND source_id=?",
+                    (workspace_id, source_id),
+                ).fetchone()
+                if not exists:
+                    raise NotFoundError("Scenario evidence source does not exist in this workspace")
+
+            now = _now()
+            connection.execute(
+                "INSERT INTO scenarios(workspace_id,branch_id,scenario_id,title,problem,constraints_json,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, scenario_id, title, problem, _json(constraints), revision, now),
+            )
+            connection.executemany(
+                "INSERT INTO scenario_options(workspace_id,branch_id,scenario_id,option_id,label,description,position,created_revision) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                [(workspace_id, branch_id, scenario_id, option_id, label, description, position, revision)
+                 for option_id, label, description, position in options],
+            )
+            connection.executemany(
+                "INSERT INTO scenario_claim_evidence(workspace_id,branch_id,scenario_id,claim_id,created_revision) VALUES(?,?,?,?,?)",
+                [(workspace_id, branch_id, scenario_id, claim_id, revision) for claim_id in claim_ids],
+            )
+            connection.executemany(
+                "INSERT INTO scenario_source_evidence(workspace_id,branch_id,scenario_id,source_id,created_revision) VALUES(?,?,?,?,?)",
+                [(workspace_id, branch_id, scenario_id, source_id, revision) for source_id in source_ids],
+            )
+            return {
+                "scenario_id": scenario_id,
+                "option_ids": [option[0] for option in options],
+                "evidence_claim_ids": claim_ids,
+                "evidence_source_ids": source_ids,
+            }, "scenario.created", True
+
+        if command_type == "set_scenario_assumption":
+            scenario_id = _required_text(payload.get("scenario_id"), "scenario_id", 100)
+            option_id = _required_text(payload.get("option_id"), "option_id", 100)
+            assumption_id = _required_text(payload.get("assumption_id") or str(uuid4()), "assumption_id", 100)
+            subject_id = _required_text(payload.get("subject_entity_id"), "subject_entity_id", 100)
+            predicate = _required_text(payload.get("predicate"), "predicate", 200)
+            object_value = _required_text(payload.get("object_value"), "object_value", 4000)
+            assumption_action = payload.get("assumption_action")
+            cardinality = payload.get("predicate_cardinality")
+            if (assumption_action, cardinality) not in {("add", "multiple"), ("replace", "single")}:
+                raise ValidationError("Use add for a multiple-valued property or replace for a single-valued property")
+            status = payload.get("review_status", "proposed" if actor.startswith("ai:") else "accepted")
+            if status not in {"proposed", "accepted"}:
+                raise ValidationError("review_status must be proposed or accepted when setting an assumption")
+            if actor.startswith("ai:") and status != "proposed":
+                raise ValidationError("AI actors may propose assumptions but cannot accept them")
+            expected_version = payload.get("expected_version")
+            latest = connection.execute(
+                "SELECT version FROM scenario_assumptions WHERE workspace_id=? AND branch_id=? AND scenario_id=? "
+                "AND option_id=? AND assumption_id=? ORDER BY version DESC LIMIT 1",
+                (workspace_id, branch_id, scenario_id, option_id, assumption_id),
+            ).fetchone()
+            if latest:
+                if not isinstance(expected_version, int) or expected_version != latest["version"]:
+                    raise ConflictError(f"Expected assumption version {expected_version}; current version is {latest['version']}")
+                version = latest["version"] + 1
+                supersedes_version = latest["version"]
+            else:
+                if expected_version is not None:
+                    raise NotFoundError("Scenario assumption does not exist at the requested version")
+                version = 1
+                supersedes_version = None
+            option = connection.execute(
+                "SELECT 1 FROM scenario_options WHERE workspace_id=? AND branch_id=? AND scenario_id=? AND option_id=?",
+                (workspace_id, branch_id, scenario_id, option_id),
+            ).fetchone()
+            if not option:
+                raise NotFoundError("Scenario option does not exist in this branch")
+            entity = connection.execute(
+                "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, subject_id),
+            ).fetchone()
+            if not entity:
+                raise NotFoundError("Assumption subject does not exist in this branch")
+            connection.execute(
+                "INSERT INTO scenario_assumptions(workspace_id,branch_id,scenario_id,option_id,assumption_id,version,"
+                "subject_entity_id,predicate,object_value,assumption_action,predicate_cardinality,review_status,"
+                "supersedes_version,created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, scenario_id, option_id, assumption_id, version, subject_id,
+                 predicate, object_value, assumption_action, cardinality, status, supersedes_version, revision, _now()),
+            )
+            return {
+                "scenario_id": scenario_id, "option_id": option_id, "assumption_id": assumption_id,
+                "version": version, "review_status": status, "assumption_action": assumption_action,
+            }, "scenario.assumption_set", True
+
+        if command_type == "review_scenario_assumption":
+            scenario_id = _required_text(payload.get("scenario_id"), "scenario_id", 100)
+            option_id = _required_text(payload.get("option_id"), "option_id", 100)
+            assumption_id = _required_text(payload.get("assumption_id"), "assumption_id", 100)
+            expected_version = payload.get("expected_version")
+            status = payload.get("review_status")
+            if status not in {"accepted", "rejected"}:
+                raise ValidationError("review_status must be accepted or rejected")
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot review assumptions")
+            latest = connection.execute(
+                "SELECT * FROM scenario_assumptions WHERE workspace_id=? AND branch_id=? AND scenario_id=? "
+                "AND option_id=? AND assumption_id=? ORDER BY version DESC LIMIT 1",
+                (workspace_id, branch_id, scenario_id, option_id, assumption_id),
+            ).fetchone()
+            if not latest:
+                raise NotFoundError("Scenario assumption does not exist in this branch")
+            if not isinstance(expected_version, int) or expected_version != latest["version"]:
+                raise ConflictError(f"Expected assumption version {expected_version}; current version is {latest['version']}")
+            if latest["review_status"] == status:
+                return {
+                    "scenario_id": scenario_id, "option_id": option_id, "assumption_id": assumption_id,
+                    "version": latest["version"], "review_status": status,
+                }, "scenario.assumption_reviewed", False
+            version = latest["version"] + 1
+            connection.execute(
+                "INSERT INTO scenario_assumptions(workspace_id,branch_id,scenario_id,option_id,assumption_id,version,"
+                "subject_entity_id,predicate,object_value,assumption_action,predicate_cardinality,review_status,"
+                "supersedes_version,created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, scenario_id, option_id, assumption_id, version,
+                 latest["subject_entity_id"], latest["predicate"], latest["object_value"],
+                 latest["assumption_action"], latest["predicate_cardinality"], status, latest["version"],
+                 revision, _now()),
+            )
+            return {
+                "scenario_id": scenario_id, "option_id": option_id, "assumption_id": assumption_id,
+                "version": version, "review_status": status,
+            }, "scenario.assumption_reviewed", True
+
         if command_type == "add_belief":
             belief_id = _required_text(payload.get("belief_id") or str(uuid4()), "belief_id", 100)
             actor_id = _required_text(payload.get("actor_entity_id"), "actor_entity_id", 100)
@@ -941,6 +1121,103 @@ class CommandGateway:
             {"rule": dict(row), "evaluation": evaluate_rule(dict(row), claims)}
             for row in rule_rows
         ]
+
+    def scenario_evaluations(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+        """Return each scenario with its options, assumption history, evidence, and rule outcomes."""
+        with self.db.lock:
+            branch = self.db.connection.execute(
+                "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not branch:
+                raise NotFoundError("Branch does not exist in this workspace")
+            scenario_rows = self.db.connection.execute(
+                "SELECT scenario_id,title,problem,constraints_json,created_revision,created_at "
+                "FROM scenarios WHERE workspace_id=? AND branch_id=? ORDER BY created_revision,scenario_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+            option_rows = self.db.connection.execute(
+                "SELECT scenario_id,option_id,label,description,position,created_revision "
+                "FROM scenario_options WHERE workspace_id=? AND branch_id=? ORDER BY scenario_id,position",
+                (workspace_id, branch_id),
+            ).fetchall()
+            claim_evidence_rows = self.db.connection.execute(
+                "SELECT se.scenario_id,c.claim_id,c.subject_entity_id,e.label AS subject_label,c.predicate,"
+                "c.object_value,c.epistemic_status,c.review_status,c.visibility "
+                "FROM scenario_claim_evidence se JOIN claims c ON c.workspace_id=se.workspace_id "
+                "AND c.branch_id=se.branch_id AND c.claim_id=se.claim_id JOIN entities e "
+                "ON e.workspace_id=c.workspace_id AND e.branch_id=c.branch_id AND e.entity_id=c.subject_entity_id "
+                "WHERE se.workspace_id=? AND se.branch_id=? ORDER BY se.scenario_id,c.claim_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+            source_evidence_rows = self.db.connection.execute(
+                "SELECT se.scenario_id,s.source_id,s.display_name,s.media_type "
+                "FROM scenario_source_evidence se JOIN sources s ON s.workspace_id=se.workspace_id "
+                "AND s.source_id=se.source_id WHERE se.workspace_id=? AND se.branch_id=? "
+                "ORDER BY se.scenario_id,s.display_name",
+                (workspace_id, branch_id),
+            ).fetchall()
+            assumption_rows = self.db.connection.execute(
+                "SELECT a.scenario_id,a.option_id,a.assumption_id,a.version,a.subject_entity_id,"
+                "e.label AS subject_label,a.predicate,a.object_value,a.assumption_action,"
+                "a.predicate_cardinality,a.review_status,a.supersedes_version,a.created_revision,a.created_at "
+                "FROM scenario_assumptions a JOIN entities e ON e.workspace_id=a.workspace_id "
+                "AND e.branch_id=a.branch_id AND e.entity_id=a.subject_entity_id "
+                "WHERE a.workspace_id=? AND a.branch_id=? ORDER BY a.scenario_id,a.option_id,a.assumption_id,a.version",
+                (workspace_id, branch_id),
+            ).fetchall()
+            rule_rows = self.db.connection.execute(
+                "SELECT r.rule_id,r.name,r.description,r.rule_mode,r.severity,r.subject_entity_id,"
+                "e.label AS subject_label,r.predicate,r.object_value,r.predicate_cardinality,"
+                "r.review_status,r.created_revision FROM rules r JOIN entities e "
+                "ON e.workspace_id=r.workspace_id AND e.branch_id=r.branch_id AND e.entity_id=r.subject_entity_id "
+                "WHERE r.workspace_id=? AND r.branch_id=? ORDER BY r.created_revision,r.rule_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+            claim_rows = self.db.connection.execute(
+                "SELECT claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility "
+                "FROM claims WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchall()
+
+        claims = [dict(row) for row in claim_rows]
+        rule_records = [dict(row) for row in rule_rows]
+        claim_evidence: dict[str, list[dict[str, Any]]] = {}
+        for row in claim_evidence_rows:
+            claim_evidence.setdefault(row["scenario_id"], []).append(dict(row))
+        source_evidence: dict[str, list[dict[str, Any]]] = {}
+        for row in source_evidence_rows:
+            source_evidence.setdefault(row["scenario_id"], []).append(dict(row))
+        assumptions_by_option: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in assumption_rows:
+            assumptions_by_option.setdefault((row["scenario_id"], row["option_id"]), []).append(dict(row))
+        options_by_scenario: dict[str, list[dict[str, Any]]] = {}
+        for row in option_rows:
+            option = dict(row)
+            history = assumptions_by_option.get((option["scenario_id"], option["option_id"]), [])
+            latest_by_id: dict[str, dict[str, Any]] = {}
+            for assumption in history:
+                previous = latest_by_id.get(assumption["assumption_id"])
+                if previous is None or assumption["version"] > previous["version"]:
+                    latest_by_id[assumption["assumption_id"]] = assumption
+            current_assumptions = list(latest_by_id.values())
+            option["assumptions"] = current_assumptions
+            option["assumption_history"] = history
+            option["rule_evaluations"] = [
+                {"rule": rule, "evaluation": evaluate_rule(rule, claims, current_assumptions)}
+                for rule in rule_records
+            ]
+            options_by_scenario.setdefault(option.pop("scenario_id"), []).append(option)
+
+        scenarios = []
+        for row in scenario_rows:
+            scenario = dict(row)
+            scenario["constraints"] = json.loads(scenario.pop("constraints_json"))
+            scenario["evidence_claims"] = claim_evidence.get(scenario["scenario_id"], [])
+            scenario["evidence_sources"] = source_evidence.get(scenario["scenario_id"], [])
+            scenario["options"] = options_by_scenario.get(scenario["scenario_id"], [])
+            scenarios.append(scenario)
+        return scenarios
 
     def list_journal_events(
         self,

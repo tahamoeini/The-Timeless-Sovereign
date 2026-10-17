@@ -307,6 +307,10 @@ def create_app(
     def evaluate_rules(workspace_id: str, branch_id: str = "main"):
         return gateway.evaluate_rules(workspace_id, branch_id)
 
+    @app.get("/api/v1/workspaces/{workspace_id}/scenarios")
+    def list_scenarios(workspace_id: str, branch_id: str = "main"):
+        return gateway.scenario_evaluations(workspace_id, branch_id)
+
     @app.get("/api/v1/workspaces/{workspace_id}/revisions")
     def revisions(workspace_id: str, branch_id: str = "main"):
         return gateway.revisions(workspace_id, branch_id)

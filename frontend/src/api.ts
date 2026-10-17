@@ -55,10 +55,51 @@ export type RuleEvaluation = {
     status: "satisfied" | "violated" | "unknown";
     reason_code: string;
     explanation: string;
+    conditional: boolean;
     evidence_claim_ids: string[];
+    assumption_ids: string[];
     uncertain_claim_ids: string[];
     unreviewed_claim_ids: string[];
+    unreviewed_assumption_ids: string[];
   };
+};
+export type ScenarioAssumption = {
+  scenario_id: string;
+  option_id: string;
+  assumption_id: string;
+  version: number;
+  subject_entity_id: string;
+  subject_label: string;
+  predicate: string;
+  object_value: string;
+  assumption_action: "add" | "replace";
+  predicate_cardinality: "single" | "multiple";
+  review_status: "proposed" | "accepted" | "rejected";
+  supersedes_version: number | null;
+  created_revision: number;
+  created_at: string;
+};
+export type ScenarioOption = {
+  scenario_id: string;
+  option_id: string;
+  label: string;
+  description: string;
+  position: number;
+  created_revision: number;
+  assumptions: ScenarioAssumption[];
+  assumption_history: ScenarioAssumption[];
+  rule_evaluations: RuleEvaluation[];
+};
+export type Scenario = {
+  scenario_id: string;
+  title: string;
+  problem: string;
+  constraints: string[];
+  created_revision: number;
+  created_at: string;
+  evidence_claims: Array<Pick<Claim, "claim_id" | "subject_entity_id" | "predicate" | "object_value" | "epistemic_status" | "review_status" | "visibility"> & { subject_label: string }>;
+  evidence_sources: Array<Pick<Source, "source_id" | "display_name" | "media_type">>;
+  options: ScenarioOption[];
 };
 
 export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };

@@ -1,86 +1,104 @@
-"""Conservative three-valued evaluation for claim-backed rules."""
+"""Conservative three-valued evaluation for baseline facts and scenario overlays."""
 
 from __future__ import annotations
 
 from typing import Any
 
 
-def evaluate_rule(rule: dict[str, Any], claims: list[dict[str, Any]]) -> dict[str, Any]:
-    """Evaluate one rule without treating missing or unreviewed data as false."""
+def evaluate_rule(
+    rule: dict[str, Any],
+    claims: list[dict[str, Any]],
+    assumptions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Evaluate one rule, keeping hypothetical assumptions separate from claim evidence."""
     if rule["review_status"] != "accepted":
-        return {
-            "status": "unknown",
-            "reason_code": "rule_not_accepted",
-            "explanation": "This rule is not active until it is accepted.",
-            "evidence_claim_ids": [],
-            "uncertain_claim_ids": [],
-            "unreviewed_claim_ids": [],
-        }
+        return _result(
+            "unknown", "rule_not_accepted", "This rule is not active until it is accepted.",
+            [], [], [], [],
+        )
 
-    related = [
+    related_claims = [
         claim for claim in claims
         if claim["subject_entity_id"] == rule["subject_entity_id"]
         and claim["predicate"] == rule["predicate"]
         and claim.get("visibility", "public") == "public"
     ]
-    reviewed = [claim for claim in related if claim["review_status"] == "accepted"]
-    known = [claim for claim in reviewed if claim["epistemic_status"] == "known"]
-    target = [claim for claim in known if claim["object_value"] == rule["object_value"]]
-    alternatives = [claim for claim in known if claim["object_value"] != rule["object_value"]]
+    related_assumptions = [
+        assumption for assumption in assumptions or []
+        if assumption["review_status"] in {"accepted", "proposed"}
+        and assumption["subject_entity_id"] == rule["subject_entity_id"]
+        and assumption["predicate"] == rule["predicate"]
+    ]
+    accepted_assumptions = [
+        assumption for assumption in related_assumptions
+        if assumption["review_status"] == "accepted"
+    ]
+    replacements = [
+        assumption for assumption in accepted_assumptions
+        if assumption["assumption_action"] == "replace"
+    ]
+    if replacements:
+        related_claims = []
+        accepted_assumptions = replacements
+
+    reviewed = [claim for claim in related_claims if claim["review_status"] == "accepted"]
+    known_claims = [claim for claim in reviewed if claim["epistemic_status"] == "known"]
     uncertain = [claim for claim in reviewed if claim["epistemic_status"] != "known"]
-    unreviewed = [claim for claim in related if claim["review_status"] == "proposed"]
+    unreviewed = [claim for claim in related_claims if claim["review_status"] == "proposed"]
+    proposed_assumptions = [
+        assumption for assumption in related_assumptions
+        if assumption["review_status"] == "proposed"
+    ]
+    known_values = [
+        ("claim", claim["claim_id"], claim["object_value"]) for claim in known_claims
+    ] + [
+        ("assumption", assumption["assumption_id"], assumption["object_value"])
+        for assumption in accepted_assumptions
+    ]
+    target = [entry for entry in known_values if entry[2] == rule["object_value"]]
+    alternatives = [entry for entry in known_values if entry[2] != rule["object_value"]]
+    uncertain_ids = [claim["claim_id"] for claim in uncertain]
+    unreviewed_ids = [claim["claim_id"] for claim in unreviewed]
+    proposed_assumption_ids = [assumption["assumption_id"] for assumption in proposed_assumptions]
 
     if rule["predicate_cardinality"] == "single" and target and alternatives:
         return _result(
-            "unknown",
-            "conflicting_known_values",
-            "Accepted known claims give conflicting values for this single-valued property.",
-            [claim["claim_id"] for claim in target + alternatives],
-            [claim["claim_id"] for claim in uncertain],
-            [claim["claim_id"] for claim in unreviewed],
+            "unknown", "conflicting_known_values",
+            "Accepted known records give conflicting values for this single-valued property.",
+            target + alternatives, uncertain_ids, unreviewed_ids, proposed_assumption_ids,
         )
 
     if target:
         if rule["rule_mode"] == "require":
             return _result(
                 "satisfied", "required_claim_known",
-                "The required claim is accepted and recorded as known.",
-                [claim["claim_id"] for claim in target],
-                [claim["claim_id"] for claim in uncertain],
-                [claim["claim_id"] for claim in unreviewed],
+                "The required value is established in the baseline or under this option's accepted assumptions.",
+                target, uncertain_ids, unreviewed_ids, proposed_assumption_ids,
             )
         return _result(
             "violated", "forbidden_claim_known",
-            "A forbidden claim is accepted and recorded as known.",
-            [claim["claim_id"] for claim in target],
-            [claim["claim_id"] for claim in uncertain],
-            [claim["claim_id"] for claim in unreviewed],
+            "A forbidden value is established in the baseline or under this option's accepted assumptions.",
+            target, uncertain_ids, unreviewed_ids, proposed_assumption_ids,
         )
 
     if rule["predicate_cardinality"] == "single" and alternatives:
-        distinct_values = {claim["object_value"] for claim in alternatives}
+        distinct_values = {entry[2] for entry in alternatives}
         if len(distinct_values) == 1:
             if rule["rule_mode"] == "require":
                 return _result(
                     "violated", "different_known_value",
-                    "A different value is accepted and known for this single-valued property.",
-                    [claim["claim_id"] for claim in alternatives],
-                    [claim["claim_id"] for claim in uncertain],
-                    [claim["claim_id"] for claim in unreviewed],
+                    "A different value is established for this single-valued property.",
+                    alternatives, uncertain_ids, unreviewed_ids, proposed_assumption_ids,
                 )
             return _result(
                 "satisfied", "different_known_value",
-                "A different value is accepted and known for this single-valued property.",
-                [claim["claim_id"] for claim in alternatives],
-                [claim["claim_id"] for claim in uncertain],
-                [claim["claim_id"] for claim in unreviewed],
+                "A different value is established for this single-valued property.",
+                alternatives, uncertain_ids, unreviewed_ids, proposed_assumption_ids,
             )
         return _result(
             "unknown", "conflicting_known_values",
-            "Accepted known claims give conflicting values for this single-valued property.",
-            [claim["claim_id"] for claim in alternatives],
-            [claim["claim_id"] for claim in uncertain],
-            [claim["claim_id"] for claim in unreviewed],
+            "Accepted known records give conflicting values for this single-valued property.",
+            alternatives, uncertain_ids, unreviewed_ids, proposed_assumption_ids,
         )
 
     if uncertain:
@@ -93,9 +111,8 @@ def evaluate_rule(rule: dict[str, Any], claims: list[dict[str, Any]]) -> dict[st
         explanation = "The available records do not establish whether this rule is met."
         reason_code = "insufficient_evidence"
     return _result(
-        "unknown", reason_code, explanation, [],
-        [claim["claim_id"] for claim in uncertain],
-        [claim["claim_id"] for claim in unreviewed],
+        "unknown", reason_code, explanation, [], uncertain_ids, unreviewed_ids,
+        proposed_assumption_ids,
     )
 
 
@@ -103,15 +120,21 @@ def _result(
     status: str,
     reason_code: str,
     explanation: str,
-    evidence_claim_ids: list[str],
+    evidence: list[tuple[str, str, str]],
     uncertain_claim_ids: list[str],
     unreviewed_claim_ids: list[str],
+    unreviewed_assumption_ids: list[str],
 ) -> dict[str, Any]:
+    claim_ids = sorted({record_id for kind, record_id, _ in evidence if kind == "claim"})
+    assumption_ids = sorted({record_id for kind, record_id, _ in evidence if kind == "assumption"})
     return {
         "status": status,
         "reason_code": reason_code,
         "explanation": explanation,
-        "evidence_claim_ids": sorted(set(evidence_claim_ids)),
+        "conditional": bool(assumption_ids),
+        "evidence_claim_ids": claim_ids,
+        "assumption_ids": assumption_ids,
         "uncertain_claim_ids": sorted(set(uncertain_claim_ids)),
         "unreviewed_claim_ids": sorted(set(unreviewed_claim_ids)),
+        "unreviewed_assumption_ids": sorted(set(unreviewed_assumption_ids)),
     }
