@@ -25,7 +25,7 @@ Run the canonical-core tests with the bundled or installed Python:
 python -m unittest discover -s tests\unit -v
 ```
 
-The desktop shell, source extraction, Ollama integration, persistent story and journal workflows, scenario evaluation, exchange import/export, full backup/restore, and packaged Windows installation are not yet complete. Their contracts and validation criteria are documented beside the implementation.
+The offline backup/restore command and its integrity checks are implemented. The desktop shell, source extraction, Ollama integration, persistent story and journal workflows, scenario evaluation, exchange import/export, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
 
 ## Product and technical contracts
 

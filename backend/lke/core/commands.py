@@ -559,6 +559,20 @@ class CommandGateway:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_sources(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self.db.lock:
+            rows = self.db.connection.execute(
+                "SELECT source_id,display_name,media_type,created_at "
+                "FROM sources WHERE workspace_id=? ORDER BY created_at,source_id",
+                (workspace_id,),
+            ).fetchall()
+            exists = self.db.connection.execute(
+                "SELECT 1 FROM workspaces WHERE workspace_id=?", (workspace_id,)
+            ).fetchone()
+        if not exists:
+            raise NotFoundError("Workspace does not exist")
+        return [dict(row) for row in rows]
+
     def revisions(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
         with self.db.lock:
             rows = self.db.connection.execute(

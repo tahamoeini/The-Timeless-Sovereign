@@ -4,6 +4,17 @@
   border-top: 1px solid var(--line);
 }
 
+.branch-select {
+  max-width: 230px;
+  height: 28px;
+  padding: 0 24px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #171e20;
+  color: #aab7b4;
+  font-size: 10px;
+}
+
 .belief-form .form-divider {
   margin: 6px 0 10px;
 }
@@ -39,4 +50,38 @@
   font-size: 10px;
   line-height: 1.7;
   white-space: pre-wrap;
+}
+
+.claim-form {
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) minmax(150px, 1.3fr) minmax(150px, 1fr);
+}
+
+.claim-form textarea {
+  grid-column: 1 / 4;
+  width: 100%;
+  border: 1px solid #303a3c;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #111719;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.claim-form textarea:focus {
+  outline: none;
+  border-color: #5d8b76;
+}
+
+@media (max-width: 1120px) {
+  .claim-form {
+    grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr);
+  }
+
+  .claim-form textarea,
+  .claim-form button {
+    grid-column: 1 / -1;
+  }
 }

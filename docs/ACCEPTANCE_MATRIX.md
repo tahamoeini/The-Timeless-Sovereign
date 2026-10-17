@@ -18,12 +18,12 @@ The release gates are measurable behaviors, not claims that a test name exists. 
 | Character agency | User-controlled action is never invented or committed | Not implemented |
 | Transcript deduplication | Same transcript imported twice adds no turns/events | Not implemented |
 | Provider failure | Runtime failure leaves no partial canonical commit | Provider path not implemented |
-| Local API boundary | Auth, origin, loopback, and sidecar token tests | API boundary tests added; runtime package checks pending |
-| User workflows | Create workspace, add concepts, review claims/links, preview actor context, branch scenario | React interface scaffold added; browser validation pending |
+| Local API boundary | Auth, origin, loopback, and sidecar token tests | Auth, allowed-origin, preflight, and API round-trip tests pass; Tauri sidecar token runtime check pending |
+| User workflows | Create workspace, add concepts, review claims/links, preview actor context, branch scenario | Browser flow verified for workspace, entities, relations, source search, evidence-backed claim review, actor awareness, and branch isolation |
 | Windows desktop package | Tauri shell and bundled backend start/stop on a clean machine | Build scaffolds added; package not built |
 | File ingestion safety | Size/type/path/archive limits and hostile fixtures | Not implemented |
 | Graph/matrix consistency | All views reflect one canonical relation after edits | UI/projection worker not implemented |
-| Backup/restore equivalence | Restore elsewhere matches sources, revisions, and official state | Not implemented; release blocker |
+| Backup/restore equivalence | Restore elsewhere matches sources, revisions, and official state | Manifest, integrity, FTS, source, and revision restore tests pass; separate-device drill pending |
 | Local-only path | Full core workflow without cloud or paid API | Core is local; complete workflow not implemented |
 | Windows install | Clean-machine install without preinstalled Python | Not implemented; release blocker |
 
@@ -33,7 +33,7 @@ The currently runnable core and API test command is:
 python -m unittest discover -s tests\unit -v
 ```
 
-The present suite has 15 passing core and API boundary tests. This is not an end-to-end product acceptance run.
+The present suite has 18 passing core, API boundary, and backup/restore tests. This is not a full release acceptance run.
 
 ## Quality targets
 

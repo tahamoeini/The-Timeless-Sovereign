@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 lke-api = "lke.api.app:main"
+lke-backup = "lke.ops.backup:main"
 
 [project.optional-dependencies]
 documents = ["docling>=2,<3"]

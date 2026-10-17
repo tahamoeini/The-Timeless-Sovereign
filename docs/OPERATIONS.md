@@ -12,14 +12,28 @@ The API binds only to `127.0.0.1`. It rejects non-loopback peers and unknown bro
 
 The default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3` (resolved from the user's home `AppData/Local/LKE`); `LKE_DATA_DIR` can select another private local directory for development. Core callers can supply an explicit database path. SQLite uses WAL and full synchronous commits for file-backed stores.
 
-## Data safety
+## Data safety and recovery
 
-Current schema migrations are versioned, but migration upgrade/rollback procedures are not release-tested. No backup/restore utility is implemented yet. Before testing unreleased code, use disposable data and copy the database plus its WAL state only after closing the app. Do not promise recoverability until a manifest-checked backup can be restored and compared on a separate location.
+Backups use SQLite's online backup API, so a consistent snapshot includes committed data without copying open WAL files. Each `.lkebackup` archive contains one database snapshot and a manifest with format/schema versions, byte size, timestamp, and SHA-256 digest. Restore validates archive entries, digest, SQLite integrity, required tables, and schema version before installing the target database.
+
+Create a backup while LKE is running:
+
+```powershell
+lke-backup create "$env:LOCALAPPDATA\LKE\knowledge.sqlite3" "D:\Backups\workspace-2026-10-17.lkebackup"
+```
+
+Restore to a new database path:
+
+```powershell
+lke-backup restore "D:\Backups\workspace-2026-10-17.lkebackup" "D:\LKE-Restore\knowledge.sqlite3"
+```
+
+Close LKE before restoring over its active database. Restore refuses an existing destination unless `--overwrite` is explicitly supplied. Keep backups on a separate device or protected location; a backup beside the database does not protect against device loss. Migration rollback and a clean-machine recovery drill remain release checks.
 
 ## Troubleshooting and recovery
 
-If a command conflicts, refresh the branch revision and review the proposed change; do not retry against the new revision without revalidation. If the local model stops, canonical records remain in SQLite; generated proposals should be discarded or retried. If FTS or another projection is damaged, the future recovery operation must rebuild it from canonical sources. A verified rebuild command is not yet available.
+If a command conflicts, refresh the branch revision and review the proposed change; do not retry against the new revision without revalidation. If the local model stops, canonical records remain in SQLite; generated proposals should be discarded or retried. If FTS or another projection is damaged, restore a verified backup before continuing; projection rebuild from canonical sources remains pending.
 
 ## Release operations still required
 
-Clean Windows installation without system Python, sidecar start/stop, token rotation, schema upgrade, import size limits, prompt-injection fixtures, backup integrity checks, restore equivalence, and uninstall/data-retention behavior must all be exercised before v0.1 release.
+Clean Windows installation without system Python, sidecar start/stop, token rotation, schema upgrade, import size limits, prompt-injection fixtures, separate-device restore equivalence, and uninstall/data-retention behavior must all be exercised before v0.1 release.

@@ -37,6 +37,8 @@ export type Claim = {
   evidence: string[];
 };
 
+export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };
+export type Branch = { branch_id: string; parent_branch_id: string | null; head_revision: number };
 export type SourceResult = { source_id: string; display_name: string; excerpt: string };
 
 export type RuntimeConfig = { baseUrl: string; token: string };

@@ -1,5 +1,5 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { Claim, Entity, newId, Relation, request, Workspace } from "./api";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Branch, Claim, Entity, newId, Relation, request, Source, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -15,12 +15,15 @@ export default function App() {
   const [page, setPage] = useState<Page>("story");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
+  const [branches, setBranches] = useState<Branch[]>([{ branch_id: "main", parent_branch_id: null, head_revision: 0 }]);
   const [workspaceName, setWorkspaceName] = useState("");
   const [branchId, setBranchId] = useState("main");
   const [revision, setRevision] = useState(0);
+  const revisionRef = useRef(0);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [relations, setRelations] = useState<Relation[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
+  const [sources, setSources] = useState<Source[]>([]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>({ tone: "info", text: "Connecting to your private workspace…" });
@@ -29,16 +32,21 @@ export default function App() {
 
   const refresh = useCallback(async (id = workspaceId, branch = branchId) => {
     if (!id) return;
-    const [entityRows, relationRows, claimRows, rev] = await Promise.all([
-      request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/entities?branch_id=${encodeURIComponent(branch)}${query ? `&q=${encodeURIComponent(query)}` : ""}`),
+    const [entityRows, relationRows, claimRows, sourceRows, branchRows, rev] = await Promise.all([
+      request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/entities?branch_id=${encodeURIComponent(branch)}`),
       request<Relation[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/relations?branch_id=${encodeURIComponent(branch)}`),
       request<Claim[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/claims?branch_id=${encodeURIComponent(branch)}`),
+      request<Source[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/sources`),
+      request<Branch[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/branches`),
       request<{ revision: number }>(`/api/v1/workspaces/${encodeURIComponent(id)}/revision?branch_id=${encodeURIComponent(branch)}`),
     ]);
     setEntities(entityRows);
     setRelations(relationRows);
     setClaims(claimRows);
+    setSources(sourceRows);
+    setBranches(branchRows);
     setRevision(rev.revision);
+    revisionRef.current = rev.revision;
   }, [workspaceId, branchId, query]);
 
   const load = useCallback(async () => {
@@ -74,18 +82,26 @@ export default function App() {
       setWorkspaceName("");
       setWorkspaces((rows) => [...rows, { ...created, created_at: new Date().toISOString(), main_revision: 0 }]);
       setWorkspaceId(created.workspace_id);
+      setBranches([{ branch_id: "main", parent_branch_id: null, head_revision: 0 }]);
       setBranchId("main");
+      revisionRef.current = 0;
+      setRevision(0);
       setNotice({ tone: "success", text: `Created “${created.name}”.` });
     });
   }
 
   const runCommand = async (commandType: string, payload: Record<string, unknown>, reason: string) => {
     if (!workspaceId) throw new Error("Create or select a workspace first.");
-    await request(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/commands`, {
+    const result = await request<Record<string, unknown>>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/commands`, {
       method: "POST",
-      body: JSON.stringify({ branch_id: branchId, expected_revision: revision, idempotency_key: newId("cmd"), command_type: commandType, payload, reason }),
+      body: JSON.stringify({ branch_id: branchId, expected_revision: revisionRef.current, idempotency_key: newId("cmd"), command_type: commandType, payload, reason }),
     });
+    if (typeof result.revision === "number") {
+      revisionRef.current = result.revision;
+      setRevision(result.revision);
+    }
     await refresh();
+    return result;
   };
 
   const commitStoryCommand = async (commandType: string, payload: Record<string, unknown>, reason: string) => {
@@ -126,7 +142,15 @@ export default function App() {
     const form = event.currentTarget;
     const data = new FormData(form);
     await submit(event, async () => {
-      await runCommand("add_claim", { subject_entity_id: data.get("subject"), predicate: data.get("predicate"), object_value: data.get("object_value"), visibility: "public", review_status: "proposed" }, "Propose a claim for review");
+      const sourceId = String(data.get("source_id") || "");
+      const quote = String(data.get("evidence_quote") || "").trim();
+      let evidence: string[] = [];
+      if (sourceId || quote) {
+        if (!sourceId || !quote) throw new Error("Choose a source and enter an exact quote, or leave both blank.");
+        const result = await runCommand("add_evidence", { source_id: sourceId, anchor: "manually selected quote", quote }, "Attach a source quote to a proposed claim");
+        evidence = [String(result.evidence_id)];
+      }
+      await runCommand("add_claim", { subject_entity_id: data.get("subject"), predicate: data.get("predicate"), object_value: data.get("object_value"), evidence, visibility: "public", review_status: "proposed" }, "Propose a claim for review");
       form.reset();
       setNotice({ tone: "success", text: "Claim saved as a proposal." });
     });
@@ -136,10 +160,17 @@ export default function App() {
     const form = event.currentTarget;
     const data = new FormData(form);
     await submit(event, async () => {
-      const file = data.get("file");
-      const content = file instanceof File ? await file.text() : String(data.get("content") || "");
+      const selected = data.get("file");
+      const file = selected instanceof File && selected.name ? selected : null;
+      if (file && file.size > 10 * 1024 * 1024) throw new Error("Text imports are limited to 10 MB.");
+      if (file && !/\.(txt|md|markdown)$/i.test(file.name)) throw new Error("Choose a .txt or Markdown file.");
+      const content = file ? await file.text() : String(data.get("content") || "");
+      const displayName = file?.name || String(data.get("display_name") || "").trim();
+      if (!displayName) throw new Error("Add a source title or choose a local text file.");
+      if (!content.trim()) throw new Error("Add text content or choose a non-empty local text file.");
       if (new TextEncoder().encode(content).length > 10 * 1024 * 1024) throw new Error("Text imports are limited to 10 MB.");
-      await runCommand("import_source", { display_name: file instanceof File ? file.name : data.get("display_name"), content, media_type: "text/plain" }, "Import a local text source");
+      const mediaType = file && /\.(md|markdown)$/i.test(file.name) ? "text/markdown" : "text/plain";
+      await runCommand("import_source", { display_name: displayName, content, media_type: mediaType }, "Import a local text source");
       form.reset();
       setNotice({ tone: "success", text: "Source is stored locally. No extraction has been run." });
     });
@@ -160,7 +191,7 @@ export default function App() {
     try {
       const id = `scenario_${crypto.randomUUID().slice(0, 8)}`;
       await request(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/branches`, {
-        method: "POST", body: JSON.stringify({ branch_id: id, parent_branch_id: branchId, expected_revision: revision, idempotency_key: newId("branch"), reason: "Explore a scenario without changing its parent" }),
+        method: "POST", body: JSON.stringify({ branch_id: id, parent_branch_id: branchId, expected_revision: revisionRef.current, idempotency_key: newId("branch"), reason: "Explore a scenario without changing its parent" }),
       });
       setBranchId(id);
       setPage("scenario");
@@ -190,7 +221,7 @@ export default function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your knowledge space"}</span><span className="crumb-sep">/</span><span className="branch-pill">{branchId === "main" ? "Main" : branchId}</span></div>
+          <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your knowledge space"}</span><span className="crumb-sep">/</span><select className="branch-select" aria-label="Select branch" value={branchId} onChange={(event) => setBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.branch_id} value={branch.branch_id}>{branch.branch_id === "main" ? "Main" : branch.branch_id}</option>)}</select></div>
           <div className="top-actions"><span className="revision-chip">Revision {revision}</span><button className="quiet-button" onClick={() => void load()}>Refresh</button></div>
         </header>
         <div className="page-content">
@@ -207,7 +238,7 @@ export default function App() {
             <div className="welcome-points"><span>◉ Evidence stays linked</span><span>◈ Explore safely in branches</span><span>⌁ Your data stays yours</span></div>
           </section> : <>
             {page === "knowledge" && <KnowledgePage
-              workspaceId={workspaceId} entities={entities} relations={relations} claims={visibleClaims} busy={busy} query={query} setQuery={setQuery}
+              workspaceId={workspaceId} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} onNavigate={setPage} onCommit={commitStoryCommand} />}
@@ -225,7 +256,7 @@ function PageHeader({ kicker, title, summary, action }: { kicker: string; title:
 }
 
 function KnowledgePage(props: {
-  workspaceId: string; entities: Entity[]; relations: Relation[]; claims: Claim[]; busy: boolean; query: string; setQuery: (query: string) => void;
+  workspaceId: string; entities: Entity[]; relations: Relation[]; claims: Claim[]; sources: Source[]; busy: boolean; query: string; setQuery: (query: string) => void;
   addEntity: (event: FormEvent<HTMLFormElement>) => Promise<void>; addRelation: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   addClaim: (event: FormEvent<HTMLFormElement>) => Promise<void>; importText: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   review: (kind: "claim" | "relation", id: string, status: "accepted" | "rejected") => Promise<void>;
@@ -233,13 +264,13 @@ function KnowledgePage(props: {
   const [tab, setTab] = useState<"map" | "evidence" | "review">("map");
   return <>
     <PageHeader kicker="Your knowledge space" title="Knowledge Explorer" summary="Build a source-backed map of people, ideas, events, and their relationships." />
-    <div className="metric-row"><Metric value={props.entities.length} label="Concepts" icon="◉" /><Metric value={props.relations.length} label="Relationships" icon="⟷" /><Metric value={props.claims.length} label="Claims" icon="≋" /><Metric value={props.claims.filter((item) => item.review_status === "proposed").length} label="Needs review" icon="◷" accent /></div>
+    <div className="metric-row"><Metric value={props.entities.length} label="Concepts" icon="◉" /><Metric value={props.relations.length} label="Relationships" icon="⟷" /><Metric value={props.claims.length} label="Claims" icon="≋" /><Metric value={props.claims.filter((item) => item.review_status === "proposed").length + props.relations.filter((item) => item.review_status === "proposed").length} label="Needs review" icon="◷" accent /></div>
     <div className="toolbar"><div className="tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
     {tab === "map" && <div className="knowledge-grid"><section className="panel graph-panel"><div className="panel-heading"><div><h2>Concept map</h2><p>Accepted links and proposals share one editable source.</p></div><span className="panel-count">{props.entities.length} nodes</span></div><Graph entities={props.entities} relations={props.relations} /><div className="graph-legend"><span><i className="legend-node" />Concept</span><span><i className="legend-line" />Accepted relationship</span><span><i className="legend-line proposed" />Needs review</span></div></section>
       <div className="stacked-panels"><EntityForm busy={props.busy} onSubmit={props.addEntity} /><RelationForm entities={props.entities} busy={props.busy} onSubmit={props.addRelation} /></div></div>}
     {tab === "evidence" && <div className="knowledge-grid"><SourceForm busy={props.busy} onSubmit={props.importText} /><SourceResults workspaceId={props.workspaceId} query={props.query} /> </div>}
     {tab === "review" && <div className="review-list"><ReviewList claims={props.claims} relations={props.relations} review={props.review} busy={props.busy} /></div>}
-    <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility}</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>
+    <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} sources={props.sources} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility} · {claim.evidence.length} evidence</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>
   </>;
 }
 
@@ -255,8 +286,8 @@ function RelationForm({ entities, busy, onSubmit }: { entities: Entity[]; busy: 
   return <section className="panel compact-form"><div className="panel-heading"><div><h2>Connect concepts</h2><p>New relationships start as proposals</p></div></div><form onSubmit={onSubmit}><label>From<select name="source" required>{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label><label>Relationship<input name="relation_type" required placeholder="trusts, located in…" /></label><label>To<select name="target" required>{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label><button className="secondary-button full-button" disabled={busy || entities.length < 2}>Propose relationship <span>↗</span></button></form></section>;
 }
 
-function ClaimForm({ entities, busy, onSubmit }: { entities: Entity[]; busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> }) {
-  return <form className="claim-form" onSubmit={onSubmit}><select name="subject" required aria-label="Claim subject">{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select><input name="predicate" placeholder="relationship or property" required aria-label="Claim predicate" /><input name="object_value" placeholder="What is claimed?" required aria-label="Claim value" /><button className="secondary-button" disabled={busy || entities.length === 0}>Propose claim <span>+</span></button></form>;
+function ClaimForm({ entities, sources, busy, onSubmit }: { entities: Entity[]; sources: Source[]; busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> }) {
+  return <form className="claim-form" onSubmit={onSubmit}><select name="subject" required aria-label="Claim subject">{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select><input name="predicate" placeholder="relationship or property" required aria-label="Claim predicate" /><input name="object_value" placeholder="What is claimed?" required aria-label="Claim value" /><select name="source_id" aria-label="Evidence source"><option value="">No source evidence</option>{sources.map((source) => <option key={source.source_id} value={source.source_id}>{source.display_name}</option>)}</select><textarea name="evidence_quote" rows={2} placeholder="Exact quote from the selected source (optional)" aria-label="Evidence quote" /><button className="secondary-button" disabled={busy || entities.length === 0}>Propose claim <span>+</span></button></form>;
 }
 
 function SourceForm({ busy, onSubmit }: { busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> }) {

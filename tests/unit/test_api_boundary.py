@@ -94,10 +94,33 @@ class ApiBoundaryTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200, response.text)
+        source = self.request(
+            "POST",
+            "/api/v1/workspaces/api-workspace/commands",
+            headers=self.headers,
+            json={
+                "branch_id": "main",
+                "expected_revision": 1,
+                "idempotency_key": "import-api-source",
+                "command_type": "import_source",
+                "reason": "Exercise source listing",
+                "payload": {
+                    "source_id": "api-source",
+                    "display_name": "API source",
+                    "content": "Aria keeps the brass key.",
+                    "media_type": "text/plain",
+                },
+            },
+        )
+        self.assertEqual(source.status_code, 200, source.text)
         entities = self.request(
             "GET", "/api/v1/workspaces/api-workspace/entities", headers=self.headers
         )
         self.assertEqual([item["entity_id"] for item in entities.json()], ["api-entity"])
+        sources = self.request(
+            "GET", "/api/v1/workspaces/api-workspace/sources", headers=self.headers
+        )
+        self.assertEqual([item["source_id"] for item in sources.json()], ["api-source"])
 
 
 if __name__ == "__main__":

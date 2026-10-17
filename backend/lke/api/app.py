@@ -174,8 +174,8 @@ def create_app(database: Database | None = None, auth_token: str | None = None) 
         )
 
     @app.get("/api/v1/workspaces/{workspace_id}/sources")
-    def search_sources(workspace_id: str, q: str):
-        return gateway.search_sources(workspace_id, q)
+    def list_or_search_sources(workspace_id: str, q: str | None = None):
+        return gateway.search_sources(workspace_id, q) if q else gateway.list_sources(workspace_id)
 
     @app.get("/api/v1/workspaces/{workspace_id}/revisions")
     def revisions(workspace_id: str, branch_id: str = "main"):
