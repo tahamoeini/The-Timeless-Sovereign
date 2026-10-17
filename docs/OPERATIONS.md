@@ -14,6 +14,8 @@ The direct API default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3`; `LKE
 
 ## Data safety and recovery
 
+The current source importer accepts only UTF-8 `.txt`, `.md`, and `.markdown` files or pasted text, up to 10 MiB. The API stores text content and a display name; it does not accept filesystem paths or unpack archives. The command gateway independently enforces the size limit, permits only `text/plain` and `text/markdown`, and rejects empty text and NUL bytes. PDF, Office, and archive ingestion are unavailable. Duplicate content is identified by SHA-256 and does not create a second source or revision.
+
 Backups use SQLite's online backup API, so a consistent snapshot includes committed data without copying open WAL files. Each `.lkebackup` archive contains one database snapshot and a manifest with format/schema versions, byte size, timestamp, and SHA-256 digest. Restore validates archive entries, digest, SQLite integrity, required tables, and schema version before installing the target database.
 
 Create a backup while LKE is running:

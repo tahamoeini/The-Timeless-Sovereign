@@ -123,6 +123,7 @@ class CommandGatewayTests(unittest.TestCase):
             {"display_name": "archive.zip", "media_type": "application/zip", "content": "not an archive"},
             {"display_name": "binary.txt", "media_type": "text/plain", "content": "header\u0000payload"},
             {"display_name": "empty.txt", "media_type": "text/plain", "content": "  \n"},
+            {"display_name": "large.txt", "media_type": "text/plain", "content": "x" * (10 * 1024 * 1024 + 1)},
         ]
         for index, payload in enumerate(invalid_payloads):
             with self.subTest(payload=payload), self.assertRaises(ValidationError):
