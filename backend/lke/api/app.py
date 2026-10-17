@@ -290,6 +290,10 @@ def create_app(
     def list_or_search_sources(workspace_id: str, q: str | None = None):
         return gateway.search_sources(workspace_id, q) if q else gateway.list_sources(workspace_id)
 
+    @app.get("/api/v1/workspaces/{workspace_id}/sources/{source_id}")
+    def get_source(workspace_id: str, source_id: str):
+        return gateway.get_source(workspace_id, source_id)
+
     @app.get("/api/v1/workspaces/{workspace_id}/revisions")
     def revisions(workspace_id: str, branch_id: str = "main"):
         return gateway.revisions(workspace_id, branch_id)

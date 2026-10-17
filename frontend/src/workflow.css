@@ -499,3 +499,114 @@
   color: #87968f;
   font-size: 8px;
 }
+
+.journal-notes {
+  min-width: 0;
+}
+
+.journal-entry-list {
+  display: grid;
+  gap: 6px;
+  max-height: 250px;
+  margin: 8px 0 14px;
+  overflow: auto;
+}
+
+.journal-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #2b3935;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #18211f;
+  color: inherit;
+  text-align: left;
+}
+
+.journal-entry:hover,
+.journal-entry.selected {
+  border-color: #5c9278;
+  background: #1c2924;
+}
+
+.journal-entry-type {
+  display: grid;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #3c5448;
+  border-radius: 7px;
+  color: #a6d4b8;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.journal-entry-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+
+.journal-entry-copy strong {
+  overflow: hidden;
+  color: #d4dfd9;
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-entry-copy small,
+.journal-reader-heading small {
+  color: #82918b;
+  font-size: 8px;
+}
+
+.journal-entry-arrow {
+  color: #8fbc9f;
+  font-size: 11px;
+}
+
+.journal-reader {
+  border-top: 1px solid #2d3936;
+  padding-top: 13px;
+}
+
+.journal-reader-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.journal-reader-heading h3 {
+  margin: 0 0 5px;
+  color: #e0e8e4;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.journal-reader pre {
+  max-height: 340px;
+  overflow: auto;
+  margin: 12px 0 0;
+  border: 1px solid #2b3734;
+  border-radius: 8px;
+  padding: 12px;
+  background: #121819;
+  color: #c4d0ca;
+  font: 10px/1.75 "DM Sans", "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.journal-expand {
+  width: 100%;
+  margin-top: 8px;
+}

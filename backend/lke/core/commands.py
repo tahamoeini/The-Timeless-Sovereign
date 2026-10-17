@@ -719,6 +719,17 @@ class CommandGateway:
             raise NotFoundError("Workspace does not exist")
         return [dict(row) for row in rows]
 
+    def get_source(self, workspace_id: str, source_id: str) -> dict[str, Any]:
+        with self.db.lock:
+            row = self.db.connection.execute(
+                "SELECT source_id,display_name,media_type,content,created_at "
+                "FROM sources WHERE workspace_id=? AND source_id=?",
+                (workspace_id, source_id),
+            ).fetchone()
+        if not row:
+            raise NotFoundError("Source does not exist in this workspace")
+        return dict(row)
+
     def revisions(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
         with self.db.lock:
             rows = self.db.connection.execute(

@@ -138,6 +138,10 @@ class ApiBoundaryTests(unittest.TestCase):
             "GET", "/api/v1/workspaces/api-workspace/sources", headers=self.headers
         )
         self.assertEqual([item["source_id"] for item in sources.json()], ["api-source"])
+        detail = self.request(
+            "GET", "/api/v1/workspaces/api-workspace/sources/api-source", headers=self.headers
+        )
+        self.assertEqual(detail.json()["content"], "Aria keeps the brass key.")
 
     def create_story_conversation(self) -> int:
         workspace = self.request(

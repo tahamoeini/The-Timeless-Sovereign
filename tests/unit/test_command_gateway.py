@@ -8,6 +8,7 @@ from backend.lke.core import (
     ConflictError,
     Database,
     IdempotencyConflictError,
+    NotFoundError,
     ValidationError,
 )
 from backend.lke.retrieval import ContextCompiler
@@ -117,6 +118,17 @@ class CommandGatewayTests(unittest.TestCase):
         self.assertEqual(first["source_id"], duplicate["source_id"])
         self.assertEqual(duplicate["revision"], 1)
         self.assertEqual(len(self.gateway.search_sources("story", "sealed letter")), 1)
+
+    def test_source_content_is_readable_only_inside_its_workspace(self):
+        self.gateway.create_workspace("Private workspace", "private")
+        imported = self.command("source-1", 0, "import_source", {
+            "display_name": "journal-note.txt", "media_type": "text/plain", "content": "I found the old lighthouse at dawn."})
+
+        detail = self.gateway.get_source("story", imported["source_id"])
+
+        self.assertEqual(detail["content"], "I found the old lighthouse at dawn.")
+        with self.assertRaises(NotFoundError):
+            self.gateway.get_source("private", imported["source_id"])
 
     def test_source_import_rejects_binary_empty_and_unsupported_content(self):
         invalid_payloads = [

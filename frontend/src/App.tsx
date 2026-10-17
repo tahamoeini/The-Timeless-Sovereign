@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, ContextManifest, Entity, newId, OllamaModelStatus, Relation, request, Revision, Source, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, Entity, newId, OllamaModelStatus, Relation, request, Revision, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -253,7 +253,7 @@ export default function App() {
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
             {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
-            {page === "journal" && <JournalPage importText={importText} busy={busy} />}
+            {page === "journal" && <JournalPage workspaceId={workspaceId} sources={sources} importText={importText} busy={busy} />}
             {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} onBranch={createScenario} />}
           </>}
         </div>
@@ -714,8 +714,51 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   </>;
 }
 
-function JournalPage({ importText, busy }: { importText: (event: FormEvent<HTMLFormElement>) => Promise<void>; busy: boolean }) {
-  return <><PageHeader kicker="Personal memory" title="Journal & Memory" summary="Keep original notes intact and build an evidence-linked account over time." /><div className="journal-grid"><SourceForm busy={busy} onSubmit={importText} /><section className="panel journal-empty"><div className="journal-mark">▤</div><h2>Your notes remain yours.</h2><p>Imported text is preserved as a source. Dated events, conflicting accounts, and memory summaries will appear here as those workflows are added.</p><span className="status-pill">SOURCE STORAGE READY · EXTRACTION IN PROGRESS</span></section></div></>;
+function JournalPage({ workspaceId, sources, importText, busy }: { workspaceId: string; sources: Source[]; importText: (event: FormEvent<HTMLFormElement>) => Promise<void>; busy: boolean }) {
+  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [selectedSource, setSelectedSource] = useState<SourceDetails | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [showFullText, setShowFullText] = useState(false);
+  const orderedSources = useMemo(() => [...sources].sort((left, right) => right.created_at.localeCompare(left.created_at)), [sources]);
+
+  useEffect(() => {
+    if (!orderedSources.length) {
+      setSelectedSourceId("");
+      return;
+    }
+    if (!orderedSources.some((source) => source.source_id === selectedSourceId)) setSelectedSourceId(orderedSources[0].source_id);
+  }, [orderedSources, selectedSourceId]);
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedSourceId) {
+      setSelectedSource(null);
+      setError("");
+      setLoading(false);
+      return () => { active = false; };
+    }
+    setLoading(true);
+    setError("");
+    setShowFullText(false);
+    request<SourceDetails>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(selectedSourceId)}`)
+      .then((source) => { if (active) setSelectedSource(source); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "The note could not be opened."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, selectedSourceId]);
+
+  const contentLimit = 20000;
+  const displayedContent = selectedSource && !showFullText ? selectedSource.content.slice(0, contentLimit) : selectedSource?.content || "";
+
+  return <><PageHeader kicker="Personal memory" title="Journal & Memory" summary="Keep original notes intact and browse the records you have saved in this workspace." /><div className="journal-grid"><SourceForm busy={busy} onSubmit={importText} /><section className="panel journal-notes"><div className="panel-heading"><div><h2>Saved notes</h2><p>Original source text stays unchanged. Review is separate from storage.</p></div><span className="panel-count">{sources.length}</span></div>
+    {orderedSources.length ? <div className="journal-entry-list" aria-label="Saved notes">{orderedSources.map((source) => <button key={source.source_id} className={`journal-entry ${selectedSourceId === source.source_id ? "selected" : ""}`} onClick={() => setSelectedSourceId(source.source_id)}>
+      <span className="journal-entry-type">{source.media_type === "text/markdown" ? "MD" : "TXT"}</span><span className="journal-entry-copy"><strong>{source.display_name}</strong><small>{new Date(source.created_at).toLocaleString()}</small></span><span className="journal-entry-arrow">↗</span>
+    </button>)}</div> : <div className="journal-empty"><div className="journal-mark">▤</div><h2>Your notes remain yours.</h2><p>Save a note or import a text file. It will stay as original source material until you choose to build reviewed memories from it.</p></div>}
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    {loading && <p className="empty-hint" role="status">Opening original note…</p>}
+    {selectedSource && !loading && <article className="journal-reader"><div className="journal-reader-heading"><div><h3>{selectedSource.display_name}</h3><small>{selectedSource.media_type} · saved {new Date(selectedSource.created_at).toLocaleString()}</small></div><span className="status-pill">ORIGINAL SOURCE</span></div><pre>{displayedContent}</pre>{selectedSource.content.length > contentLimit && <button className="secondary-button journal-expand" onClick={() => setShowFullText((value) => !value)}>{showFullText ? "Show less" : `Show full text (${selectedSource.content.length.toLocaleString()} characters)`}</button>}</article>}
+  </section></div></>;
 }
 
 function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, onBranch }: {
