@@ -1,5 +1,9 @@
 # Validation
 
-The v0.1 suite will include shared synthetic fixtures and golden expectations, unit and integration checks, and end-to-end recovery flows. Keep the benchmark corpus and rubric fixed before measuring quality.
+Run the core integrity suite with:
 
-The required acceptance matrix is tracked in docs/README.md. This folder is a scaffold only; no behavior is claimed as verified.
+```powershell
+python -m unittest discover -s tests\unit -v
+```
+
+The suite uses synthetic story data, including Aria, Kael, a secret, evidence, and an isolated scenario branch. Add negative and recovery cases beside each newly implemented contract. End-to-end and bilingual quality evaluation remain pending; see [the acceptance matrix](../docs/ACCEPTANCE_MATRIX.md).

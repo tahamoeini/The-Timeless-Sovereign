@@ -1,61 +1,49 @@
-# Architecture decisions
+# Architecture Decisions
 
-Baseline date: 2026-10-17. This records the decisions in the supplied LKE v1.1 plan. It does not claim that the application or integrations are implemented.
+This file records decisions made against the LKE v1.1 baseline. Unverified choices stay marked as such.
 
-## AD-001: One local-first product
+## ADR-001 — Reset to one LKE product
 
-**Decision:** Build LKE as a modular monolith. Story Studio is the primary v0.1 experience; Knowledge Explorer, Journal & Memory, and Decision & Scenario Lab use the shared core.
+**Decision:** replace the previous Story Studio repository contents with a clean LKE structure on `master`.
 
-**Reason:** A shared source of truth preserves evidence, memory, revisions, and workspace isolation across domains.
+**Reason:** the agreed product is one shared knowledge and memory engine with Story Studio as its first full experience. Existing assets and implementation are retained in Git history for recovery, not copied into the new product without a reuse review.
 
-## AD-002: Canonical data authority
+## ADR-002 — SQLite is canonical
 
-**Decision:** A versioned SQLite model is the sole canonical store. GraphRAG, LLMs, agents, and UI components cannot write canonical rows directly. All official changes use a validated and authorized command gateway.
+**Decision:** SQLite owns canonical workspaces, branches, entities, claims, relations, evidence, sources, revisions, and audit. FTS and future graph/vector indexes are projections.
 
-**Consequences:** Graph, FTS, embeddings, and summaries are rebuildable projections. Every change is attributable, revision-aware, and auditable.
+**Reason:** it gives a small local installation one durable source of truth and makes export and recovery independent of third-party graph or model services.
 
-## AD-003: Windows desktop and modular boundaries
+## ADR-003 — All writes pass through a command gateway
 
-**Decision:** The planned v0.1 stack is React/TypeScript, Tauri 2, and a Python/FastAPI sidecar.
+**Decision:** use validated commands with expected revisions, idempotency keys, branch scope, actor, and reason. Commit the record change, revision, audit event, and outbox atomically.
 
-**Validation still required:** Clean Windows install without system Python, local API security, startup/shutdown behavior, and packaging of the sidecar.
+**Reason:** model output, graph gestures, importers, and agents must not silently become canonical truth.
 
-## AD-004: Local default, provider adapters
+## ADR-004 — Snapshot branches for v0.1
 
-**Decision:** Ollama is the default model runtime. Provider and model capabilities are registered independently. External and paid routes are optional, scoped, and user-consented.
+**Decision:** copy a branch snapshot at a specific parent revision, then keep its records independent. No automatic branch merge.
 
-**Boundary:** Sign-in to an eligible ChatGPT or Codex route is not access to normal ChatGPT history, memory, or unlimited plan usage. Actual eligibility and quotas are runtime conditions.
+**Reason:** scenario experimentation must never mutate the main story or knowledge state implicitly.
 
-## AD-005: Search and graph
+## ADR-005 — Portable Python core; FastAPI adapter
 
-**Decision:** SQLite FTS5 is the initial full-text search. Cytoscape.js is the primary graph UI. Vector and advanced GraphRAG retrieval remain behind replaceable adapters.
+**Decision:** keep domain and persistence code in the standard-library Python core, with FastAPI as the local HTTP adapter dependency.
 
-**Candidates to evaluate:** sqlite-vec; a lightweight internal extraction/retrieval pipeline; Cognee first for a GraphRAG trial; Graphiti for temporal relation experiments; LightRAG for advanced retrieval. None is a second source of truth.
+**Reason:** core integrity tests run without network access or a model runtime; API and desktop packaging can be validated separately.
 
-## AD-006: Document processing
+## ADR-006 — Baseline UI and adapter choices
 
-**Decision:** Docling is the primary document-ingestion candidate. LangExtract is optional and must be validated in our own structured-output layer.
+**Decision:** React + TypeScript and Tauri 2 are the desktop direction; Ollama is the default local-model adapter; Docling and `sqlite-vec` are candidates, not unconditional core dependencies.
 
-**Validation still required:** Supported Windows formats, incremental reprocessing, evidence anchors, and reliable output quality in Persian and English.
+**Reason:** this follows the v1.1 plan while keeping heavyweight extraction and retrieval components replaceable. Windows packaging and local hardware suitability still need evidence.
 
-## AD-007: Existing project reuse
+## ADR-007 — Proposed open-source license
 
-**Decision:** Do not merge Raggi, GlyphMend, Synthora, SmartPack, Ariadne, or Story Studio codebases by default. Create a reuse register after examining each project's contracts, tests, license, dependencies, and adapter cost.
+**Decision:** Apache-2.0 for this reset repository, subject to a final contributor/ownership review before public release.
 
-## AD-008: Versioned conversation exchange
+**Reason:** this is the license proposed in the product baseline and is compatible with the intended permissive dependency preference.
 
-**Decision:** Use a versioned bridge for context export and transcript import. Detect missing turns, deduplicate transcript imports, and reject stale changes for review.
+## Deferred decisions
 
-**Boundary:** The exchange format is an LKE contract, not an OpenAI API.
-
-## AD-009: Release integrity gates
-
-**Decision:** The release suite must cover canonical integrity, workspace and branch isolation, temporal leakage, character agency, idempotency, stale revisions, provider failures, backup/restore, and local-only operation. Quality thresholds follow a frozen benchmark corpus and rubric.
-
-## Open decisions
-
-- Confirm the final open-source license before public release; Apache-2.0 is the plan's proposal, not yet applied.
-- Benchmark local extraction and embeddings on supported Windows hardware.
-- Verify optional provider sign-in, quotas, and Codex app-server behavior.
-- Decide whether optional graph or vector frameworks add measurable value.
-- Set minimum hardware after CPU, memory, and recovery benchmarks.
+The exact document parser, embedding model, GraphRAG integration, external OpenAI/Codex path, minimum hardware, agent safe-apply policy, and final backup container remain open until their evaluation criteria and packaging tests are run. See [the integration register](docs/INTEGRATION_REGISTER.md).

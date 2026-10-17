@@ -50,12 +50,14 @@ class Database:
                         f"Database schema {current} is newer than supported {SCHEMA_VERSION}"
                     )
                 if current == 0:
-                    self.connection.executescript(_SCHEMA_V1)
-                    self.connection.execute(
-                        "INSERT INTO schema_migrations(version, applied_at) VALUES(1, "
-                        "strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+                    self.connection.executescript(
+                        "BEGIN IMMEDIATE;\n"
+                        + _SCHEMA_V1
+                        + "\nINSERT INTO schema_migrations(version, applied_at) VALUES(1, "
+                        "strftime('%Y-%m-%dT%H:%M:%fZ','now'));\nCOMMIT;"
                     )
-                self.connection.commit()
+                else:
+                    self.connection.commit()
             except BaseException:
                 self.connection.rollback()
                 raise
@@ -146,11 +148,28 @@ CREATE TABLE claims (
     object_value TEXT NOT NULL,
     epistemic_status TEXT NOT NULL CHECK(epistemic_status IN ('unknown','believed','known','contested')),
     review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    visibility TEXT NOT NULL DEFAULT 'public' CHECK(visibility IN ('public','actor_scoped','author_only')),
+    narrative_order INTEGER NOT NULL DEFAULT 0,
     evidence_json TEXT NOT NULL,
     created_revision INTEGER NOT NULL,
     PRIMARY KEY(workspace_id, branch_id, claim_id),
     FOREIGN KEY(workspace_id, branch_id, subject_entity_id)
         REFERENCES entities(workspace_id, branch_id, entity_id)
+);
+CREATE TABLE actor_beliefs (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    belief_id TEXT NOT NULL,
+    actor_entity_id TEXT NOT NULL,
+    claim_id TEXT NOT NULL,
+    stance TEXT NOT NULL CHECK(stance IN ('knows','believes','denies','unaware')),
+    awareness_order INTEGER NOT NULL DEFAULT 0,
+    created_revision INTEGER NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,belief_id),
+    FOREIGN KEY(workspace_id,branch_id,actor_entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id),
+    FOREIGN KEY(workspace_id,branch_id,claim_id)
+        REFERENCES claims(workspace_id,branch_id,claim_id)
 );
 CREATE TABLE sources (
     workspace_id TEXT NOT NULL,
