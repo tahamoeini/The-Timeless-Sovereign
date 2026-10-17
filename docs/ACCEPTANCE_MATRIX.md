@@ -6,6 +6,7 @@ The release gates are measurable behaviors, not claims that a test name exists. 
 |---|---|---|
 | Workspace isolation | Cross-workspace query and foreign reference tests | Core unit test passes |
 | Branch isolation | Snapshot, branch write, and unchanged main branch | Core unit test passes |
+| Scenario comparison | Show branch-only records and review changes against the current parent | Browser verifies a scenario-only concept is reported against its parent; rule evaluation, option scoring, and historical-parent comparison are pending |
 | Optimistic concurrency | Stale write rejected with no partial rows | Core unit test passes |
 | Idempotency | Retry gives same result; key reuse with changed request conflicts | Core unit tests pass |
 | Atomic audit/outbox | Successful write creates one revision, audit event, outbox item | Core unit test passes |

@@ -501,10 +501,21 @@ class CommandGateway:
             content = payload.get("content")
             if not isinstance(content, str):
                 raise ValidationError("content must be text")
-            if len(content.encode("utf-8")) > 10 * 1024 * 1024:
+            try:
+                content_bytes = content.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ValidationError("content must be valid UTF-8 text") from error
+            if len(content_bytes) > 10 * 1024 * 1024:
                 raise ValidationError("text sources are limited to 10 MiB")
-            media_type = _required_text(payload.get("media_type", "text/plain"), "media_type", 200)
-            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if not content.strip():
+                raise ValidationError("text source content cannot be empty")
+            if b"\x00" in content_bytes:
+                raise ValidationError("text source contains binary data")
+            requested_media_type = _required_text(payload.get("media_type", "text/plain"), "media_type", 200)
+            media_type = requested_media_type.split(";", 1)[0].strip().lower()
+            if media_type not in {"text/plain", "text/markdown"}:
+                raise ValidationError("only plain text and Markdown sources are supported")
+            digest = hashlib.sha256(content_bytes).hexdigest()
             old = connection.execute(
                 "SELECT source_id,display_name FROM sources WHERE workspace_id=? AND content_sha256=?",
                 (workspace_id, digest),

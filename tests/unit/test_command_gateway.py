@@ -118,6 +118,18 @@ class CommandGatewayTests(unittest.TestCase):
         self.assertEqual(duplicate["revision"], 1)
         self.assertEqual(len(self.gateway.search_sources("story", "sealed letter")), 1)
 
+    def test_source_import_rejects_binary_empty_and_unsupported_content(self):
+        invalid_payloads = [
+            {"display_name": "archive.zip", "media_type": "application/zip", "content": "not an archive"},
+            {"display_name": "binary.txt", "media_type": "text/plain", "content": "header\u0000payload"},
+            {"display_name": "empty.txt", "media_type": "text/plain", "content": "  \n"},
+        ]
+        for index, payload in enumerate(invalid_payloads):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                self.command(f"unsafe-source-{index}", 0, "import_source", payload)
+        self.assertEqual(self.gateway.current_revision("story"), 0)
+        self.assertEqual(self.gateway.list_sources("story"), [])
+
     def test_claims_are_proposals_by_default_and_ai_cannot_accept(self):
         self.create_entity("create-aria")
         proposed = self.command("claim-1", 1, "add_claim", {

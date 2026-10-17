@@ -165,10 +165,20 @@ export default function App() {
       const file = selected instanceof File && selected.name ? selected : null;
       if (file && file.size > 10 * 1024 * 1024) throw new Error("Text imports are limited to 10 MB.");
       if (file && !/\.(txt|md|markdown)$/i.test(file.name)) throw new Error("Choose a .txt or Markdown file.");
-      const content = file ? await file.text() : String(data.get("content") || "");
+      let content: string;
+      if (file) {
+        try {
+          content = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+        } catch {
+          throw new Error("Text files must use UTF-8 encoding.");
+        }
+      } else {
+        content = String(data.get("content") || "");
+      }
       const displayName = file?.name || String(data.get("display_name") || "").trim();
       if (!displayName) throw new Error("Add a source title or choose a local text file.");
       if (!content.trim()) throw new Error("Add text content or choose a non-empty local text file.");
+      if (content.includes("\0")) throw new Error("The selected file contains binary data. Choose a plain text or Markdown file.");
       if (new TextEncoder().encode(content).length > 10 * 1024 * 1024) throw new Error("Text imports are limited to 10 MB.");
       const mediaType = file && /\.(md|markdown)$/i.test(file.name) ? "text/markdown" : "text/plain";
       await runCommand("import_source", { display_name: displayName, content, media_type: mediaType }, "Import a local text source");
