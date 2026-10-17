@@ -1,50 +1,71 @@
-# Architecture: The Timeless Sovereign Story Studio
+# Architecture baseline
 
-## Decisions
+## Shape
 
-- Build a Windows-local browser app with Node.js 22.14, the built-in HTTP server, native `node:sqlite`, and plain HTML/CSS/JavaScript. This avoids a package install and uses the runtime already present. Node's SQLite module is experimental in this runtime, so schema migrations, transactions, integrity checks, and recovery tests are required.
-- Offer a neutral ChatGPT-inspired light/dark/system palette. Store the selected appearance in SQLite `app_settings`, not browser storage, so it survives browser-profile changes and app upgrades.
-- Bind the UI and API to `127.0.0.1` only. Keep the SQLite database, backups, isolated Codex home, and protected credentials under `%LOCALAPPDATA%\TheTimelessSovereign`; the repository contains only source and documentation.
-- Treat SQLite raw messages as the permanent story record. Project, branch, thread, message, ledger, audit, and indexing-job records are linked by stable IDs. FTS indexes messages without changing them. Ledger corrections append a new sourced record and audit row.
-- Acquire an exclusive PID/token lock in the resolved data directory before opening SQLite or running startup recovery. A second process reports that the directory is already in use; a later launch can remove a stale lock whose process is no longer running.
-- Use message-change revisions for snapshot polling. Insertions, streamed text deltas, and status changes all advance the revision; clients reset when the cursor version changes and ignore responses for a conversation they have left.
-- Store one debounced SQLite draft per conversation and clear it only after the server acknowledges the saved user message. Retry a failed user turn by creating a distinct linked assistant attempt, keyed by a client request ID so duplicate requests do not duplicate work.
-- Use strict structured output for continuity extraction. The model returns detail key/value pairs under a closed schema, then the indexer converts them to the app's flexible local detail map.
-- Serialize Codex connection setup and reuse the connected app-server process while its turns are running. Start a fresh ephemeral model thread for every story response and send only the selected local context bundle; do not rely on provider-side transcript history or delayed thread forks. Refresh expired credentials only when story and continuity turns are idle, so token rotation cannot cancel indexing. Interrupted index jobs return to pending; manual retry reports counts rather than returning every job row and drains the full selected queue.
-- Store each project's memory scope in SQLite. The default retrieves project-and-branch continuity across chats; conversation-local mode only retrieves records whose source messages belong to the active conversation. No setting shares canon across projects.
-- Keep branches separate by project and branch ID, with a fork point. Transcript, ledger, search, and generation context all apply the same inherited branch cutoffs, including empty forks. A correction appends a replacement fact and audit link; earlier branches keep the canon that was visible at their fork point.
-- Parse slash commands in the local app before model submission. Inspection and continuity commands are recorded and handled locally; only ordinary story messages start an app-server turn.
-- Delete a conversation only after an exact-title and phrase confirmation. Compute affected forked timelines before deletion, refuse while a response is active or queued, remove dependent branches and local archive links transactionally, and keep ledger facts that still have surviving source messages. Emergency app shutdown marks active turns interrupted, drains queued replies and memory jobs, then closes SQLite.
-- Before each narrative turn, assemble project instructions, style, current scene, branch-local canon and knowledge boundaries, relevant ledger/search hits with message IDs, recent raw thread turns, and the current user message. Retrieval is bounded; the full archive is searched locally and never sent wholesale.
-- Send the selected reasoning effort using the app-server `turn/start` `effort` field, and expose only values listed by the selected model's `supportedReasoningEfforts`; an empty value leaves the model default in effect.
-- Use the documented Codex app-server JSONL protocol over a child-process stdio pipe. Stream deltas from ephemeral story threads, interrupt on cancel, and persist the local user message and pending index job before starting generation. Disable shell, code, web, MCP, plugin, skill, and other non-chat features; start with an empty app-owned working directory and a read-only sandbox. If startup cannot apply those restrictions, do not submit story content.
-- Resolve Codex from `CODEX_EXECUTABLE`, `PATH`, or the standard `%LOCALAPPDATA%\OpenAI\Codex\bin\<build>\codex.exe` per-user installation.
-- Build the Windows setup executable from WSL using NSIS. It installs per user under `%LOCALAPPDATA%\Programs`; story data remains under `%LOCALAPPDATA%\TheTimelessSovereign` and is never installed or uninstalled with app files. Updates use the next user-run setup; the installer asks the local app to stop before replacing files.
-- Check updates against the repository's public GitHub Releases API. Require an HTTPS GitHub release page and the exact installer asset name; show a download link and optional SHA-256 digest. The user runs the unsigned installer to update, and the app never silently executes a downloaded file.
-- Implement Sign in with ChatGPT using the official dynamic-client loopback OAuth flow: fresh state, nonce, PKCE S256, exact callback URI, issued client ID, verified ID token/JWKS, and granted-scope checks. Keep rotating tokens in Windows DPAPI-protected credential slots, pass only the access token through the app-server child environment, and never fall back to API-key billing.
+LKE is a modular monolith using ports and adapters around one canonical data store. For the user it is one Windows desktop application. Internal boundaries separate domain rules, persistence, extraction, model execution, retrieval, and presentation.
 
-## Local data and security
+```text
+Tauri desktop shell
+  React + TypeScript UI
+  Python + FastAPI local sidecar
+    Application services and command gateway
+      Canonical knowledge and memory core
+        SQLite + FTS5 + source archive
+      Derived graph, search, embedding, and summary projections
+      AI gateway and adapters
+        Ollama by default; optional, consented providers
+```
 
-- Source code and the existing `Histories` and `Images` folders stay in the workspace. Story data lives under the user's local application data directory and is not committed or included in project exports.
-- Every DB migration runs transactionally. Writes use foreign keys and WAL; backups use a consistent SQLite snapshot. Startup and explicit maintenance check SQLite integrity.
-- Migrations are versioned through schema version 4. Archive backfilling only links a source file when one matching imported conversation is unambiguous. Snapshot restores pause new work, interrupt and drain replies and indexing, save and validate a pre-restore snapshot, and replace the saved records in one transaction. Restored streaming replies become interrupted and processing jobs return to pending.
-- Create one automatic SQLite snapshot per UTC day at startup and check hourly while the app runs. Keep the latest 14 successful automatic snapshots; manual and pre-restore snapshots are separate and remain available. Full JSON backups include drafts, retry attempts, and app settings but never credentials.
-- Search applies project, branch, and conversation filters before limiting visible results. Literal search remains available when SQLite FTS5 is unavailable; generation retrieval ranks saved story messages locally by token overlap.
-- The local HTTP server rejects non-loopback hosts, cross-origin mutations, and unrecognized routes. The browser uses same-origin requests, a restrictive content security policy, and text-only rendering for saved story content.
-- Project export contains the complete messages, ledger, source links, corrections, preferences, and thread/branch metadata. It never contains OAuth credentials. Import creates fresh local IDs and remaps internal references.
-- The Windows build uses the installed Node.js executable as a private runtime and contains no story database or credentials. Unsigned setup files may trigger Windows unknown-publisher or SmartScreen notices.
+The diagram describes request flow, not permission to write around the command gateway.
 
-## Protocol references
+## Ownership boundaries
 
-- [Codex app-server protocol and lifecycle](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
-- [`turn/start` protocol: model and effort parameters](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/turn.rs)
-- [Model catalog reasoning-effort options](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs)
-- [App-server error notifications and retry flag](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/notification.rs)
-- [Turn error payload](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs)
-- [Sign in with ChatGPT registration and sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
-- [Sign in with ChatGPT sessions and token refresh](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
-- [Codex app-server with ChatGPT-plan OAuth](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
+| Module | Owns or does | Canonical write authority |
+| --- | --- | --- |
+| Source manager | Original files, versions, hashes, provenance | Source records through commands |
+| Extraction | Document IR and candidate entities, claims, relations, events, rules, style | None; reviewable proposals only |
+| Knowledge core | Stable identities, claims, relations, evidence links, epistemic status | Yes, through validated commands |
+| Memory and history | Revisions, branches, event history, valid and recorded time | Yes, through validated commands |
+| Graph and search | Graph, FTS, embedding, summary projections | None; rebuildable |
+| Context compiler | Relevant, permission-filtered context and manifest | None |
+| Narrative and scenario | Proposed scene deltas, actor knowledge, rules, scenario results | Only through commands; scenarios stay isolated |
+| AI gateway and agent runtime | Model capability checks, inference, bounded tools, audit | None; agent writes use the command gateway |
+| Application shell | Navigation and interaction | None |
 
-## Verification boundary
+## Canonical write path
 
-The local Codex app-server protocol review confirmed the `initialize`, ephemeral `thread/start`, `turn/start`, `turn/interrupt`, text `UserInput`, sandbox policy, and streaming notification shapes used by the client. The app-server handshake succeeded locally with a placeholder token and no model turn. The Windows DPAPI storage path was exercised locally. Browser smoke covered draft recovery after reload, continuity dialogs, local commands, failed-turn retry, response-context inspection, snapshot creation, and local snapshot restore while disconnected. The automated tests use temporary databases and mock OAuth/app-server turns. No real account authorization, eligibility check, provider token exchange/refresh, or ChatGPT-plan inference has been performed.
+Every mutation follows: proposed change -> validate -> authorize -> commit -> append revision and audit -> rebuild or invalidate projections.
+
+A command carries workspace ID, operation, target, expected revision, actor, reason, and idempotency key. Data change, revision, and projection outbox entry commit atomically. A stale expected revision is surfaced for review. Reusing an idempotency key cannot apply a second change. Append-only audit history does not replace a defined personal-data deletion policy.
+
+## Data and time model
+
+The common model includes Workspace; Source and SourceVersion; Evidence; Entity and Alias; Claim; typed, directed, scoped Relation; Event; State; actor-scoped Belief or Knowledge; Rule; Revision; Branch; Conversation and Turn; Scenario; StyleProfile; Job; and Approval.
+
+Review status is independent of epistemic status. A source can support a proposed claim without making it true in the domain. Conflicting evidence is retained with provenance.
+
+The time model distinguishes valid time, recorded time, actor awareness time, narrative order, and branch revision. Branches fork from a specific revision and remain independently recoverable. Promoting a branch is explicit and auditable; automatic conflict merges are out of scope for v0.1.
+
+## Ingestion and derived views
+
+Ingestion records stable source IDs, content hashes, versions, type, language, parser/extractor/schema/model versions, and processing state. A document is normalized to a Document IR before candidate extraction. Every candidate points to a retrievable source anchor or explicit user statement. Reimport compares file and chunk hashes; changed evidence prompts review and never silently removes an approved fact.
+
+SQLite and the versioned canonical model are authoritative. FTS, graph layout, embeddings, summaries, and other indexes are projections that can be rebuilt. A graph or matrix edit emits a domain command rather than writing database rows directly.
+
+## Context and model execution
+
+Each context request specifies purpose, workspace, domain, time, branch, actor, access scope, token budget, and target model capability. Retrieval applies deterministic filters before text, semantic, and graph ranking. The output manifest identifies included and omitted information, reasons, provenance, status, revision, and uncertainty.
+
+The AI gateway uses capability adapters. Ollama is the local default; external providers are optional and require explicit scoped consent. A ChatGPT or Codex connection does not imply access to normal ChatGPT conversation history or account memory. The exchange bridge uses a versioned manifest, transcript range and hash, base revision, and idempotent change IDs.
+
+## Security and operations
+
+Local content is not sent automatically. Workspace isolation is enforced server-side. Imported document text is data, never tool authorization or system instruction. The local API binds to loopback and validates origin and requests. File ingestion constrains type, size, and paths. Secrets never enter logs or exports. Agent permissions default to observe/propose; sensitive canonical changes require explicit approval and all writes pass the command gateway.
+
+Backup and AI export are different formats. Backup preserves sources, canonical data, history, branches, settings, conversations, and a version manifest; indexes and caches may be rebuilt. Restore equivalence must be verified on a new path. The Windows package must work without a separately installed Python runtime before release.
+
+## Runtime baseline and validation status
+
+The planned desktop stack is React/TypeScript with Tauri 2 and a Python/FastAPI sidecar. SQLite with FTS5 is the canonical store; Cytoscape.js is the primary graph view; Docling is the primary document-ingestion candidate; Ollama is the local model default.
+
+This is a design baseline, not evidence of implemented or packaged behavior. Sidecar packaging, target hardware, model quality, provider access, and each conditional dependency require practical verification before release.

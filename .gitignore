@@ -1,14 +1,36 @@
+# JavaScript and desktop builds
 node_modules/
-.tmp-*/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.db
-*.db-shm
-*.db-wal
-backups/
-credentials.dpapi
-credentials.dpapi.*.slot
-codex-home/
-empty-workspace/
 dist/
+build/
+target/
+.vite/
+*.tsbuildinfo
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Local workspaces and databases
+.lke/
+workspace-data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
