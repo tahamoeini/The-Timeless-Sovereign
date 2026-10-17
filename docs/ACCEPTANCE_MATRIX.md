@@ -33,7 +33,7 @@ The currently runnable core and API test command is:
 python -m unittest discover -s tests\unit -v
 ```
 
-The present suite has 11 passing core tests. This is not an end-to-end product acceptance run.
+The present suite has 15 passing core and API boundary tests. This is not an end-to-end product acceptance run.
 
 ## Quality targets
 
