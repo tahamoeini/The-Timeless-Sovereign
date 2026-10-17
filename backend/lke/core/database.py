@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Database:
@@ -33,34 +33,37 @@ class Database:
         self.migrate()
 
     def migrate(self) -> None:
-        """Create v1 atomically; refuse unknown newer schemas."""
+        """Apply each schema migration atomically; refuse unknown newer schemas."""
         with self.lock:
-            self.connection.execute("BEGIN IMMEDIATE")
-            try:
-                self.connection.execute(
-                    "CREATE TABLE IF NOT EXISTS schema_migrations ("
-                    "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+            self.connection.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            row = self.connection.execute(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            ).fetchone()
+            current = row["version"] or 0
+            if current > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema {current} is newer than supported {SCHEMA_VERSION}"
                 )
-                row = self.connection.execute(
-                    "SELECT MAX(version) AS version FROM schema_migrations"
-                ).fetchone()
-                current = row["version"] or 0
-                if current > SCHEMA_VERSION:
-                    raise RuntimeError(
-                        f"Database schema {current} is newer than supported {SCHEMA_VERSION}"
-                    )
-                if current == 0:
-                    self.connection.executescript(
-                        "BEGIN IMMEDIATE;\n"
-                        + _SCHEMA_V1
-                        + "\nINSERT INTO schema_migrations(version, applied_at) VALUES(1, "
-                        "strftime('%Y-%m-%dT%H:%M:%fZ','now'));\nCOMMIT;"
-                    )
-                else:
-                    self.connection.commit()
-            except BaseException:
-                self.connection.rollback()
-                raise
+            if current < 1:
+                self._apply_migration(1, _SCHEMA_V1)
+                current = 1
+            if current < 2:
+                self._apply_migration(2, _SCHEMA_V2)
+
+    def _apply_migration(self, version: int, schema: str) -> None:
+        try:
+            self.connection.executescript(
+                "BEGIN IMMEDIATE;\n"
+                + schema
+                + f"\nINSERT INTO schema_migrations(version, applied_at) VALUES({version}, "
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now'));\nCOMMIT;"
+            )
+        except BaseException:
+            self.connection.rollback()
+            raise
 
     def close(self) -> None:
         with self.lock:
@@ -236,4 +239,48 @@ CREATE VIRTUAL TABLE source_search USING fts5(
     workspace_id UNINDEXED, source_id UNINDEXED, display_name, content,
     tokenize='unicode61 remove_diacritics 2'
 );
+"""
+
+
+_SCHEMA_V2 = """
+CREATE TABLE story_conversations (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    actor_entity_id TEXT NOT NULL,
+    title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 200),
+    actor_is_user_controlled INTEGER NOT NULL DEFAULT 1 CHECK(actor_is_user_controlled IN (0,1)),
+    created_revision INTEGER NOT NULL,
+    updated_revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,conversation_id),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,branch_id,actor_entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id)
+);
+CREATE TABLE story_turns (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    turn_order INTEGER NOT NULL CHECK(turn_order >= 0),
+    role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+    narrative_order INTEGER NOT NULL CHECK(narrative_order >= 0),
+    content TEXT NOT NULL CHECK(length(trim(content)) > 0),
+    provider TEXT,
+    model TEXT,
+    context_manifest_id TEXT,
+    context_manifest_json TEXT,
+    context_revision INTEGER,
+    created_revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,conversation_id,turn_id),
+    UNIQUE(workspace_id,branch_id,conversation_id,turn_order),
+    FOREIGN KEY(workspace_id,branch_id,conversation_id)
+        REFERENCES story_conversations(workspace_id,branch_id,conversation_id) ON DELETE CASCADE
+);
+CREATE INDEX story_turns_order_idx
+    ON story_turns(workspace_id,branch_id,conversation_id,turn_order);
 """

@@ -19,6 +19,10 @@ Each model/runtime registration must report provider and model identifiers, runt
 
 No content leaves the device by default. Before an external call, the UI shows provider, selected source/context scope, and relevant sensitive-data warning. Imported documents are untrusted content, not instructions. A model cannot authorize itself, select arbitrary files, or bypass the command gateway. Safe Apply and sensitive actions require server-side policy and user approval; actor labels supplied by a client are not proof of authorization.
 
-## Planned adapters and status
+## Implemented local adapter and status
 
-Ollama is planned but not implemented. Codex app-server and any sign-in path must be checked against current official capabilities and terms before implementation. A standard API key adapter is not required for the v0.1 local path. The current core contains no model calls.
+The Ollama adapter discovers local model names and sends non-streaming chat requests only to `127.0.0.1:11434`. The Story Studio route supplies a revision-bound actor context, bounds recent transcript history, and saves a successful prompt/response pair through the command gateway. Provider failure or a stale revision creates no partial turn. A retry with the same request key reuses the original result.
+
+The API and adapter are covered by tests with a simulated provider. No live Ollama service or installed model was available during validation, so generation quality, CPU-only performance, timeout behavior against a real model, and Persian/English output remain unverified. Only chat/model discovery are implemented; structured extraction, embeddings, reranking, streaming, tool use, and capability benchmarking are not.
+
+Codex app-server and any sign-in path must be checked against current official capabilities and terms before implementation. A standard API key adapter is not required for the v0.1 local path. No provider may write accepted knowledge directly.

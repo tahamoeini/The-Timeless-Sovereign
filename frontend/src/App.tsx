@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, Entity, newId, Relation, request, Source, Workspace } from "./api";
+import { Branch, Claim, Entity, newId, OllamaModelStatus, Relation, request, Source, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -104,12 +104,13 @@ export default function App() {
     return result;
   };
 
-  const commitStoryCommand = async (commandType: string, payload: Record<string, unknown>, reason: string) => {
-    if (busy) return;
+  const commitStoryCommand = async (commandType: string, payload: Record<string, unknown>, reason: string): Promise<Record<string, unknown>> => {
+    if (busy) throw new Error("Another workspace change is already in progress.");
     setBusy(true);
     try {
-      await runCommand(commandType, payload, reason);
-      setNotice({ tone: "success", text: "Character knowledge saved to this branch." });
+      const result = await runCommand(commandType, payload, reason);
+      setNotice({ tone: "success", text: commandType === "create_conversation" ? "Story started on this branch." : "Character knowledge saved to this branch." });
+      return result;
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "The change could not be saved." });
       throw error;
@@ -241,7 +242,7 @@ export default function App() {
               workspaceId={workspaceId} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
             />}
-            {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} onNavigate={setPage} onCommit={commitStoryCommand} />}
+            {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
             {page === "journal" && <JournalPage importText={importText} busy={busy} />}
             {page === "scenario" && <ScenarioPage branchId={branchId} revision={revision} entities={entities} relations={relations} onBranch={createScenario} />}
           </>}
@@ -340,37 +341,274 @@ function Graph({ entities, relations }: { entities: Entity[]; relations: Relatio
   </svg></div>;
 }
 
-function StoryPage({ entities, claims, workspaceId, branchId, onNavigate, onCommit }: { entities: Entity[]; claims: Claim[]; workspaceId: string; branchId: string; onNavigate: (page: Page) => void; onCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<void> }) {
+function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, onNavigate, onCommit, onRevisionChange, onRefresh }: {
+  entities: Entity[];
+  claims: Claim[];
+  workspaceId: string;
+  branchId: string;
+  revision: number;
+  busy: boolean;
+  onNavigate: (page: Page) => void;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<Record<string, unknown>>;
+  onRevisionChange: (revision: number) => void;
+  onRefresh: () => Promise<void>;
+}) {
   const characters = entities.filter((item) => ["character", "person"].includes(item.entity_type));
   const [actor, setActor] = useState("");
   const [order, setOrder] = useState(0);
   const [context, setContext] = useState<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] } | null>(null);
   const [error, setError] = useState("");
-  const selectedActor = characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "";
+  const [storyError, setStoryError] = useState("");
+  const [conversations, setConversations] = useState<StoryConversationSummary[]>([]);
+  const [conversationId, setConversationId] = useState("");
+  const [conversation, setConversation] = useState<StoryConversation | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+  const [model, setModel] = useState("");
+  const [title, setTitle] = useState("");
+  const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
+  const [prompt, setPrompt] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
+
+  async function loadConversations(preferredId?: string) {
+    const rows = await request<StoryConversationSummary[]>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations?branch_id=${encodeURIComponent(branchId)}`,
+    );
+    setConversations(rows);
+    const selectedId = preferredId || conversationId;
+    const selected = rows.find((item) => item.conversation_id === selectedId) || rows[0];
+    if (!selected) {
+      setConversationId("");
+      setConversation(null);
+      return;
+    }
+    setConversationId(selected.conversation_id);
+    const detail = await request<StoryConversation>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(selected.conversation_id)}?branch_id=${encodeURIComponent(branchId)}`,
+    );
+    setConversation(detail);
+    setActor(detail.actor_entity_id);
+    const lastTurn = detail.turns[detail.turns.length - 1];
+    setOrder(lastTurn?.narrative_order || 0);
+  }
+
+  useEffect(() => {
+    let active = true;
+    setConversation(null);
+    setConversationId("");
+    setStoryError("");
+    request<StoryConversationSummary[]>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations?branch_id=${encodeURIComponent(branchId)}`,
+    ).then(async (rows) => {
+      if (!active) return;
+      setConversations(rows);
+      const first = rows[0];
+      if (!first) return;
+      const detail = await request<StoryConversation>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(first.conversation_id)}?branch_id=${encodeURIComponent(branchId)}`,
+      );
+      if (active) {
+        setConversationId(first.conversation_id);
+        setConversation(detail);
+        setActor(detail.actor_entity_id);
+        const lastTurn = detail.turns[detail.turns.length - 1];
+        setOrder(lastTurn?.narrative_order || 0);
+      }
+    }).catch((loadError) => {
+      if (active) setStoryError(loadError instanceof Error ? loadError.message : "Stories could not be loaded.");
+    });
+    request<OllamaModelStatus>("/api/v1/providers/ollama/models").then((status) => {
+      if (!active) return;
+      setOllamaAvailable(status.available);
+      setModels(status.models);
+      setModel((current) => status.models.includes(current) ? current : status.models[0] || "");
+    }).catch(() => {
+      if (active) {
+        setOllamaAvailable(false);
+        setModels([]);
+      }
+    });
+    return () => { active = false; };
+  }, [workspaceId, branchId]);
+
   async function preview() {
     setError("");
-    try { setContext(await request<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] }>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/context`, { method: "POST", body: JSON.stringify({ branch_id: branchId, actor_entity_id: selectedActor, as_of_narrative_order: order, token_budget: 4000 }) })); }
-    catch (e) { setError(e instanceof Error ? e.message : "Context could not be built."); }
+    try {
+      setContext(await request<{ included: { subject: string; predicate: string; object: string; actor_stance: string }[]; excluded: { claim_id: string; reason: string }[] }>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/context`, {
+        method: "POST",
+        body: JSON.stringify({ branch_id: branchId, actor_entity_id: selectedActor, as_of_narrative_order: order, token_budget: 4000 }),
+      }));
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : "Context could not be built.");
+    }
   }
+
+  async function startConversation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedActor) {
+      setStoryError("Create a character before starting a story.");
+      return;
+    }
+    setStoryError("");
+    try {
+      const created = await onCommit("create_conversation", {
+        conversation_id: newId("story"),
+        actor_entity_id: selectedActor,
+        title: title.trim() || "Untitled story",
+        actor_is_user_controlled: actorIsUserControlled,
+      }, "Start a persistent story conversation");
+      setTitle("");
+      await loadConversations(String(created.conversation_id));
+    } catch (createError) {
+      setStoryError(createError instanceof Error ? createError.message : "The story could not be started.");
+    }
+  }
+
+  async function selectConversation(id: string) {
+    setConversationId(id);
+    setConversation(null);
+    setStoryError("");
+    if (!id) return;
+    try {
+      const detail = await request<StoryConversation>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(id)}?branch_id=${encodeURIComponent(branchId)}`,
+      );
+      setConversation(detail);
+      setActor(detail.actor_entity_id);
+      const lastTurn = detail.turns[detail.turns.length - 1];
+      setOrder(lastTurn?.narrative_order || 0);
+    } catch (loadError) {
+      setStoryError(loadError instanceof Error ? loadError.message : "The selected story could not be loaded.");
+    }
+  }
+
+  async function generateStoryTurn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!conversation || generating || busy || !model) return;
+    setGenerating(true);
+    setStoryError("");
+    try {
+      const generated = await request<StoryGenerationResult>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/generate`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            branch_id: branchId,
+            conversation_id: conversation.conversation_id,
+            expected_revision: revision,
+            idempotency_key: newId("story-turn"),
+            model,
+            prompt,
+            narrative_order: order,
+          }),
+        },
+      );
+      setConversation(generated.conversation);
+      setPrompt("");
+      onRevisionChange(generated.revision);
+      await onRefresh();
+      await loadConversations(generated.conversation_id);
+    } catch (generationError) {
+      setStoryError(generationError instanceof Error ? generationError.message : "The local model could not continue this story.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   async function recordBelief(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     setError("");
     try {
-      await onCommit("add_belief", { actor_entity_id: selectedActor, claim_id: data.get("claim_id"), stance: data.get("stance"), awareness_order: Number(data.get("awareness_order")) }, "Record a character's reviewed knowledge state");
+      await onCommit("add_belief", {
+        actor_entity_id: selectedActor,
+        claim_id: data.get("claim_id"),
+        stance: data.get("stance"),
+        awareness_order: Number(data.get("awareness_order")),
+      }, "Record a character's reviewed knowledge state");
       form.reset();
-    } catch (e) { setError(e instanceof Error ? e.message : "Knowledge could not be recorded."); }
+    } catch (beliefError) {
+      setError(beliefError instanceof Error ? beliefError.message : "Knowledge could not be recorded.");
+    }
   }
+
   return <>
-    <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Build an informed world, keep character knowledge in view, and review every change before it becomes canon." />
-    <div className="story-grid"><section className="panel story-canvas"><div className="scene-topline"><span className="scene-indicator">WORLD</span><span>Branch: {branchId === "main" ? "Main story" : branchId}</span></div><div className="story-placeholder"><div className="story-sigil">✳</div><h2>A story begins with what is known.</h2><p>Add characters, evidence, and reviewed claims in Knowledge Explorer. Then inspect the exact information each character has learned at a chosen point in the story.</p><button className="secondary-button" onClick={() => onNavigate("knowledge")}>Open knowledge explorer <span>↗</span></button></div></section>
-      <section className="panel context-panel"><div className="panel-heading"><div><h2>Character perspective</h2><p>Preview the bounded context before generation.</p></div><span className="privacy-tag">LOCAL</span></div>
-        {characters.length ? <><label className="field-label">Character<select value={selectedActor} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label><label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label><button className="primary-button full-button" onClick={() => void preview()}>Build context preview <span>↗</span></button>
-          <form className="belief-form" onSubmit={(event) => void recordBelief(event)}><div className="form-divider">record a knowledge change</div><label className="field-label">Reviewed claim<select name="claim_id" required>{claims.filter((item) => item.review_status === "accepted").map((item) => <option key={item.claim_id} value={item.claim_id}>{item.predicate}: {item.object_value}</option>)}</select></label><label className="field-label">Character's stance<select name="stance"><option value="knows">Knows</option><option value="believes">Believes</option><option value="denies">Denies</option><option value="unaware">Has not learned</option></select></label><label className="field-label">Awareness order<input name="awareness_order" type="number" min={0} defaultValue={order} /></label><button className="secondary-button full-button" disabled={!claims.some((item) => item.review_status === "accepted")}>Record character knowledge <span>+</span></button></form>
+    <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Continue a saved story with a local model, while keeping character knowledge and world facts under your control." />
+    <div className="story-grid">
+      <section className="panel story-canvas">
+        <div className="scene-topline"><span className="scene-indicator">WORLD</span><span>Branch: {branchId === "main" ? "Main story" : branchId}</span></div>
+        <div className="story-session-bar">
+          <label className="field-label">Saved story<select aria-label="Select saved story" value={conversationId} onChange={(event) => void selectConversation(event.target.value)}>
+            <option value="">Choose a story</option>
+            {conversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title} · {item.actor_label}</option>)}
+          </select></label>
+          {conversation && <span className="privacy-tag">{conversation.actor_is_user_controlled ? "PLAYER CONTROL" : "MODEL MAY NARRATE"}</span>}
+        </div>
+        {!conversation && <form className="story-start-form" onSubmit={(event) => void startConversation(event)}>
+          <div className="story-placeholder"><div className="story-sigil">✳</div><h2>Start a persistent story.</h2><p>Each turn is saved locally with its branch revision and the character context used to generate it.</p></div>
+          {characters.length ? <>
+            <label className="field-label">Story title<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="The Broken Oath" maxLength={200} /></label>
+            <label className="field-label">Viewpoint character<select value={selectedActor} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>
+            <label className="control-choice"><input type="checkbox" checked={actorIsUserControlled} onChange={(event) => setActorIsUserControlled(event.target.checked)} /><span>I control this character. Let me choose their words and actions.</span></label>
+            <button className="primary-button full-button" disabled={busy}>Start story <span>↗</span></button>
+          </> : <button className="secondary-button full-button" type="button" onClick={() => onNavigate("knowledge")}>Create a character in Knowledge <span>↗</span></button>}
+        </form>}
+        {conversation && <>
+          <div className="story-turn-list" aria-live="polite">
+            {conversation.turns.length ? conversation.turns.map((turn) => <article className={`story-turn ${turn.role}`} key={turn.turn_id}>
+              <div className="story-turn-label">{turn.role === "user" ? "You" : `Story · ${turn.model || "local model"}`}<span>Order {turn.narrative_order}</span></div>
+              <p>{turn.content}</p>
+              {turn.role === "assistant" && <>
+                <small>Generated from revision {turn.context_revision}; prose is saved, world facts are unchanged.</small>
+                {turn.context_manifest && <details className="story-context-details">
+                  <summary>Context used · {turn.context_manifest.included.length} reviewed facts · {turn.context_manifest.excluded.length} excluded</summary>
+                  {turn.context_manifest.included.map((fact) => <div className="story-context-fact" key={fact.claim_id}>
+                    <strong>{fact.subject} · {fact.predicate} {fact.object}</strong>
+                    <small>{fact.actor_stance} · {fact.evidence_ids.length} linked sources</small>
+                  </div>)}
+                  {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
+                  {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
+                </details>}
+              </>}
+            </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Choose a local model and describe what should happen next.</p></div>}
+          </div>
+          <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
+            <label className="field-label">Local model<select aria-label="Local model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!models.length}>
+              {models.length ? models.map((name) => <option key={name} value={name}>{name}</option>) : <option value="">No local models found</option>}
+            </select></label>
+            <label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label>
+            <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
+            {!ollamaAvailable && <p className="provider-note">Ollama is not running. Start Ollama on this device to continue privately with a local model.</p>}
+            {ollamaAvailable && !models.length && <p className="provider-note">No local model is installed yet. Add a model in Ollama, then refresh this workspace.</p>}
+            <button className="primary-button full-button" disabled={generating || busy || !ollamaAvailable || !model || !prompt.trim()}>{generating ? "Writing locally…" : "Continue story locally"} <span>✳</span></button>
+          </form>
+        </>}
+        {storyError && <p className="inline-error" role="alert">{storyError}</p>}
+      </section>
+      <section className="panel context-panel">
+        <div className="panel-heading"><div><h2>Character perspective</h2><p>Only reviewed facts this character knows enter the generation context.</p></div><span className="privacy-tag">LOCAL</span></div>
+        {characters.length ? <>
+          <label className="field-label">Character<select value={selectedActor} disabled={Boolean(conversation)} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>
+          <label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label>
+          <button className="primary-button full-button" onClick={() => void preview()}>Build context preview <span>↗</span></button>
+          <form className="belief-form" onSubmit={(event) => void recordBelief(event)}>
+            <div className="form-divider">record a knowledge change</div>
+            <label className="field-label">Reviewed claim<select name="claim_id" required>{claims.filter((item) => item.review_status === "accepted").map((item) => <option key={item.claim_id} value={item.claim_id}>{item.predicate}: {item.object_value}</option>)}</select></label>
+            <label className="field-label">Character's stance<select name="stance"><option value="knows">Knows</option><option value="believes">Believes</option><option value="denies">Denies</option><option value="unaware">Has not learned</option></select></label>
+            <label className="field-label">Awareness order<input name="awareness_order" type="number" min={0} defaultValue={order} /></label>
+            <button className="secondary-button full-button" disabled={busy || !claims.some((item) => item.review_status === "accepted")}>Record character knowledge <span>+</span></button>
+          </form>
         </> : <p className="empty-hint">Create a character entity to preview their knowledge.</p>}
-        {error && <p className="inline-error">{error}</p>}{context && <div className="context-result"><div className="context-result-heading"><strong>Included knowledge</strong><small>{context.included.length} reviewed claims</small></div>{context.included.length ? context.included.map((item, index) => <div className="context-claim" key={`${item.subject}-${index}`}><span>{item.subject}</span><strong>{item.predicate} {item.object}</strong><small>Character {item.actor_stance}</small></div>) : <p className="empty-hint">No eligible claims at this point in the story.</p>}<small className="excluded-count">{context.excluded.length} excluded for review, time, awareness, or privacy.</small></div>}
-      </section></div>
+        {error && <p className="inline-error">{error}</p>}
+        {context && <div className="context-result">
+          <div className="context-result-heading"><strong>Included knowledge</strong><small>{context.included.length} reviewed claims</small></div>
+          {context.included.length ? context.included.map((item, index) => <div className="context-claim" key={`${item.subject}-${index}`}><span>{item.subject}</span><strong>{item.predicate} {item.object}</strong><small>Character {item.actor_stance}</small></div>) : <p className="empty-hint">No eligible claims at this point in the story.</p>}
+          <small className="excluded-count">{context.excluded.length} excluded for review, time, awareness, or privacy.</small>
+        </div>}
+      </section>
+    </div>
   </>;
 }
 

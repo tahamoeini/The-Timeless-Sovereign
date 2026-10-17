@@ -22,4 +22,6 @@ The user controls their character's speech, intent, and consequential decisions 
 
 Rule evaluation distinguishes satisfied, violated, and unknown preconditions. A scenario generator labels assumptions and alternatives. A consistency checker reports conflicts in time, knowledge, resources, and rules. Correlation or sequence alone is not presented as causality. Decision outputs are conditional analyses, not guaranteed forecasts.
 
-This document is normative. Narrative/NPC execution and corresponding agency tests are not implemented yet.
+The current Story Studio stores user prompts and assistant prose as revisioned conversation turns. It compiles only reviewed, actor-aware knowledge at a selected narrative order and records the context manifest and base revision used for generation. A branch snapshot copies its conversation history; subsequent turns stay branch-local.
+
+The user can mark the viewpoint character as user-controlled. That constraint is passed to the provider prompt, and generated prose never changes canonical claims, relations, events, or character knowledge. The control instruction is tested with a simulated provider, but model compliance has not been red-teamed or verified against a live model. Scene state, NPC goal evaluation, event proposals, and reviewed state deltas are not implemented yet.

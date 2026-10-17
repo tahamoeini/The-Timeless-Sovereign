@@ -40,6 +40,58 @@ export type Claim = {
 export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };
 export type Branch = { branch_id: string; parent_branch_id: string | null; head_revision: number };
 export type SourceResult = { source_id: string; display_name: string; excerpt: string };
+export type StoryTurn = {
+  turn_id: string;
+  turn_order: number;
+  role: "user" | "assistant";
+  narrative_order: number;
+  content: string;
+  provider: "ollama" | null;
+  model: string | null;
+  context_manifest_id: string | null;
+  context_manifest: ContextManifest | null;
+  context_revision: number | null;
+  created_revision: number;
+  created_at: string;
+};
+export type ContextManifest = {
+  protocol: string;
+  manifest_id: string;
+  workspace_id: string;
+  branch_id: string;
+  base_revision: number;
+  actor: { entity_id: string; label: string; entity_type: string };
+  as_of_narrative_order: number;
+  included: { claim_id: string; subject: string; predicate: string; object: string; actor_stance: string; evidence_ids: string[] }[];
+  excluded: { claim_id: string; reason: string }[];
+  token_estimate: number;
+};
+export type StoryConversationSummary = {
+  conversation_id: string;
+  actor_entity_id: string;
+  actor_label: string;
+  title: string;
+  actor_is_user_controlled: boolean;
+  created_revision: number;
+  updated_revision: number;
+  created_at: string;
+  updated_at: string;
+  turn_count: number;
+};
+export type StoryConversation = Omit<StoryConversationSummary, "turn_count"> & { turns: StoryTurn[] };
+export type OllamaModelStatus = { available: boolean; models: string[] };
+export type StoryGenerationResult = {
+  conversation_id: string;
+  user_turn_id: string;
+  assistant_turn_id: string;
+  provider: "ollama";
+  model: string;
+  context_manifest_id: string;
+  context_revision: number;
+  revision: number;
+  idempotent_replay: boolean;
+  conversation: StoryConversation;
+};
 
 export type RuntimeConfig = { baseUrl: string; token: string };
 

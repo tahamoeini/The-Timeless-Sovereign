@@ -8,9 +8,9 @@ Run core integrity checks with `python -m unittest discover -s tests\unit -v`.
 
 ## Local API
 
-The API binds only to `127.0.0.1`. It rejects non-loopback peers and unknown browser origins. Data endpoints require a bearer token. The Tauri host generates a per-run token and delivers it to the sidecar and main webview through a Tauri command. Do not publish the token in logs, URLs, the database, or imported documents. The Tauri binary and sidecar have not yet been built or runtime-tested.
+The API binds only to `127.0.0.1`. It rejects non-loopback peers and unknown browser origins. Data endpoints require a bearer token. The Tauri host generates a per-run token and delivers it to the sidecar and main webview through a Tauri command. Do not publish the token in logs, URLs, the database, or imported documents. The bundled API sidecar was built and smoke-tested for startup, health, and token enforcement. The Tauri host and installer have not been built because the required Windows C++ linker is not available in the current environment.
 
-The default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3` (resolved from the user's home `AppData/Local/LKE`); `LKE_DATA_DIR` can select another private local directory for development. Core callers can supply an explicit database path. SQLite uses WAL and full synchronous commits for file-backed stores.
+The direct API default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3`; `LKE_DATA_DIR` can select another private local directory. The Tauri host supplies its per-application local data directory through `LKE_DATA_DIR`. Core callers can supply an explicit database path. SQLite uses WAL and full synchronous commits for file-backed stores.
 
 ## Data safety and recovery
 
@@ -32,7 +32,7 @@ Close LKE before restoring over its active database. Restore refuses an existing
 
 ## Troubleshooting and recovery
 
-If a command conflicts, refresh the branch revision and review the proposed change; do not retry against the new revision without revalidation. If the local model stops, canonical records remain in SQLite; generated proposals should be discarded or retried. If FTS or another projection is damaged, restore a verified backup before continuing; projection rebuild from canonical sources remains pending.
+If a command conflicts, refresh the branch revision and review the proposed change; do not retry against the new revision without revalidation. Story generation is saved only after the provider returns and the expected revision still matches; provider failure or a conflict leaves no partial turn. If FTS or another projection is damaged, restore a verified backup before continuing; projection rebuild from canonical sources remains pending.
 
 ## Release operations still required
 

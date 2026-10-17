@@ -17,6 +17,7 @@ from .errors import ConflictError, IdempotencyConflictError, NotFoundError, Vali
 _ALLOWED_COMMANDS = {
     "create_entity", "update_entity", "add_relation", "review_relation", "add_claim",
     "review_claim", "add_belief", "import_source", "add_evidence",
+    "create_conversation", "append_story_turn",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -40,6 +41,17 @@ def _fts_query(query: str) -> str:
     if not tokens:
         return ""
     return " AND ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+
+
+def _command_request_hash(request: dict[str, Any]) -> str:
+    stable_request = dict(request)
+    if stable_request["command_type"] == "append_story_turn":
+        stable_payload = dict(stable_request["payload"])
+        stable_payload.pop("assistant_content", None)
+        stable_payload.pop("context_manifest_id", None)
+        stable_payload.pop("context_manifest", None)
+        stable_request["payload"] = stable_payload
+    return hashlib.sha256(_json(stable_request).encode("utf-8")).hexdigest()
 
 
 class CommandGateway:
@@ -145,6 +157,8 @@ class CommandGateway:
                     ("relations", "relation_id,source_entity_id,target_entity_id,relation_type,properties_json,review_status,created_revision"),
                     ("claims", "claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility,narrative_order,evidence_json,created_revision"),
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
+                    ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
+                    ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
                     ("evidence", "evidence_id,source_id,anchor,quote,context_fingerprint,created_revision"),
                 ):
                     connection.execute(
@@ -220,7 +234,7 @@ class CommandGateway:
             "actor": actor,
             "reason": reason,
         }
-        request_hash = hashlib.sha256(_json(request).encode("utf-8")).hexdigest()
+        request_hash = _command_request_hash(request)
         command_id, now = str(uuid4()), _now()
         with self.db.lock:
             connection = self.db.connection
@@ -286,6 +300,41 @@ class CommandGateway:
             except BaseException:
                 connection.rollback()
                 raise
+
+    def replay(
+        self,
+        *,
+        workspace_id: str,
+        branch_id: str,
+        idempotency_key: str,
+        expected_revision: int,
+        command_type: str,
+        payload: dict[str, Any],
+        actor: str = "user",
+        reason: str = "",
+    ) -> dict[str, Any] | None:
+        """Return a matching prior command without repeating expensive work."""
+        request = {
+            "workspace_id": workspace_id,
+            "branch_id": branch_id,
+            "command_type": command_type,
+            "expected_revision": expected_revision,
+            "payload": payload,
+            "actor": _required_text(actor, "actor", 200),
+            "reason": _required_text(reason, "reason", 1000),
+        }
+        key = _required_text(idempotency_key, "idempotency_key", 200)
+        request_hash = _command_request_hash(request)
+        with self.db.lock:
+            old = self.db.connection.execute(
+                "SELECT request_hash,result_json FROM commands WHERE workspace_id=? AND idempotency_key=?",
+                (workspace_id, key),
+            ).fetchone()
+        if not old:
+            return None
+        if old["request_hash"] != request_hash:
+            raise IdempotencyConflictError("Idempotency key was already used for another command")
+        return json.loads(old["result_json"])
 
     def _apply(
         self,
@@ -494,6 +543,92 @@ class CommandGateway:
             )
             return {"evidence_id": evidence_id, "source_id": source_id}, "evidence.created", True
 
+        if command_type == "create_conversation":
+            conversation_id = _required_text(payload.get("conversation_id") or str(uuid4()), "conversation_id", 100)
+            actor_entity_id = _required_text(payload.get("actor_entity_id"), "actor_entity_id", 100)
+            title = _required_text(payload.get("title"), "title", 200)
+            actor_is_user_controlled = payload.get("actor_is_user_controlled", True)
+            if not isinstance(actor_is_user_controlled, bool):
+                raise ValidationError("actor_is_user_controlled must be a boolean")
+            actor = connection.execute(
+                "SELECT entity_type FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, actor_entity_id),
+            ).fetchone()
+            if not actor or actor["entity_type"] not in {"character", "person"}:
+                raise ValidationError("A story conversation needs a character or person in this branch")
+            now = _now()
+            connection.execute(
+                "INSERT INTO story_conversations(workspace_id,branch_id,conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, conversation_id, actor_entity_id, title, int(actor_is_user_controlled), revision, revision, now, now),
+            )
+            return {"conversation_id": conversation_id, "actor_entity_id": actor_entity_id, "title": title}, "story.conversation_created", True
+
+        if command_type == "append_story_turn":
+            conversation_id = _required_text(payload.get("conversation_id"), "conversation_id", 100)
+            user_content = _required_text(payload.get("user_content"), "user_content", 4000)
+            assistant_content = _required_text(payload.get("assistant_content"), "assistant_content", 20000)
+            provider = payload.get("provider")
+            if provider != "ollama":
+                raise ValidationError("Only the local Ollama provider can record generated story turns")
+            model = _required_text(payload.get("model"), "model", 200)
+            narrative_order = payload.get("narrative_order")
+            if not isinstance(narrative_order, int) or narrative_order < 0:
+                raise ValidationError("narrative_order must be a non-negative integer")
+            context_revision = payload.get("context_revision")
+            if not isinstance(context_revision, int) or context_revision != revision - 1:
+                raise ValidationError("Story context revision must match the current branch head")
+            context_manifest_id = _required_text(payload.get("context_manifest_id"), "context_manifest_id", 100)
+            context_manifest = payload.get("context_manifest")
+            if (
+                not isinstance(context_manifest, dict)
+                or context_manifest.get("manifest_id") != context_manifest_id
+                or context_manifest.get("base_revision") != context_revision
+                or context_manifest.get("workspace_id") != workspace_id
+                or context_manifest.get("branch_id") != branch_id
+                or not isinstance(context_manifest.get("actor"), dict)
+                or not isinstance(context_manifest.get("included"), list)
+                or not isinstance(context_manifest.get("excluded"), list)
+            ):
+                raise ValidationError("Story context manifest does not match its branch revision")
+            conversation = connection.execute(
+                "SELECT actor_entity_id FROM story_conversations WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (workspace_id, branch_id, conversation_id),
+            ).fetchone()
+            if not conversation:
+                raise NotFoundError("Story conversation does not exist in this branch")
+            if context_manifest["actor"].get("entity_id") != conversation["actor_entity_id"]:
+                raise ValidationError("Story context manifest does not match the conversation character")
+            turn_order = connection.execute(
+                "SELECT COALESCE(MAX(turn_order)+1,0) AS next_order FROM story_turns "
+                "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (workspace_id, branch_id, conversation_id),
+            ).fetchone()["next_order"]
+            now = _now()
+            user_turn_id, assistant_turn_id = str(uuid4()), str(uuid4())
+            connection.executemany(
+                "INSERT INTO story_turns(workspace_id,branch_id,conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (workspace_id, branch_id, conversation_id, user_turn_id, turn_order, "user", narrative_order, user_content, None, None, None, None, None, revision, now),
+                    (workspace_id, branch_id, conversation_id, assistant_turn_id, turn_order + 1, "assistant", narrative_order, assistant_content, provider, model, context_manifest_id, _json(context_manifest), context_revision, revision, now),
+                ],
+            )
+            connection.execute(
+                "UPDATE story_conversations SET updated_revision=?,updated_at=? "
+                "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (revision, now, workspace_id, branch_id, conversation_id),
+            )
+            return {
+                "conversation_id": conversation_id,
+                "user_turn_id": user_turn_id,
+                "assistant_turn_id": assistant_turn_id,
+                "provider": provider,
+                "model": model,
+                "context_manifest_id": context_manifest_id,
+                "context_revision": context_revision,
+            }, "story.turn_recorded", True
+
         raise ValidationError(f"Unsupported command type: {command_type}")
 
     def list_entities(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
@@ -617,4 +752,72 @@ class CommandGateway:
                  "review_status": r["review_status"], "visibility": r["visibility"],
                  "narrative_order": r["narrative_order"], "evidence": json.loads(r["evidence_json"]),
                  "created_revision": r["created_revision"]} for r in rows]
+
+    def list_conversations(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+        with self.db.lock:
+            branch = self.db.connection.execute(
+                "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not branch:
+                raise NotFoundError("Branch does not exist in this workspace")
+            rows = self.db.connection.execute(
+                "SELECT c.conversation_id,c.actor_entity_id,e.label AS actor_label,c.title,"
+                "c.actor_is_user_controlled,c.created_revision,c.updated_revision,c.created_at,c.updated_at,"
+                "COUNT(t.turn_id) AS turn_count "
+                "FROM story_conversations c JOIN entities e ON e.workspace_id=c.workspace_id "
+                "AND e.branch_id=c.branch_id AND e.entity_id=c.actor_entity_id "
+                "LEFT JOIN story_turns t ON t.workspace_id=c.workspace_id AND t.branch_id=c.branch_id "
+                "AND t.conversation_id=c.conversation_id "
+                "WHERE c.workspace_id=? AND c.branch_id=? "
+                "GROUP BY c.workspace_id,c.branch_id,c.conversation_id "
+                "ORDER BY c.updated_at DESC,c.conversation_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+        return [
+            {
+                "conversation_id": row["conversation_id"],
+                "actor_entity_id": row["actor_entity_id"],
+                "actor_label": row["actor_label"],
+                "title": row["title"],
+                "actor_is_user_controlled": bool(row["actor_is_user_controlled"]),
+                "created_revision": row["created_revision"],
+                "updated_revision": row["updated_revision"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "turn_count": row["turn_count"],
+            }
+            for row in rows
+        ]
+
+    def get_conversation(
+        self, workspace_id: str, branch_id: str, conversation_id: str
+    ) -> dict[str, Any]:
+        with self.db.lock:
+            row = self.db.connection.execute(
+                "SELECT c.conversation_id,c.actor_entity_id,e.label AS actor_label,c.title,"
+                "c.actor_is_user_controlled,c.created_revision,c.updated_revision,c.created_at,c.updated_at "
+                "FROM story_conversations c JOIN entities e ON e.workspace_id=c.workspace_id "
+                "AND e.branch_id=c.branch_id AND e.entity_id=c.actor_entity_id "
+                "WHERE c.workspace_id=? AND c.branch_id=? AND c.conversation_id=?",
+                (workspace_id, branch_id, conversation_id),
+            ).fetchone()
+            if not row:
+                raise NotFoundError("Story conversation does not exist in this branch")
+            turns = self.db.connection.execute(
+                "SELECT turn_id,turn_order,role,narrative_order,content,provider,model,"
+                "context_manifest_id,context_manifest_json,context_revision,created_revision,created_at "
+                "FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? "
+                "ORDER BY turn_order",
+                (workspace_id, branch_id, conversation_id),
+            ).fetchall()
+        conversation = dict(row)
+        conversation["actor_is_user_controlled"] = bool(conversation["actor_is_user_controlled"])
+        conversation["turns"] = []
+        for turn in turns:
+            item = dict(turn)
+            manifest_json = item.pop("context_manifest_json")
+            item["context_manifest"] = json.loads(manifest_json) if manifest_json else None
+            conversation["turns"].append(item)
+        return conversation
 

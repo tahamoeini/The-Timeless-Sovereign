@@ -6,7 +6,7 @@ The canonical store is versioned SQLite. Every official change passes through a 
 
 ## Current state
 
-This repository has been reset to the LKE baseline. The Python core supports workspaces, isolated snapshot branches, entities, relations, claims, actor beliefs, text sources, evidence, full-text search, relative-order actor context, revisions, audit records, and an outbox. The React interface scaffold supports workspace creation, local text import, concept and relationship review, actor-context preview, and isolated branches. It remains an implementation foundation, not the complete installable v0.1 product. See [the acceptance matrix](docs/ACCEPTANCE_MATRIX.md) for implementation and verification status.
+This repository has been reset to the LKE baseline. The Python core supports workspaces, isolated snapshot branches, entities, relations, claims, actor beliefs, text sources, evidence, full-text search, relative-order actor context, persistent story conversations, revisions, audit records, and an outbox. Story Studio can save and reload turns and request a continuation from a local Ollama model; generated prose is retained as conversation text and cannot write accepted world facts. The adapter and UI are implemented, but live generation has not been verified because no Ollama service/model was running during validation. LKE is still not the complete installable v0.1 product. See [the acceptance matrix](docs/ACCEPTANCE_MATRIX.md) for implementation and verification status.
 
 ## Development
 
@@ -25,7 +25,7 @@ Run the canonical-core tests with the bundled or installed Python:
 python -m unittest discover -s tests\unit -v
 ```
 
-The offline backup/restore command and its integrity checks are implemented. The desktop shell, source extraction, Ollama integration, persistent story and journal workflows, scenario evaluation, exchange import/export, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
+The offline backup/restore command and its integrity checks are implemented. Persistent story-turn storage and the local Ollama adapter are implemented, but the full Story Studio workflow, PDF/Office extraction, journal timeline, scenario evaluation, exchange import/export, live-model acceptance, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
 
 ## Product and technical contracts
 
@@ -44,7 +44,7 @@ The offline backup/restore command and its integrity checks are implemented. The
 
 ## Data location and privacy
 
-The core library accepts an explicit SQLite path. The desktop application will use a per-user local data directory, keep cloud processing off unless the user chooses a provider, and never treat source text as instructions or permission. Backup, restore, deletion, and packaged Windows operation remain release gates; consult [operations](docs/OPERATIONS.md) before using unreleased builds with personal data.
+The core library accepts an explicit SQLite path. The desktop application uses a per-user local data directory, keeps cloud processing off, and never treats source text as instructions or permission. Backup/restore equivalence, data deletion, and packaged Windows operation remain release gates; consult [operations](docs/OPERATIONS.md) before using unreleased builds with personal data.
 
 ## License
 

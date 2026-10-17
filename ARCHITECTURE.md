@@ -34,18 +34,18 @@ Every canonical write follows `Propose → Validate → Authorize → Commit →
 
 SQLite is the only source of truth. FTS5 is a rebuildable text projection. A branch is an immutable snapshot at a parent revision followed by branch-local writes; changing a branch does not modify its parent. A branch promotion is a distinct, reviewed operation. v0.1 does not auto-merge conflicting branches.
 
-Recorded time and branch revision are implemented in the initial core. Valid time, awareness time, narrative order, richer temporal ranges, state, actor beliefs, conversations, approvals, and scenario domain records remain part of the target model and must be implemented with their acceptance tests before the corresponding workflows are called complete.
+Recorded time, branch revisions, relative narrative order, actor beliefs, and revisioned story conversations/turns are implemented. Story turns store the exact context manifest and revision used for local generation. Valid-time ranges, richer event timelines, scene state deltas, approvals, and scenario domain records remain part of the target model.
 
 ## Local API boundary
 
-The initial FastAPI adapter binds to loopback, checks the peer address, limits browser origins, and requires a bearer token on data routes. The desktop shell must provision a fresh per-run token through a private sidecar launch channel. Do not expose the API on a LAN interface, add permissive CORS, or accept a token from imported content.
+The FastAPI adapter binds to loopback, checks the peer address, limits browser origins, and requires a bearer token on data routes. The desktop shell provisions a fresh per-run token through a private sidecar launch channel. The bundled API sidecar was built and smoke-tested for loopback health and bearer-token enforcement; the Tauri host itself has not been compiled or packaged on this machine. Do not expose the API on a LAN interface, add permissive CORS, or accept a token from imported content.
 
 ## Providers and frameworks
 
-Ollama is the planned local provider. External providers, Codex app-server, document parsers, vector search, and GraphRAG frameworks are optional adapters and remain unverified until capability, privacy, packaging, license, and failure behavior are tested. No AI or graph library can write directly to canonical tables.
+Ollama is the local provider adapter. It discovers local models and performs non-streaming chat against the loopback service. The generation path uses actor-aware, revision-bound context and persists prompt/response turns through the command gateway. The adapter is unit-tested with a simulated service; no live Ollama generation was available during validation. External providers, Codex app-server, document parsers, vector search, and GraphRAG frameworks remain unverified until capability, privacy, packaging, license, and failure behavior are tested. No AI or graph library can write accepted facts directly to canonical tables.
 
 ## Current implementation boundary
 
-Implemented: SQLite schema v1, workspace creation, branch snapshots, command gateway for entities, relations, claims, text sources and evidence, FTS search, revisions, append-only audit, transactional outbox, and a loopback API adapter.
+Implemented: SQLite schema v2, workspace creation, branch snapshots including story history, command gateway for entities, relations, claims, text sources, evidence, conversations and story turns, FTS search, actor-aware context compilation, local Ollama adapter, revisions, append-only audit, transactional outbox, offline backup/restore, and a loopback API adapter.
 
-Not yet implemented: desktop shell, source-file ingestion and extraction review, graph/matrix/timeline UI, context compiler, Ollama calls, story and journal workflows, scenario evaluator, exchange import/export, full backup/restore, and packaged Windows installation. See [acceptance status](docs/ACCEPTANCE_MATRIX.md).
+Not yet implemented: completed Tauri desktop package, PDF/Office ingestion and extraction review, graph/matrix/timeline views, model-assisted change review and story state deltas, journal timeline, scenario evaluation, exchange import/export, separate-device restore drill, and clean-machine Windows installation. See [acceptance status](docs/ACCEPTANCE_MATRIX.md).

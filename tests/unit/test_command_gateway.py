@@ -166,6 +166,73 @@ class CommandGatewayTests(unittest.TestCase):
         self.assertEqual([item["claim_id"] for item in after_learning["included"]], ["secret"])
         self.assertNotIn("future", [item["claim_id"] for item in after_learning["included"]])
 
+    def test_story_turn_is_revisioned_and_idempotent_on_retry(self):
+        self.create_entity("create-aria")
+        conversation = self.command("conversation", 1, "create_conversation", {
+            "conversation_id": "story-1", "actor_entity_id": "aria", "title": "The Brass Key",
+            "actor_is_user_controlled": True,
+        })
+        payload = {
+            "conversation_id": "story-1", "user_content": "What does Aria notice?",
+            "assistant_content": "The stairwell is quiet.", "provider": "ollama", "model": "llama3.2",
+            "narrative_order": 0, "context_revision": conversation["revision"],
+            "context_manifest_id": "context-1",
+            "context_manifest": {
+                "manifest_id": "context-1", "workspace_id": "story", "branch_id": "main",
+                "base_revision": conversation["revision"], "actor": {"entity_id": "aria"},
+                "included": [], "excluded": [],
+            },
+        }
+        first = self.command("turn-1", conversation["revision"], "append_story_turn", payload)
+        retry = self.command("turn-1", conversation["revision"], "append_story_turn", {
+            **payload, "assistant_content": "A different model response.", "context_manifest_id": "context-retry",
+            "context_manifest": {**payload["context_manifest"], "manifest_id": "context-retry"},
+        })
+        saved = self.gateway.get_conversation("story", "main", "story-1")
+
+        self.assertEqual(first, retry)
+        self.assertEqual(self.gateway.current_revision("story"), first["revision"])
+        self.assertTrue(saved["actor_is_user_controlled"])
+        self.assertEqual([turn["role"] for turn in saved["turns"]], ["user", "assistant"])
+        self.assertEqual(saved["turns"][1]["content"], "The stairwell is quiet.")
+        self.assertEqual(saved["turns"][1]["context_manifest_id"], "context-1")
+        self.assertEqual(saved["turns"][1]["context_manifest"]["base_revision"], conversation["revision"])
+
+    def test_story_conversation_snapshot_isolated_between_branches(self):
+        self.create_entity("create-aria")
+        conversation = self.command("conversation", 1, "create_conversation", {
+            "conversation_id": "story-1", "actor_entity_id": "aria", "title": "The Brass Key",
+        })
+        self.command("turn-1", conversation["revision"], "append_story_turn", {
+            "conversation_id": "story-1", "user_content": "Begin.", "assistant_content": "The hall waits.",
+            "provider": "ollama", "model": "llama3.2", "narrative_order": 0,
+            "context_revision": conversation["revision"], "context_manifest_id": "context-1",
+            "context_manifest": {
+                "manifest_id": "context-1", "workspace_id": "story", "branch_id": "main",
+                "base_revision": conversation["revision"], "actor": {"entity_id": "aria"},
+                "included": [], "excluded": [],
+            },
+        })
+        self.gateway.create_branch("story", "main", "what-if", 3, "branch-1")
+        branch_conversation = self.gateway.get_conversation("story", "what-if", "story-1")
+        self.assertEqual(len(branch_conversation["turns"]), 2)
+
+        self.command("turn-branch", 3, "append_story_turn", {
+            "conversation_id": "story-1", "user_content": "Open the door.",
+            "assistant_content": "A draft describes what waits beyond it.", "provider": "ollama",
+            "model": "llama3.2", "narrative_order": 1, "context_revision": 3,
+            "context_manifest_id": "context-2",
+            "context_manifest": {
+                "manifest_id": "context-2", "workspace_id": "story", "branch_id": "what-if",
+                "base_revision": 3, "actor": {"entity_id": "aria"}, "included": [], "excluded": [],
+            },
+        }, branch="what-if")
+
+        self.assertEqual(len(self.gateway.get_conversation("story", "main", "story-1")["turns"]), 2)
+        self.assertEqual(len(self.gateway.get_conversation("story", "what-if", "story-1")["turns"]), 4)
+        self.assertEqual(self.gateway.current_revision("story", "main"), 3)
+        self.assertEqual(self.gateway.current_revision("story", "what-if"), 4)
+
     def test_audit_events_cannot_be_updated_or_deleted(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.connection.execute("UPDATE audit_events SET reason='rewritten' WHERE workspace_id='story'")

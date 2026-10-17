@@ -31,6 +31,8 @@ Records may carry valid time, recorded time, actor awareness time, narrative ord
 
 Stable entity IDs are scoped to a workspace and branch snapshot. Creating a branch snapshots records from an exact parent revision. Subsequent writes remain branch-local. A source archive is shared within a workspace; its evidence links and accepted knowledge are branch-aware. Promotion requires an explicit reviewed operation. Automatic conflicting merges are out of scope for v0.1.
 
-## SQLite v1 implementation
+## SQLite v2 implementation
 
-The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Claims and awareness records have a relative narrative-order field for preventing future-knowledge leakage. It does not yet implement the full target tables for aliases, events, states, conversations, rules, scenarios, approvals, or valid-time intervals. Those are not to be represented as completed merely because the concepts appear in this contract.
+The current schema provides `workspaces`, `branches`, `revisions`, `commands`, `entities`, `relations`, `claims`, `actor_beliefs`, `sources`, `evidence`, `story_conversations`, `story_turns`, `audit_events`, `projection_outbox`, plus FTS5 entity and source indexes. Story turns carry provider/model provenance, narrative order, a context manifest ID, and the revision used for generation. Branch snapshots copy conversations and turns before allowing branch-local continuation. Claims and awareness records use relative narrative order to prevent future-knowledge leakage.
+
+Aliases, events, states, scene state deltas, rules, scenarios, approvals, and valid-time intervals are still target-model items, not completed features.

@@ -4,11 +4,11 @@ Frameworks and sibling projects are candidates until their actual code, interfac
 
 | Candidate | Intended role | Current decision | Evidence still required |
 |---|---|---|---|
-| SQLite + FTS5 | Canonical storage and text search | In use in schema v1 | Migration, backup, and scale tests |
-| FastAPI | Local application API | Adapter scaffold added | Install/runtime and Tauri token-channel test |
+| SQLite + FTS5 | Canonical storage and text search | In use in schema v2; story turn migration and backup tests pass | Scale and separate-device recovery tests |
+| FastAPI | Local application API | Authenticated loopback adapter; API tests pass | Packaged Tauri token-channel end-to-end test |
 | React + TypeScript | Desktop interface | Selected by baseline | Build and accessibility validation |
-| Tauri 2 | Windows shell and sidecar | Selected by baseline | Clean-machine package and sidecar lifecycle test |
-| Ollama | Local model runtime | Default provider direction | Hardware, structured output, Persian/English benchmark |
+| Tauri 2 | Windows shell and sidecar | Shell scaffold; standalone sidecar built and token-smoke-tested | Compile GUI host, clean-machine package, lifecycle test |
+| Ollama | Local model runtime | Loopback model discovery/chat adapter implemented; live service not available in validation environment | Hardware, real-model behavior, Persian/English benchmark |
 | Docling | PDF/Office parsing | Optional candidate | Windows install, file safety, quality and license review |
 | LangExtract | Grounded extraction | Conditional candidate | Provider/schema support and evidence benchmark |
 | Cognee | Advanced extraction/retrieval | First candidate to evaluate | Role-specific benchmark, Windows packaging, license |

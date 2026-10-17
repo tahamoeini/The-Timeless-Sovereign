@@ -9,14 +9,31 @@ from unittest.mock import patch
 
 import httpx
 
+from lke.ai import OllamaError
 from lke.api.app import create_app
 from lke.core import Database
+
+
+class FakeOllama:
+    def __init__(self, failure: bool = False) -> None:
+        self.failure = failure
+        self.calls: list[tuple[str, list[dict[str, str]]]] = []
+
+    def list_models(self) -> list[str]:
+        return ["test-model"]
+
+    def generate(self, model: str, messages: list[dict[str, str]]) -> str:
+        self.calls.append((model, messages))
+        if self.failure:
+            raise OllamaError("Ollama is not responding on this device.")
+        return "Aria waits for the user's next choice."
 
 
 class ApiBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.database = Database(":memory:")
-        self.app = create_app(self.database, auth_token="test-token")
+        self.ollama = FakeOllama()
+        self.app = create_app(self.database, auth_token="test-token", ollama=self.ollama)
         self.headers = {"Authorization": "Bearer test-token"}
 
     def tearDown(self) -> None:
@@ -121,6 +138,92 @@ class ApiBoundaryTests(unittest.TestCase):
             "GET", "/api/v1/workspaces/api-workspace/sources", headers=self.headers
         )
         self.assertEqual([item["source_id"] for item in sources.json()], ["api-source"])
+
+    def create_story_conversation(self) -> int:
+        workspace = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "story-api", "name": "Story API"},
+        )
+        self.assertEqual(workspace.status_code, 201)
+        created = self.request(
+            "POST", "/api/v1/workspaces/story-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 0, "idempotency_key": "create-story-character",
+                "command_type": "create_entity", "reason": "Create a story character",
+                "payload": {"entity_id": "aria", "entity_type": "character", "label": "Aria"},
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        conversation = self.request(
+            "POST", "/api/v1/workspaces/story-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 1, "idempotency_key": "create-story-conversation",
+                "command_type": "create_conversation", "reason": "Start a story",
+                "payload": {
+                    "conversation_id": "story-1", "actor_entity_id": "aria", "title": "The Brass Key",
+                    "actor_is_user_controlled": True,
+                },
+            },
+        )
+        self.assertEqual(conversation.status_code, 200, conversation.text)
+        return conversation.json()["revision"]
+
+    def test_story_turn_uses_actor_context_and_is_idempotent(self) -> None:
+        revision = self.create_story_conversation()
+        body = {
+            "branch_id": "main", "conversation_id": "story-1", "expected_revision": revision,
+            "idempotency_key": "story-turn-1", "model": "test-model", "prompt": "Continue the scene.",
+            "narrative_order": 0,
+        }
+        response = self.request(
+            "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers, json=body,
+        )
+        replay = self.request(
+            "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers, json=body,
+        )
+        conversation = self.request(
+            "GET", "/api/v1/workspaces/story-api/conversations/story-1?branch_id=main", headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertFalse(response.json()["idempotent_replay"])
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(len(self.ollama.calls), 1)
+        self.assertIn("controlled by the user", self.ollama.calls[0][1][0]["content"])
+        self.assertEqual([turn["role"] for turn in conversation.json()["turns"]], ["user", "assistant"])
+        self.assertEqual(conversation.json()["turns"][1]["provider"], "ollama")
+        self.assertEqual(conversation.json()["turns"][1]["content"], "Aria waits for the user's next choice.")
+        self.assertEqual(self.request(
+            "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
+        ).json()["revision"], revision + 1)
+
+    def test_provider_failure_does_not_record_a_partial_turn(self) -> None:
+        self.ollama.failure = True
+        revision = self.create_story_conversation()
+        response = self.request(
+            "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers,
+            json={
+                "branch_id": "main", "conversation_id": "story-1", "expected_revision": revision,
+                "idempotency_key": "failed-turn", "model": "test-model", "prompt": "Continue.",
+                "narrative_order": 0,
+            },
+        )
+        conversation = self.request(
+            "GET", "/api/v1/workspaces/story-api/conversations/story-1?branch_id=main", headers=self.headers,
+        )
+        current = self.request(
+            "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(conversation.json()["turns"], [])
+        self.assertEqual(current.json()["revision"], revision)
+
+    def test_local_model_discovery_reports_availability(self) -> None:
+        response = self.request("GET", "/api/v1/providers/ollama/models", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"available": True, "models": ["test-model"]})
 
 
 if __name__ == "__main__":
