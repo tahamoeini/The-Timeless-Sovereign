@@ -37,7 +37,16 @@ with sync_playwright() as playwright:
         selector.select_option(first_id)
         page.get_by_role("button", name=re.compile("Knowledge.*Sources and relationships", re.S)).click()
         expect(page.get_by_role("combobox", name="From", exact=True).locator("option", has_text=character)).to_have_count(1)
+        failed_route = f"**/api/v1/workspaces/{second_id}/entities?*"
+        page.route(failed_route, lambda route: route.fulfill(
+            status=503, content_type="application/json", body='{"detail":"Deliberate acceptance-test outage"}',
+        ))
         selector.select_option(second_id)
+        expect(page.get_by_role("heading", name="The selected workspace could not be loaded.")).to_be_visible()
+        expect(page.get_by_text(character, exact=True)).to_have_count(0)
+        page.unroute(failed_route)
+        page.get_by_role("button", name="Retry loading", exact=True).click()
+        expect(page.get_by_role("heading", name="Knowledge Explorer", exact=True)).to_be_visible()
         expect(page.get_by_text("Loading the selected workspace and branch…")).to_have_count(0)
         expect(page.get_by_text(character, exact=True)).to_have_count(0)
         selector.select_option(first_id)
@@ -47,6 +56,6 @@ with sync_playwright() as playwright:
         selector.select_option(first_id)
         page.get_by_role("button", name=re.compile("Knowledge.*Sources and relationships", re.S)).click()
         expect(page.get_by_role("combobox", name="From", exact=True).locator("option", has_text=character)).to_have_count(1)
-        print("Browser workspace creation, isolation, switching, and reload persistence passed.")
+        print("Browser workspace creation, isolation, failed-load retry, switching, and reload persistence passed.")
     finally:
         browser.close()
