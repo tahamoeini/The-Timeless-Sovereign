@@ -45,8 +45,9 @@ class ExchangeWorkflowTests(unittest.TestCase):
         return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def envelope(self, *, exchange_id="external-1", branch="main", base_revision=1, turns=None,
-                 from_turn=10, to_turn=10, proposed_change_ids=None):
+                 from_turn=10, to_turn=10, transcript_total_turns=None, proposed_change_ids=None):
         turns = turns or self.turns()
+        transcript_total_turns = transcript_total_turns or max(turn["turn_number"] for turn in turns)
         return {
             "protocol": "lke.exchange.v1",
             "transcript_id": "external-conversation-1",
@@ -68,6 +69,7 @@ class ExchangeWorkflowTests(unittest.TestCase):
                 "token_estimate": 0,
             },
             "transcript_range": {"from_turn": from_turn, "to_turn": to_turn},
+            "transcript_total_turns": transcript_total_turns,
             "transcript_hash": self.transcript_hash(turns),
             "turns": turns,
             "proposed_change_ids": proposed_change_ids or [],
@@ -80,6 +82,7 @@ class ExchangeWorkflowTests(unittest.TestCase):
         self.assertEqual(imported["revision"], 2)
         self.assertEqual(imported["turn_count"], 1)
         self.assertFalse(imported["stale_context"])
+        self.assertEqual(imported["missing_turns"], [{"from_turn": 1, "to_turn": 9}])
         exchange = self.gateway.list_external_exchanges("story")[0]
         self.assertEqual(exchange["turns"], envelope["turns"])
         self.assertEqual(exchange["proposed_change_ids"], ["change-1"])
@@ -108,12 +111,13 @@ class ExchangeWorkflowTests(unittest.TestCase):
 
     def test_missing_turns_are_reported_across_segments_and_overlaps_must_agree(self):
         first_turns = [self.turns(1)[0], self.turns(2)[0]]
-        first = self.envelope(turns=first_turns, from_turn=1, to_turn=2)
+        first = self.envelope(turns=first_turns, from_turn=1, to_turn=2, transcript_total_turns=6)
         self.command("import-first-segment", 1, "import_exchange", first)
 
         later_turns = [self.turns(5)[0], self.turns(6)[0]]
         later = self.envelope(
             exchange_id="external-2", base_revision=2, turns=later_turns, from_turn=5, to_turn=6,
+            transcript_total_turns=6,
         )
         imported = self.command("import-later-segment", 2, "import_exchange", later)
         self.assertEqual(imported["missing_turns"], [{"from_turn": 3, "to_turn": 4}])
@@ -123,6 +127,7 @@ class ExchangeWorkflowTests(unittest.TestCase):
         conflicting_overlap = self.envelope(
             exchange_id="external-conflict", base_revision=3,
             turns=self.turns(2, assistant_content="A different answer."), from_turn=2, to_turn=2,
+            transcript_total_turns=6,
         )
         with self.assertRaises(ConflictError):
             self.command("import-conflicting-overlap", 3, "import_exchange", conflicting_overlap)
@@ -138,6 +143,17 @@ class ExchangeWorkflowTests(unittest.TestCase):
         imported = self.command("import-separate", 2, "import_exchange", separate)
         self.assertFalse(imported["duplicate"])
         self.assertEqual(imported["revision"], 3)
+        self.assertEqual(len(self.gateway.list_external_exchanges("story")), 2)
+
+    def test_known_transcript_end_exposes_a_missing_tail(self):
+        self.command("import-one", 1, "import_exchange", self.envelope())
+        extended_snapshot = self.envelope(
+            exchange_id="external-extended", base_revision=2, transcript_total_turns=12,
+        )
+        imported = self.command("import-extended-snapshot", 2, "import_exchange", extended_snapshot)
+        self.assertEqual(imported["missing_turns"], [
+            {"from_turn": 1, "to_turn": 9}, {"from_turn": 11, "to_turn": 12},
+        ])
         self.assertEqual(len(self.gateway.list_external_exchanges("story")), 2)
 
     def test_hash_gaps_future_context_and_ai_imports_fail_without_writes(self):

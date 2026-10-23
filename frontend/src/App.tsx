@@ -1379,7 +1379,7 @@ function ExternalExchangePanel({ workspaceId, branchId, revision, busy, onCommit
     {error && <p className="inline-error" role="alert">{error}</p>}
     {loading ? <p className="empty-hint">Loading saved exchanges…</p>
       : exchanges.length ? <div className="external-exchange-list">{exchanges.map((exchange) => <details className="external-exchange" key={`${exchange.exchange_id}-${exchange.created_revision}`}>
-        <summary><strong>{exchange.exchange_id}</strong><span className={exchange.stale_context ? "exchange-status stale" : "exchange-status"}>{exchange.stale_context ? "Stale context" : "Current context"}</span><small>Turns {exchange.from_turn}–{exchange.to_turn} · base r{exchange.base_revision} · imported r{exchange.created_revision}</small></summary>
+        <summary><strong>{exchange.exchange_id}</strong><span className={exchange.stale_context ? "exchange-status stale" : "exchange-status"}>{exchange.stale_context ? "Stale context" : "Current context"}</span><small>Turns {exchange.from_turn}–{exchange.to_turn} of {exchange.transcript_total_turns} · base r{exchange.base_revision} · imported r{exchange.created_revision}</small></summary>
         <p className="external-exchange-identity">Transcript {exchange.transcript_id} · context snapshot r{exchange.base_revision} · branch now r{exchange.current_revision}</p>
         {exchange.missing_turns.length > 0 && <p className="exchange-gap-warning" role="status">Missing turns in this transcript: {exchange.missing_turns.map((gap) => `${gap.from_turn}–${gap.to_turn}`).join(", ")}. Keep dependent changes out of the canonical record until the gaps are resolved.</p>}
         <details className="external-context-snapshot"><summary>Context manifest snapshot</summary>

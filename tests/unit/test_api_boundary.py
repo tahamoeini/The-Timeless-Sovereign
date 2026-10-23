@@ -552,6 +552,7 @@ class ApiBoundaryTests(unittest.TestCase):
                 "excluded": [],
             },
             "transcript_range": {"from_turn": 1, "to_turn": 1},
+            "transcript_total_turns": 1,
             "transcript_hash": transcript_hash,
             "turns": turns,
             "proposed_change_ids": ["proposal-1"],

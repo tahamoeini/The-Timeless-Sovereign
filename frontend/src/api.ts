@@ -190,6 +190,7 @@ export type ExternalExchange = {
   base_revision: number;
   from_turn: number;
   to_turn: number;
+  transcript_total_turns: number;
   transcript_hash: string;
   context_manifest: ContextManifest;
   turns: { turn_number: number; messages: { role: string; content: string }[] }[];

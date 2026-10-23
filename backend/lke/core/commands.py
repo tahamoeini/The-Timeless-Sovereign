@@ -79,8 +79,11 @@ def _validated_exchange_payload(
     if not isinstance(transcript_range, dict):
         raise ValidationError("transcript_range must contain from_turn and to_turn")
     from_turn, to_turn = transcript_range.get("from_turn"), transcript_range.get("to_turn")
-    if type(from_turn) is not int or type(to_turn) is not int or from_turn < 0 or to_turn < from_turn:
-        raise ValidationError("transcript range must be an ordered non-negative turn range")
+    if type(from_turn) is not int or type(to_turn) is not int or from_turn < 1 or to_turn < from_turn:
+        raise ValidationError("transcript range must be an ordered one-based turn range")
+    transcript_total_turns = payload.get("transcript_total_turns")
+    if type(transcript_total_turns) is not int or transcript_total_turns < to_turn:
+        raise ValidationError("transcript_total_turns must include the end of the imported range")
     turns = payload.get("turns")
     if not isinstance(turns, list) or not turns or len(turns) > 500:
         raise ValidationError("turns must contain between 1 and 500 transcript turns")
@@ -124,6 +127,7 @@ def _validated_exchange_payload(
         "base_revision": base_revision,
         "from_turn": from_turn,
         "to_turn": to_turn,
+        "transcript_total_turns": transcript_total_turns,
         "transcript_hash": computed_hash,
         "context_manifest": context_manifest,
         "turns": turns,
@@ -131,16 +135,20 @@ def _validated_exchange_payload(
     }
 
 
-def _missing_turn_ranges(ranges: list[tuple[int, int]]) -> list[dict[str, int]]:
+def _missing_turn_ranges(
+    ranges: list[tuple[int, int]], total_turns: int | None = None
+) -> list[dict[str, int]]:
     ordered = sorted(ranges)
     missing: list[dict[str, int]] = []
     if not ordered:
         return missing
-    previous_end = ordered[0][1]
-    for start, end in ordered[1:]:
+    previous_end = 0
+    for start, end in ordered:
         if start > previous_end + 1:
             missing.append({"from_turn": previous_end + 1, "to_turn": start - 1})
         previous_end = max(previous_end, end)
+    if total_turns is not None and previous_end < total_turns:
+        missing.append({"from_turn": previous_end + 1, "to_turn": total_turns})
     return missing
 
 
@@ -228,7 +236,7 @@ def _promote_branch_snapshot(
         ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision", None, (), ("created_revision",), "belief_id"),
         ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at", "conversation_id", ("actor_entity_id", "title", "actor_is_user_controlled", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "conversation_id"),
         ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id"),
-        ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
+        ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
         ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at", None, (), ("created_revision",), "event_id,version"),
         ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at", None, (), ("created_revision",), "scenario_id"),
         ("scenario_options", "scenario_id,option_id,label,description,position,created_revision", None, (), ("created_revision",), "scenario_id,option_id"),
@@ -398,7 +406,7 @@ class CommandGateway:
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
-                    ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
+                    ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
                     ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
                     ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at"),
                     ("scenario_options", "scenario_id,option_id,label,description,position,created_revision"),
@@ -1618,7 +1626,7 @@ class CommandGateway:
             if exchange["base_revision"] > revision - 1:
                 raise ConflictError("Exchange is based on a future branch revision")
             existing = connection.execute(
-                "SELECT exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,"
+                "SELECT exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,"
                 "context_manifest_json,proposed_change_ids_json,created_revision "
                 "FROM external_exchanges WHERE workspace_id=? AND branch_id=? AND exchange_id=?",
                 (workspace_id, branch_id, exchange["exchange_id"]),
@@ -1631,6 +1639,7 @@ class CommandGateway:
                     and existing["base_revision"] == exchange["base_revision"]
                     and existing["from_turn"] == exchange["from_turn"]
                     and existing["to_turn"] == exchange["to_turn"]
+                    and existing["transcript_total_turns"] == exchange["transcript_total_turns"]
                     and existing["context_manifest_json"] == _json(exchange["context_manifest"])
                     and existing["proposed_change_ids_json"] == _json(exchange["proposed_change_ids"])
                 )
@@ -1643,7 +1652,7 @@ class CommandGateway:
                 }, "exchange.duplicate", False
 
             transcript_rows = connection.execute(
-                "SELECT from_turn,to_turn,turns_json FROM external_exchanges "
+                "SELECT from_turn,to_turn,transcript_total_turns,turns_json FROM external_exchanges "
                 "WHERE workspace_id=? AND branch_id=? AND transcript_id=?",
                 (workspace_id, branch_id, exchange["transcript_id"]),
             ).fetchall()
@@ -1658,8 +1667,9 @@ class CommandGateway:
 
             same_transcript = connection.execute(
                 "SELECT exchange_id,base_revision,created_revision FROM external_exchanges "
-                "WHERE workspace_id=? AND branch_id=? AND transcript_id=? AND transcript_hash=?",
-                (workspace_id, branch_id, exchange["transcript_id"], exchange["transcript_hash"]),
+                "WHERE workspace_id=? AND branch_id=? AND transcript_id=? AND transcript_hash=? "
+                "AND transcript_total_turns=?",
+                (workspace_id, branch_id, exchange["transcript_id"], exchange["transcript_hash"], exchange["transcript_total_turns"]),
             ).fetchone()
             if same_transcript:
                 return {
@@ -1673,16 +1683,18 @@ class CommandGateway:
 
             connection.execute(
                 "INSERT INTO external_exchanges(workspace_id,branch_id,exchange_id,transcript_id,context_manifest_id,base_revision,"
-                "from_turn,to_turn,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,"
-                "created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,"
+                "created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (workspace_id, branch_id, exchange["exchange_id"], exchange["transcript_id"], exchange["context_manifest_id"],
-                 exchange["base_revision"], exchange["from_turn"], exchange["to_turn"], exchange["transcript_hash"],
+                 exchange["base_revision"], exchange["from_turn"], exchange["to_turn"], exchange["transcript_total_turns"], exchange["transcript_hash"],
                  _json(exchange["context_manifest"]), _json(exchange["turns"]),
                  _json(exchange["proposed_change_ids"]), revision, _now()),
             )
             missing_turns = _missing_turn_ranges([
                 (row["from_turn"], row["to_turn"]) for row in transcript_rows
-            ] + [(exchange["from_turn"], exchange["to_turn"])])
+            ] + [(exchange["from_turn"], exchange["to_turn"])],
+                max([exchange["transcript_total_turns"]] + [row["transcript_total_turns"] for row in transcript_rows]),
+            )
             return {
                 "exchange_id": exchange["exchange_id"],
                 "transcript_id": exchange["transcript_id"],
@@ -2005,15 +2017,19 @@ class CommandGateway:
                 raise NotFoundError("Branch does not exist in this workspace")
             rows = self.db.connection.execute(
                 "SELECT exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,"
-                "context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at "
+                "transcript_total_turns,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at "
                 "FROM external_exchanges WHERE workspace_id=? AND branch_id=? "
                 "ORDER BY created_revision DESC,exchange_id",
                 (workspace_id, branch_id),
             ).fetchall()
         head_revision = int(branch["head_revision"])
         transcript_ranges: dict[str, list[tuple[int, int]]] = {}
+        transcript_totals: dict[str, int] = {}
         for row in rows:
             transcript_ranges.setdefault(row["transcript_id"], []).append((row["from_turn"], row["to_turn"]))
+            transcript_totals[row["transcript_id"]] = max(
+                transcript_totals.get(row["transcript_id"], 0), row["transcript_total_turns"]
+            )
         exchanges = []
         for row in rows:
             context_manifest = json.loads(row["context_manifest_json"])
@@ -2029,6 +2045,7 @@ class CommandGateway:
                 "base_revision": row["base_revision"],
                 "from_turn": row["from_turn"],
                 "to_turn": row["to_turn"],
+                "transcript_total_turns": row["transcript_total_turns"],
                 "transcript_hash": row["transcript_hash"],
                 "context_manifest": context_manifest,
                 "turns": json.loads(row["turns_json"]),
@@ -2036,7 +2053,9 @@ class CommandGateway:
                 "created_revision": row["created_revision"],
                 "created_at": row["created_at"],
                 "stale_context": is_stale,
-                "missing_turns": _missing_turn_ranges(transcript_ranges[row["transcript_id"]]),
+                "missing_turns": _missing_turn_ranges(
+                    transcript_ranges[row["transcript_id"]], transcript_totals[row["transcript_id"]]
+                ),
                 "current_revision": head_revision,
             })
         return exchanges

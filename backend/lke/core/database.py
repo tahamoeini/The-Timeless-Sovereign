@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class Database:
@@ -67,6 +67,9 @@ class Database:
                 current = 6
             if current < 7:
                 self._apply_migration(7, _SCHEMA_V7)
+                current = 7
+            if current < 8:
+                self._apply_migration(8, _SCHEMA_V8)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -565,6 +568,51 @@ CREATE TABLE external_exchanges (
     FOREIGN KEY(workspace_id,branch_id)
         REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE
 );
+CREATE INDEX external_exchanges_created_idx
+    ON external_exchanges(workspace_id,branch_id,created_revision DESC);
+CREATE TRIGGER external_exchanges_no_update BEFORE UPDATE ON external_exchanges
+BEGIN SELECT RAISE(ABORT, 'external exchanges are immutable'); END;
+CREATE TRIGGER external_exchanges_no_delete BEFORE DELETE ON external_exchanges
+BEGIN SELECT RAISE(ABORT, 'external exchanges are immutable'); END;
+"""
+
+
+_SCHEMA_V8 = """
+DROP TRIGGER external_exchanges_no_update;
+DROP TRIGGER external_exchanges_no_delete;
+DROP INDEX external_exchanges_created_idx;
+ALTER TABLE external_exchanges RENAME TO external_exchanges_v7;
+CREATE TABLE external_exchanges (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    exchange_id TEXT NOT NULL,
+    transcript_id TEXT NOT NULL,
+    context_manifest_id TEXT NOT NULL,
+    base_revision INTEGER NOT NULL CHECK(base_revision >= 0),
+    from_turn INTEGER NOT NULL CHECK(from_turn >= 0),
+    to_turn INTEGER NOT NULL CHECK(to_turn >= from_turn),
+    transcript_total_turns INTEGER NOT NULL CHECK(transcript_total_turns >= to_turn),
+    transcript_hash TEXT NOT NULL CHECK(length(transcript_hash)=71 AND transcript_hash LIKE 'sha256:%'),
+    context_manifest_json TEXT NOT NULL,
+    turns_json TEXT NOT NULL,
+    proposed_change_ids_json TEXT NOT NULL,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,exchange_id),
+    UNIQUE(workspace_id,branch_id,transcript_id,transcript_hash,transcript_total_turns),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE
+);
+INSERT INTO external_exchanges(
+    workspace_id,branch_id,exchange_id,transcript_id,context_manifest_id,base_revision,
+    from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,
+    proposed_change_ids_json,created_revision,created_at
+)
+SELECT workspace_id,branch_id,exchange_id,transcript_id,context_manifest_id,base_revision,
+       from_turn,to_turn,to_turn,transcript_hash,context_manifest_json,turns_json,
+       proposed_change_ids_json,created_revision,created_at
+FROM external_exchanges_v7;
+DROP TABLE external_exchanges_v7;
 CREATE INDEX external_exchanges_created_idx
     ON external_exchanges(workspace_id,branch_id,created_revision DESC);
 CREATE TRIGGER external_exchanges_no_update BEFORE UPDATE ON external_exchanges
