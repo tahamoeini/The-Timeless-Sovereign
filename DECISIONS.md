@@ -54,7 +54,7 @@ This file records decisions made against the LKE v1.1 baseline. Unverified choic
 
 **Decision:** export an actor-aware context manifest as a versioned local JSON file containing the workspace, branch, source revision, included facts, and exclusions. Do not send it to an external provider from this flow.
 
-**Reason:** this makes the current context portable while preserving user control over whether and where to share it. External provider authentication, transcript import, and redaction remain separate, unimplemented integrations.
+**Reason:** this makes the current context portable while preserving user control over whether and where to share it. Versioned transcript import is implemented as a local archive that stays separate from canon and story turns. External provider authentication and per-message redaction remain unimplemented integrations.
 
 ## Deferred decisions
 

@@ -4,11 +4,12 @@ Frameworks and sibling projects are candidates until their actual code, interfac
 
 | Candidate | Intended role | Current decision | Evidence still required |
 |---|---|---|---|
-| SQLite + FTS5 | Canonical storage and text search | In use in schema v2; story turn migration and backup tests pass | Scale and separate-device recovery tests |
-| FastAPI | Local application API | Authenticated loopback adapter; API tests pass | Packaged Tauri token-channel end-to-end test |
+| SQLite + FTS5 | Canonical storage and text search | In use through schema v8; story, Journal, scenario, extraction, exchange, backup, and search-projection recovery tests pass | Scale and separate-device recovery tests |
+| FastAPI | Local application API | Authenticated loopback adapter; source, Journal, story, extraction, scenario, exchange, backup, restore, and search-projection recovery routes have API tests | Packaged Tauri token-channel end-to-end test |
 | React + TypeScript | Desktop interface | Selected by baseline | Build and accessibility validation |
 | Tauri 2 | Windows shell and sidecar | Shell scaffold; standalone sidecar built and token-smoke-tested | Compile GUI host, clean-machine package, lifecycle test |
 | Ollama | Local model runtime | Loopback model discovery/chat adapter implemented; live service not available in validation environment | Hardware, real-model behavior, Persian/English benchmark |
+| Sign in with ChatGPT DevKit | Optional plan-eligible Responses provider | Not adopted: as checked 2026-10-23, the DevKit code is under a noncommercial license, so it cannot be shipped as part of the planned Apache-2.0 product; evaluate an independent implementation against current eligibility, OAuth, credential-storage, and terms requirements | [DevKit license](https://github.com/openai/sign-in-with-chatgpt-devkit/blob/main/LICENSE); [open-source app eligibility](https://developers.openai.com/siwc/token-sharing-open-source); independent implementation and Windows credential vault review; eligible-account integration test |
 | Docling | PDF/Office parsing | Optional candidate | Windows install, file safety, quality and license review |
 | LangExtract | Grounded extraction | Conditional candidate | Provider/schema support and evidence benchmark |
 | Cognee | Advanced extraction/retrieval | First candidate to evaluate | Role-specific benchmark, Windows packaging, license |

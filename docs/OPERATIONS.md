@@ -20,6 +20,8 @@ Backups use SQLite's online backup API, so a consistent snapshot includes commit
 
 In the desktop app, use **Back up** in the top bar to download a complete `.lkebackup` file. Use **Restore** to choose one. Restore replaces every workspace in the installation, so the app asks for confirmation first; download a current backup before restoring if you may need the existing data. Invalid archives are rejected before the active database is changed. The API accepts backup files with a database payload up to 2 GiB.
 
+Use **Rebuild search** to recreate the entity and source full-text indexes from canonical SQLite records. This operation is authenticated, transactionally replaces only the two FTS projections, and does not create a workspace revision or alter canonical rows. If canonical SQLite tables or integrity checks fail, stop writes and restore a verified backup instead; the projection rebuild cannot repair canonical database corruption.
+
 Create a backup while LKE is running:
 
 ```powershell
@@ -36,7 +38,7 @@ For the offline CLI, close LKE before replacing its active database. Restore ref
 
 ## Troubleshooting and recovery
 
-If a command conflicts, refresh the branch revision and review the proposed change; do not retry against the new revision without revalidation. Story generation is saved only after the provider returns and the expected revision still matches; provider failure or a conflict leaves no partial turn. If FTS or another projection is damaged, restore a verified backup before continuing; projection rebuild from canonical sources remains pending.
+If a command conflicts, refresh the branch revision and review the proposed change; do not retry against the new revision without revalidation. Story generation is saved only after the provider returns and the expected revision still matches; provider failure or a conflict leaves no partial turn. If entity or source search results are missing or stale, run **Rebuild search** and confirm search results and the unchanged revision. If canonical SQLite tables or integrity checks fail, restore a verified backup before continuing.
 
 ## Release operations still required
 

@@ -6,6 +6,7 @@ target/
 .build/
 .vite/
 *.tsbuildinfo
+node-compile-cache/
 
 # Python
 .venv/
@@ -41,5 +42,6 @@ Thumbs.db
 .idea/
 .playwright-cli/
 .tmp-api-deps/
+TEMP/
 _MEI*/
 output/playwright/

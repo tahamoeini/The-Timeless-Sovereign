@@ -28,6 +28,7 @@ class FakeOllama:
                 "quote": "Aria guards the archive.",
             }],
         }
+        self.structured_callback = None
 
     def list_models(self) -> list[str]:
         return ["test-model"]
@@ -42,6 +43,8 @@ class FakeOllama:
         self.structured_calls.append((model, messages))
         if self.failure:
             raise OllamaError("Ollama is not responding on this device.")
+        if self.structured_callback:
+            self.structured_callback()
         return self.structured_response
 
 
@@ -308,6 +311,191 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(conversation.status_code, 200, conversation.text)
         return conversation.json()["revision"]
 
+    def add_temporal_claim(
+        self,
+        revision: int,
+        claim_id: str,
+        object_value: str,
+        *,
+        narrative_order: int = 1,
+        epistemic_status: str = "known",
+        review_status: str = "accepted",
+    ) -> int:
+        created = self.request(
+            "POST", "/api/v1/workspaces/story-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": revision, "idempotency_key": f"claim-{claim_id}",
+                "command_type": "add_claim", "reason": "Add a character memory claim",
+                "payload": {
+                    "claim_id": claim_id, "subject_entity_id": "aria", "predicate": "remembers",
+                    "object_value": object_value, "epistemic_status": epistemic_status,
+                    "review_status": review_status, "narrative_order": narrative_order,
+                },
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        return created.json()["revision"]
+
+    def add_temporal_belief(self, revision: int, claim_id: str, *, stance: str = "knows", awareness_order: int = 1) -> int:
+        created = self.request(
+            "POST", "/api/v1/workspaces/story-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": revision, "idempotency_key": f"belief-{claim_id}",
+                "command_type": "add_belief", "reason": "Record character awareness",
+                "payload": {
+                    "belief_id": f"belief-{claim_id}", "actor_entity_id": "aria", "claim_id": claim_id,
+                    "stance": stance, "awareness_order": awareness_order,
+                },
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        return created.json()["revision"]
+
+    def query_temporal_memory(self, revision: int, *, order: int = 2, model: str | None = "test-model") -> httpx.Response:
+        return self.request(
+            "POST", "/api/v1/workspaces/story-api/temporal-query", headers=self.headers,
+            json={
+                "branch_id": "main", "actor_entity_id": "aria", "expected_revision": revision,
+                "as_of_narrative_order": order, "model": model,
+                "question": "What does Aria remember about the archive?",
+            },
+        )
+
+    def test_temporal_query_uses_only_reviewed_actor_aware_facts_and_cites_them(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "past", "the bronze key", narrative_order=1)
+        revision = self.add_temporal_belief(revision, "past", awareness_order=1)
+        revision = self.add_temporal_claim(
+            revision, "uncertain", "the old bell rang before dawn", narrative_order=1,
+            epistemic_status="unknown",
+        )
+        revision = self.add_temporal_belief(revision, "uncertain", stance="believes", awareness_order=1)
+        revision = self.add_temporal_claim(revision, "future", "the hidden vault", narrative_order=4)
+        revision = self.add_temporal_belief(revision, "future", awareness_order=4)
+        revision = self.add_temporal_claim(revision, "unreviewed", "the silver map", review_status="proposed")
+        revision = self.add_temporal_belief(revision, "unreviewed")
+        revision = self.add_temporal_claim(revision, "unaware", "the eastern gate")
+        self.ollama.structured_response = {
+            "status": "answered", "answer": "She remembers the bronze key.", "claim_ids": ["past"],
+        }
+
+        response = self.query_temporal_memory(revision)
+        current = self.request(
+            "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "answered")
+        self.assertEqual(body["answer"], "She remembers the bronze key.")
+        self.assertEqual([item["claim_id"] for item in body["citations"]], ["past"])
+        self.assertEqual(body["citations"][0]["epistemic_status"], "known")
+        self.assertEqual(body["context_manifest"]["base_revision"], revision)
+        self.assertEqual(
+            {item["claim_id"]: item["epistemic_status"] for item in body["context_manifest"]["included"]},
+            {"past": "known", "uncertain": "unknown"},
+        )
+        self.assertEqual(
+            {item["claim_id"]: item["reason"] for item in body["context_manifest"]["excluded"]},
+            {"future": "future_fact", "unreviewed": "not_reviewed", "unaware": "actor_unaware"},
+        )
+        provider_request = self.ollama.structured_calls[0][1][1]["content"]
+        self.assertIn("the bronze key", provider_request)
+        self.assertIn("the old bell rang before dawn", provider_request)
+        self.assertIn('"epistemic_status":"unknown"', provider_request)
+        self.assertIn("`unknown` means the proposition itself is unresolved", self.ollama.structured_calls[0][1][0]["content"])
+        self.assertNotIn("the hidden vault", provider_request)
+        self.assertNotIn("the silver map", provider_request)
+        self.assertNotIn("the eastern gate", provider_request)
+        self.assertEqual(current.json()["revision"], revision)
+
+    def test_temporal_query_without_eligible_memory_does_not_call_provider_or_write(self) -> None:
+        revision = self.create_story_conversation()
+
+        response = self.query_temporal_memory(revision, model=None)
+        current = self.request(
+            "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "insufficient")
+        self.assertEqual(response.json()["citations"], [])
+        self.assertEqual(self.ollama.structured_calls, [])
+        self.assertEqual(current.json()["revision"], revision)
+
+    def test_temporal_query_rejects_stale_revision_before_provider_call(self) -> None:
+        revision = self.create_story_conversation()
+
+        response = self.query_temporal_memory(revision - 1)
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.ollama.structured_calls, [])
+
+    def test_temporal_query_discards_result_if_branch_changes_during_provider_call(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "past", "the bronze key")
+        revision = self.add_temporal_belief(revision, "past")
+        self.ollama.structured_response = {
+            "status": "answered", "answer": "She remembers the bronze key.", "claim_ids": ["past"],
+        }
+
+        def advance_branch() -> None:
+            self.app.state.gateway.execute(
+                workspace_id="story-api", branch_id="main", idempotency_key="concurrent-claim",
+                expected_revision=revision, command_type="add_claim",
+                payload={
+                    "claim_id": "concurrent", "subject_entity_id": "aria", "predicate": "learns",
+                    "object_value": "the clock is broken", "epistemic_status": "known",
+                    "review_status": "accepted", "narrative_order": 2,
+                },
+                actor="user", reason="Simulate a concurrent branch change",
+            )
+
+        self.ollama.structured_callback = advance_branch
+        response = self.query_temporal_memory(revision)
+
+        self.assertEqual(response.status_code, 409, response.text)
+
+    def test_temporal_query_rejects_provider_citations_outside_manifest(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "past", "the bronze key")
+        revision = self.add_temporal_belief(revision, "past")
+        self.ollama.structured_response = {
+            "status": "answered", "answer": "She remembers a hidden vault.", "claim_ids": ["future"],
+        }
+
+        response = self.query_temporal_memory(revision)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "insufficient")
+        self.assertEqual(response.json()["citations"], [])
+        self.assertNotIn("hidden vault", response.json()["answer"])
+
+    def test_temporal_query_requires_authentication(self) -> None:
+        response = self.request(
+            "POST", "/api/v1/workspaces/story-api/temporal-query",
+            json={
+                "branch_id": "main", "actor_entity_id": "aria", "expected_revision": 0,
+                "as_of_narrative_order": 0, "model": "test-model", "question": "What does Aria know?",
+            },
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_temporal_query_provider_failure_leaves_revision_unchanged(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "past", "the bronze key")
+        revision = self.add_temporal_belief(revision, "past")
+        self.ollama.failure = True
+
+        response = self.query_temporal_memory(revision)
+        current = self.request(
+            "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(current.json()["revision"], revision)
+
     def test_story_turn_uses_actor_context_and_is_idempotent(self) -> None:
         revision = self.create_story_conversation()
         body = {
@@ -503,6 +691,44 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual([item["workspace_id"] for item in restored.json()["workspaces"]], ["before-backup"])
         listed = self.request("GET", "/api/v1/workspaces", headers=self.headers)
         self.assertEqual([item["workspace_id"] for item in listed.json()], ["before-backup"])
+
+    def test_search_projection_rebuild_requires_auth_and_does_not_advance_revision(self) -> None:
+        created = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "projection-api", "name": "Projection API"},
+        )
+        self.assertEqual(created.status_code, 201)
+        entity = self.request(
+            "POST", "/api/v1/workspaces/projection-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 0, "idempotency_key": "projection-entity",
+                "command_type": "create_entity", "reason": "Create projection fixture",
+                "payload": {"entity_id": "aria", "entity_type": "person", "label": "Aria", "properties": {}},
+            },
+        )
+        self.assertEqual(entity.status_code, 200)
+        source = self.request(
+            "POST", "/api/v1/workspaces/projection-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 1, "idempotency_key": "projection-source",
+                "command_type": "import_source", "reason": "Import projection fixture",
+                "payload": {"source_id": "ledger", "display_name": "Ledger", "content": "Aria holds the brass key.", "media_type": "text/plain"},
+            },
+        )
+        self.assertEqual(source.status_code, 200)
+        self.database.connection.execute("DELETE FROM entity_search")
+        self.database.connection.execute("DELETE FROM source_search")
+
+        denied = self.request("POST", "/api/v1/projections/search/rebuild")
+        rebuilt = self.request("POST", "/api/v1/projections/search/rebuild", headers=self.headers)
+        revision = self.request("GET", "/api/v1/workspaces/projection-api/revision", headers=self.headers)
+        search = self.request("GET", "/api/v1/workspaces/projection-api/sources?q=brass", headers=self.headers)
+
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(rebuilt.status_code, 200, rebuilt.text)
+        self.assertEqual(rebuilt.json(), {"entities": 1, "sources": 1})
+        self.assertEqual(revision.json()["revision"], 2)
+        self.assertEqual([row["source_id"] for row in search.json()], ["ledger"])
 
     def test_invalid_backup_does_not_replace_live_database(self) -> None:
         created = self.request(

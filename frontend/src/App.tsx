@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { buildStoryExport } from "./storyExport";
-import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, TemporalQueryResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -273,6 +273,24 @@ export default function App() {
     }
   }
 
+  async function rebuildSearch() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const rebuilt = await request<{ entities: number; sources: number }>("/api/v1/projections/search/rebuild", { method: "POST" });
+      const entityLabel = rebuilt.entities === 1 ? "entity" : "entities";
+      const sourceLabel = rebuilt.sources === 1 ? "source" : "sources";
+      setNotice({
+        tone: "success",
+        text: `Search indexes rebuilt from ${rebuilt.entities} ${entityLabel} and ${rebuilt.sources} ${sourceLabel}. Canonical history was unchanged.`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Search indexes could not be rebuilt." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function restoreBackup(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
     const file = input.files?.[0];
@@ -425,7 +443,7 @@ export default function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your knowledge space"}</span><span className="crumb-sep">/</span><select className="branch-select" aria-label="Select branch" value={branchId} disabled={busy} onChange={(event) => setBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.branch_id} value={branch.branch_id}>{branch.branch_id === "main" ? "Main" : branch.branch_id}</option>)}</select></div>
-          <div className="top-actions"><span className="revision-chip">Revision {revision}</span><button className="quiet-button" disabled={busy || !workspaceId} onClick={() => void saveBackup()}>Back up</button><button className="quiet-button" disabled={busy} onClick={() => restoreInputRef.current?.click()}>Restore</button><input ref={restoreInputRef} type="file" accept=".lkebackup,application/zip" hidden onChange={(event) => void restoreBackup(event)} /><button className="quiet-button" disabled={busy} onClick={() => void load()}>Refresh</button></div>
+          <div className="top-actions"><span className="revision-chip">Revision {revision}</span><button className="quiet-button" disabled={busy} onClick={() => void rebuildSearch()}>Rebuild search</button><button className="quiet-button" disabled={busy || !workspaceId} onClick={() => void saveBackup()}>Back up</button><button className="quiet-button" disabled={busy} onClick={() => restoreInputRef.current?.click()}>Restore</button><input ref={restoreInputRef} type="file" accept=".lkebackup,application/zip" hidden onChange={(event) => void restoreBackup(event)} /><button className="quiet-button" disabled={busy} onClick={() => void load()}>Refresh</button></div>
         </header>
         <div className="page-content">
           {notice && <div className={`notice ${notice.tone}`} role="status"><span>{notice.tone === "error" ? "!" : notice.tone === "success" ? "✓" : "·"}</span>{notice.text}<button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
@@ -1024,6 +1042,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [order, setOrder] = useState(0);
   const [context, setContext] = useState<ContextManifest | null>(null);
   const [contextExportNotice, setContextExportNotice] = useState("");
+  const [memoryQuestion, setMemoryQuestion] = useState("");
+  const [memoryAnswer, setMemoryAnswer] = useState<TemporalQueryResult | null>(null);
+  const [memoryQueryError, setMemoryQueryError] = useState("");
+  const [memoryQuerying, setMemoryQuerying] = useState(false);
   const [error, setError] = useState("");
   const [storyError, setStoryError] = useState("");
   const [conversations, setConversations] = useState<StoryConversationSummary[]>([]);
@@ -1040,12 +1062,23 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [exportIncludesPrompts, setExportIncludesPrompts] = useState(true);
   const storySelectionRequest = useRef(0);
   const pendingStoryRequest = useRef<{ fingerprint: string; body: string } | null>(null);
+  const memoryQueryRequest = useRef(0);
+  const memoryScopeRef = useRef("");
   const storyMounted = useRef(true);
   useEffect(() => {
     storyMounted.current = true;
     return () => { storyMounted.current = false; };
   }, []);
   const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
+  const memoryScope = JSON.stringify([workspaceId, branchId, selectedActor, order, model, revision]);
+  memoryScopeRef.current = memoryScope;
+
+  useEffect(() => {
+    memoryQueryRequest.current += 1;
+    setMemoryAnswer(null);
+    setMemoryQueryError("");
+    setMemoryQuerying(false);
+  }, [workspaceId, branchId, selectedActor, order, model, revision]);
 
   async function loadConversations(preferredId?: string) {
     const rows = await request<StoryConversationSummary[]>(
@@ -1118,6 +1151,48 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       }));
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : "Context could not be built.");
+    }
+  }
+
+  async function queryCharacterMemory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (memoryQuerying || generating || busy || !selectedActor || !memoryQuestion.trim()) return;
+    const requestId = ++memoryQueryRequest.current;
+    const requestScope = memoryScopeRef.current;
+    setMemoryQuerying(true);
+    setMemoryQueryError("");
+    setMemoryAnswer(null);
+    try {
+      const result = await request<TemporalQueryResult>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/temporal-query`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            branch_id: branchId,
+            actor_entity_id: selectedActor,
+            expected_revision: revision,
+            as_of_narrative_order: order,
+            model: model || null,
+            question: memoryQuestion.trim(),
+          }),
+        },
+      );
+      if (!storyMounted.current || requestId !== memoryQueryRequest.current || memoryScopeRef.current !== requestScope) return;
+      setMemoryAnswer(result);
+    } catch (queryError) {
+      if (!storyMounted.current) return;
+      if (queryError instanceof ApiError && queryError.status === 409) {
+        try {
+          await onRefresh();
+        } catch {
+          // Keep the conflict message useful even if refreshing the branch also fails.
+        }
+        if (storyMounted.current) setMemoryQueryError("The branch changed during this query. The answer was discarded; review the current story order and ask again.");
+      } else if (requestId === memoryQueryRequest.current && memoryScopeRef.current === requestScope) {
+        setMemoryQueryError(queryError instanceof Error ? queryError.message : "The character's memory could not be queried.");
+      }
+    } finally {
+      if (storyMounted.current && requestId === memoryQueryRequest.current) setMemoryQuerying(false);
     }
   }
 
@@ -1316,10 +1391,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Choose a local model and describe what should happen next.</p></div>}
           </div>
           <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
-            <label className="field-label">Local model<select aria-label="Local model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!models.length}>
+            <label className="field-label">Local model<select aria-label="Local model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!models.length || memoryQuerying}>
               {models.length ? models.map((name) => <option key={name} value={name}>{name}</option>) : <option value="">No local models found</option>}
             </select></label>
-            <label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label>
+            <label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label>
             <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
             {!ollamaAvailable && <p className="provider-note">Ollama is not running. Start Ollama on this device to continue privately with a local model.</p>}
             {ollamaAvailable && !models.length && <p className="provider-note">No local model is installed yet. Add a model in Ollama, then refresh this workspace.</p>}
@@ -1331,9 +1406,33 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       <section className="panel context-panel">
         <div className="panel-heading"><div><h2>Character perspective</h2><p>Only reviewed facts this character knows enter the generation context.</p></div><span className="privacy-tag">LOCAL</span></div>
         {characters.length ? <>
-          <label className="field-label">Character<select value={selectedActor} disabled={Boolean(conversation)} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>
-          <label className="field-label">Story order<input type="number" min={0} value={order} onChange={(event) => setOrder(Number(event.target.value))} /></label>
+          <label className="field-label">Character<select value={selectedActor} disabled={Boolean(conversation) || memoryQuerying} onChange={(event) => setActor(event.target.value)}>{characters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>
+          <label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label>
           <button className="primary-button full-button" onClick={() => void preview()}>Build context preview <span>↗</span></button>
+          <form className="temporal-query-form" onSubmit={(event) => void queryCharacterMemory(event)}>
+            <div className="form-divider">ask about character memory</div>
+            <label className="field-label">Question<textarea
+              dir="auto"
+              value={memoryQuestion}
+              onChange={(event) => { setMemoryQuestion(event.target.value); setMemoryAnswer(null); setMemoryQueryError(""); }}
+              rows={3}
+              maxLength={4000}
+              placeholder="What does this character remember at this point in the story?"
+              disabled={memoryQuerying}
+            /></label>
+            <small className="field-note">Uses the selected local model and only reviewed claims the character knows at this story order. Empty memory can be checked without a model.</small>
+            <button className="secondary-button full-button" disabled={memoryQuerying || generating || busy || !memoryQuestion.trim()}>{memoryQuerying ? "Checking memory locally…" : "Ask character’s memory"} <span>⌕</span></button>
+          </form>
+          {memoryQueryError && <p className="inline-error" role="alert">{memoryQueryError}</p>}
+          {memoryAnswer && <div className={`temporal-answer ${memoryAnswer.status}`} role="status">
+            <div className="context-result-heading"><strong>{memoryAnswer.status === "answered" ? "Character memory" : "Insufficient memory"}</strong><small>Order {memoryAnswer.context_manifest.as_of_narrative_order} · revision {memoryAnswer.context_manifest.base_revision}</small></div>
+            <p dir="auto">{memoryAnswer.answer}</p>
+            {memoryAnswer.citations.map((citation) => <div className="temporal-citation" key={citation.claim_id}>
+              <strong dir="auto">{citation.subject} · {citation.predicate} {citation.object}</strong>
+              <small>{citation.actor_stance} · {citation.epistemic_status} · story {citation.narrative_order} · aware {citation.awareness_order}</small>
+              {citation.evidence_ids.length > 0 && <small>Evidence: {citation.evidence_ids.join(", ")}</small>}
+            </div>)}
+          </div>}
           <form className="belief-form" onSubmit={(event) => void recordBelief(event)}>
             <div className="form-divider">record a knowledge change</div>
             <label className="field-label">Reviewed claim<select name="claim_id" required>{claims.filter((item) => item.review_status === "accepted").map((item) => <option key={item.claim_id} value={item.claim_id}>{item.predicate}: {item.object_value}</option>)}</select></label>
@@ -1599,7 +1698,7 @@ function JournalEventForm({ event, sources, busy, onSave, onCancel }: {
       temporal_kind: temporalKind,
       occurred_from: String(values.get("occurred_from") || "") || null,
       occurred_to: String(values.get("occurred_to") || "") || null,
-      time_note: values.get("time_note"),
+      time_note: String(values.get("time_note") || ""),
       source_id: sourceId || null,
       source_quote: sourceQuote || null,
     };

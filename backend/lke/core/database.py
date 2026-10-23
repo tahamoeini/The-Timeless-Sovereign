@@ -48,7 +48,7 @@ class Database:
                     f"Database schema {current} is newer than supported {SCHEMA_VERSION}"
                 )
             if current < 1:
-                self._apply_migration(1, _SCHEMA_V1)
+                self._apply_migration(1, _SCHEMA_V1 + _SEARCH_PROJECTION_SCHEMA)
                 current = 1
             if current < 2:
                 self._apply_migration(2, _SCHEMA_V2)
@@ -86,6 +86,34 @@ class Database:
     def close(self) -> None:
         with self.lock:
             self.connection.close()
+
+    def rebuild_search_projections(self) -> dict[str, int]:
+        """Recreate disposable FTS indexes from canonical entities and sources."""
+        with self.lock:
+            connection = self.connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute("DROP TABLE IF EXISTS entity_search")
+                connection.execute("DROP TABLE IF EXISTS source_search")
+                connection.execute(_CREATE_ENTITY_SEARCH)
+                connection.execute(_CREATE_SOURCE_SEARCH)
+                connection.execute(
+                    "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) "
+                    "SELECT workspace_id,branch_id,entity_id,label,properties_json FROM entities"
+                )
+                connection.execute(
+                    "INSERT INTO source_search(workspace_id,source_id,display_name,content) "
+                    "SELECT workspace_id,source_id,display_name,content FROM sources"
+                )
+                counts = {
+                    "entities": connection.execute("SELECT COUNT(*) FROM entity_search").fetchone()[0],
+                    "sources": connection.execute("SELECT COUNT(*) FROM source_search").fetchone()[0],
+                }
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return counts
 
 
 _SCHEMA_V1 = """
@@ -249,15 +277,19 @@ CREATE TABLE projection_outbox (
     FOREIGN KEY(workspace_id, branch_id, revision)
         REFERENCES revisions(workspace_id, branch_id, revision)
 );
-CREATE VIRTUAL TABLE entity_search USING fts5(
+"""
+
+_CREATE_ENTITY_SEARCH = """CREATE VIRTUAL TABLE entity_search USING fts5(
     workspace_id UNINDEXED, branch_id UNINDEXED, entity_id UNINDEXED,
     label, properties, tokenize='unicode61 remove_diacritics 2'
-);
-CREATE VIRTUAL TABLE source_search USING fts5(
+)"""
+
+_CREATE_SOURCE_SEARCH = """CREATE VIRTUAL TABLE source_search USING fts5(
     workspace_id UNINDEXED, source_id UNINDEXED, display_name, content,
     tokenize='unicode61 remove_diacritics 2'
-);
-"""
+)"""
+
+_SEARCH_PROJECTION_SCHEMA = f"{_CREATE_ENTITY_SEARCH};\n{_CREATE_SOURCE_SEARCH};\n"
 
 
 _SCHEMA_V2 = """

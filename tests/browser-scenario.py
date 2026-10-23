@@ -108,6 +108,7 @@ with sync_playwright() as playwright:
         expect(page.get_by_text("Budget note", exact=True)).to_be_visible()
         print("Saved the scenario with claim and source evidence.", flush=True)
         pause = page.locator(".scenario-option-card").nth(1)
+        pause.get_by_label("Property").fill("funding")
         pause.get_by_label("Assumed value").fill("suspended")
         pause.get_by_role("button", name="Add assumption", exact=True).click()
         expect(pause.get_by_text("Project · funding · suspended", exact=True)).to_be_visible()
@@ -141,6 +142,16 @@ with sync_playwright() as playwright:
         assert main_claims_response.json()[0]["object_value"] == "secured"
         print("Confirmed the main branch was unchanged before promotion.", flush=True)
 
+        expect(page.get_by_text("2 branch changes", exact=True)).to_be_visible()
+        history = page.locator(".branch-review-list li")
+        expect(history).to_have_count(2)
+        for index in range(2):
+            revision_entry = history.nth(index)
+            revision_entry.locator("summary").click()
+            expect(revision_entry.locator("pre")).to_contain_text('"command_type"')
+        assumption_revision = history.filter(has_text="Add a scenario assumption").first
+        expect(assumption_revision.locator("pre")).to_contain_text("set_scenario_assumption")
+        expect(assumption_revision.locator("pre")).to_contain_text("suspended")
         review_checkbox = page.get_by_role("checkbox", name=re.compile("I reviewed these branch changes"))
         promote_button = page.get_by_role("button", name=re.compile("Promote to main"))
         expect(review_checkbox).to_be_visible()

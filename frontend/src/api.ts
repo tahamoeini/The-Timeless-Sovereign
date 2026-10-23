@@ -179,9 +179,26 @@ export type ContextManifest = {
   base_revision: number;
   actor: { entity_id: string; label: string; entity_type: string };
   as_of_narrative_order: number;
-  included: { claim_id: string; subject: string; predicate: string; object: string; actor_stance: string; evidence_ids: string[] }[];
+  included: {
+    claim_id: string;
+    subject_entity_id: string;
+    subject: string;
+    predicate: string;
+    object: string;
+    epistemic_status: string;
+    actor_stance: string;
+    narrative_order: number;
+    awareness_order: number;
+    evidence_ids: string[];
+  }[];
   excluded: { claim_id: string; reason: string }[];
   token_estimate: number;
+};
+export type TemporalQueryResult = {
+  status: "answered" | "insufficient";
+  answer: string;
+  citations: ContextManifest["included"];
+  context_manifest: ContextManifest;
 };
 export type ExternalExchange = {
   exchange_id: string;
