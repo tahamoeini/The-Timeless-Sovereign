@@ -29,11 +29,20 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>({ tone: "info", text: "Connecting to your private workspace…" });
+  const selectedScope = JSON.stringify([workspaceId, branchId]);
+  const selectedScopeRef = useRef(selectedScope);
+  selectedScopeRef.current = selectedScope;
+  const refreshRequest = useRef(0);
+  const [loadedScope, setLoadedScope] = useState("");
+  const [loadFailure, setLoadFailure] = useState<{ scope: string; message: string } | null>(null);
 
   const activeWorkspace = useMemo(() => workspaces.find((item) => item.workspace_id === workspaceId), [workspaces, workspaceId]);
 
   const refresh = useCallback(async (id = workspaceId, branch = branchId) => {
     if (!id) return;
+    const requestNumber = ++refreshRequest.current;
+    const requestedScope = JSON.stringify([id, branch]);
+    if (requestedScope === selectedScopeRef.current) setLoadFailure(null);
     const [entityRows, relationRows, claimRows, sourceRows, branchRows, rev] = await Promise.all([
       request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/entities?branch_id=${encodeURIComponent(branch)}`),
       request<Relation[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/relations?branch_id=${encodeURIComponent(branch)}`),
@@ -41,7 +50,13 @@ export default function App() {
       request<Source[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/sources`),
       request<Branch[]>(`/api/v1/workspaces/${encodeURIComponent(id)}/branches`),
       request<{ revision: number }>(`/api/v1/workspaces/${encodeURIComponent(id)}/revision?branch_id=${encodeURIComponent(branch)}`),
-    ]);
+    ]).catch((error: unknown) => {
+      if (requestNumber === refreshRequest.current && requestedScope === selectedScopeRef.current) {
+        setLoadFailure({ scope: requestedScope, message: error instanceof Error ? error.message : "The workspace could not be loaded." });
+      }
+      throw error;
+    });
+    if (requestNumber !== refreshRequest.current || requestedScope !== selectedScopeRef.current) return;
     setEntities(entityRows);
     setRelations(relationRows);
     setClaims(claimRows);
@@ -49,6 +64,7 @@ export default function App() {
     setBranches(branchRows);
     setRevision(rev.revision);
     revisionRef.current = rev.revision;
+    setLoadedScope(requestedScope);
   }, [workspaceId, branchId, query]);
 
   const load = useCallback(async () => {
@@ -421,14 +437,20 @@ export default function App() {
               <button className="primary-button" disabled={busy}>Create workspace <span>↗</span></button>
             </form>
             <div className="welcome-points"><span>◉ Evidence stays linked</span><span>◈ Explore safely in branches</span><span>⌁ Your data stays yours</span></div>
+          </section> : loadedScope !== selectedScope ? <section className="panel" role="status">
+            {loadFailure?.scope === selectedScope ? <>
+              <h2>The selected workspace could not be loaded.</h2>
+              <p>{loadFailure.message}</p>
+              <button className="secondary-button" disabled={busy} onClick={() => void refresh().catch(() => {})}>Retry loading</button>
+            </> : <p>Loading the selected workspace and branch…</p>}
           </section> : <>
-            {page === "knowledge" && <KnowledgePage key={dataEpoch}
+            {page === "knowledge" && <KnowledgePage key={JSON.stringify([dataEpoch, workspaceId, branchId])}
               workspaceId={workspaceId} branchId={branchId} revision={revision} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review} onExtract={extractSource} onCommit={commitDomainCommand}
             />}
-            {page === "story" && <StoryPage key={dataEpoch} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
-            {page === "journal" && <JournalPage key={dataEpoch} workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
-            {page === "scenario" && <ScenarioPage key={dataEpoch} workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onPromote={promoteScenarioBranch} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
+            {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
+            {page === "journal" && <JournalPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
+            {page === "scenario" && <ScenarioPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onPromote={promoteScenarioBranch} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
           </>}
         </div>
       </main>
@@ -1012,6 +1034,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [exportIncludesContext, setExportIncludesContext] = useState(false);
+  const storySelectionRequest = useRef(0);
   const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
 
   async function loadConversations(preferredId?: string) {
@@ -1051,7 +1075,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const detail = await request<StoryConversation>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(first.conversation_id)}?branch_id=${encodeURIComponent(branchId)}`,
       );
-      if (active) {
+      if (active && storySelectionRequest.current === 0) {
         setConversationId(first.conversation_id);
         setConversation(detail);
         setActor(detail.actor_entity_id);
@@ -1109,6 +1133,32 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setContextExportNotice("Context package saved. Review its facts and exclusions before sharing it.");
   }
 
+  function exportStory() {
+    if (!conversation) return;
+    const exportPackage = {
+      protocol: "lke.story-export.v1",
+      exported_at: new Date().toISOString(),
+      workspace_id: workspaceId,
+      branch_id: branchId,
+      base_revision: revision,
+      context_manifests_included: exportIncludesContext,
+      conversation: {
+        ...conversation,
+        turns: conversation.turns.map((turn) => ({
+          ...turn,
+          context_manifest: exportIncludesContext ? turn.context_manifest : undefined,
+        })),
+      },
+    };
+    const file = new Blob([JSON.stringify(exportPackage, null, 2)], { type: "application/json;charset=utf-8" });
+    const fileUrl = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = fileUrl;
+    link.download = `lke-story-${conversation.conversation_id.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
+  }
+
   async function startConversation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedActor) {
@@ -1131,6 +1181,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
 
   async function selectConversation(id: string) {
+    const requestNumber = ++storySelectionRequest.current;
     setConversationId(id);
     setConversation(null);
     setStoryError("");
@@ -1139,11 +1190,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const detail = await request<StoryConversation>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(id)}?branch_id=${encodeURIComponent(branchId)}`,
       );
+      if (requestNumber !== storySelectionRequest.current) return;
       setConversation(detail);
       setActor(detail.actor_entity_id);
       const lastTurn = detail.turns[detail.turns.length - 1];
       setOrder(lastTurn?.narrative_order || 0);
     } catch (loadError) {
+      if (requestNumber !== storySelectionRequest.current) return;
       setStoryError(loadError instanceof Error ? loadError.message : "The selected story could not be loaded.");
     }
   }
@@ -1210,7 +1263,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             {conversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title} · {item.actor_label}</option>)}
           </select></label>
           {conversation && <span className="privacy-tag">{conversation.actor_is_user_controlled ? "PLAYER CONTROL" : "MODEL MAY NARRATE"}</span>}
+          {conversation && <button className="secondary-button" type="button" onClick={exportStory}>Export story JSON ↓</button>}
         </div>
+        {conversation && <div className="story-export-options">
+          <label className="control-choice"><input type="checkbox" checked={exportIncludesContext} onChange={(event) => setExportIncludesContext(event.target.checked)} /><span>Include character context manifests in export</span></label>
+          <small className="field-note">The export includes your prompts and generated prose. Context manifests can also reveal private character knowledge. Review the file before sharing.</small>
+        </div>}
         {!conversation && <form className="story-start-form" onSubmit={(event) => void startConversation(event)}>
           <div className="story-placeholder"><div className="story-sigil">✳</div><h2>Start a persistent story.</h2><p>Each turn is saved locally with its branch revision and the character context used to generate it.</p></div>
           {characters.length ? <>

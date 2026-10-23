@@ -25,7 +25,7 @@ Run the canonical-core tests with the bundled or installed Python:
 python -m unittest discover -s tests\unit -v
 ```
 
-The backup utility supports both the desktop's full-database backup/restore flow and offline CLI operation. Persistent story-turn storage, the local Ollama adapter, and the branch-scoped `lke.exchange.v1` transcript archive are implemented. PDF/Office and incremental extraction, relation/event extraction, transcript export and redaction, live-model acceptance, browser/API verification for recent changes, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
+The backup utility supports both the desktop's full-database backup/restore flow and offline CLI operation. Persistent story-turn storage, the local Ollama adapter, the branch-scoped `lke.exchange.v1` transcript archive, and portable saved-story JSON export are implemented. Story export omits character context manifests by default and offers explicit inclusion. PDF/Office and incremental extraction, relation/event extraction, per-message export redaction, live-model acceptance, browser/API verification for recent changes, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
 
 ## Product and technical contracts
 
