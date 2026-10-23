@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { buildStoryExport } from "./storyExport";
-import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, TemporalQueryResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAdventure, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryWorld, TemporalQueryResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -129,10 +129,57 @@ export default function App() {
     setBusy(true);
     try {
       const result = await runCommand(commandType, payload, reason);
-      setNotice({ tone: "success", text: commandType === "create_conversation" ? "Story started on this branch." : "Character knowledge saved to this branch." });
+      setNotice({ tone: "success", text: commandType === "create_conversation" ? "Story started on this branch." : commandType === "add_belief" ? "Character knowledge saved to this branch." : "RPG state saved." });
       return result;
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "The change could not be saved." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commitMainCommand = async (commandType: string, payload: Record<string, unknown>, reason: string): Promise<Record<string, unknown>> => {
+    if (!workspaceId) throw new Error("Create or select a workspace first.");
+    if (busy) throw new Error("Another workspace change is already in progress.");
+    setBusy(true);
+    try {
+      const mainRevision = branches.find((item) => item.branch_id === "main")?.head_revision ?? 0;
+      const result = await request<Record<string, unknown>>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/commands`, {
+        method: "POST",
+        body: JSON.stringify({ branch_id: "main", expected_revision: mainRevision, idempotency_key: newId("main-cmd"), command_type: commandType, payload, reason }),
+      });
+      if (typeof result.revision === "number" && branchId === "main") {
+        revisionRef.current = result.revision;
+        setRevision(result.revision);
+      }
+      await refresh();
+      setNotice({ tone: "success", text: "Saved to the main world library." });
+      return result;
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The world could not be saved." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createStoryAdventure = async (payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    if (!workspaceId) throw new Error("Create or select a workspace first.");
+    if (busy) throw new Error("Another workspace change is already in progress.");
+    setBusy(true);
+    try {
+      const mainRevision = branches.find((item) => item.branch_id === "main")?.head_revision ?? 0;
+      const created = await request<Record<string, unknown>>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures`, {
+        method: "POST",
+        body: JSON.stringify({ ...payload, expected_revision: mainRevision }),
+      });
+      const targetBranch = String(created.branch_id || (created.adventure as Record<string, unknown>)?.branch_id || payload.adventure_id);
+      setBranchId(targetBranch);
+      setNotice({ tone: "success", text: "Adventure started from a pinned world version." });
+      return created;
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The adventure could not be started." });
       throw error;
     } finally {
       setBusy(false);
@@ -468,7 +515,7 @@ export default function App() {
               workspaceId={workspaceId} branchId={branchId} revision={revision} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review} onExtract={extractSource} onCommit={commitDomainCommand}
             />}
-            {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
+            {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} mainRevision={branches.find((item) => item.branch_id === "main")?.head_revision ?? 0} busy={busy} onNavigate={setPage} onSelectBranch={setBranchId} onCommit={commitStoryCommand} onMainCommit={commitMainCommand} onCreateAdventure={createStoryAdventure} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
             {page === "journal" && <JournalPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
             {page === "scenario" && <ScenarioPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onPromote={promoteScenarioBranch} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
           </>}
@@ -1025,15 +1072,28 @@ function Graph({ entities, relations }: { entities: Entity[]; relations: Relatio
   </svg></div>;
 }
 
-function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, onNavigate, onCommit, onRevisionChange, onRefresh }: {
+const STORY_WORLD_TEMPLATES = {
+  narrative: { label: "Narrative", content: { stats: { courage: 0, insight: 0, empathy: 0 }, trackers: { resolve: { value: 6, max: 6 } }, starting_location: "" } },
+  fantasy: { label: "Fantasy", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 } }, starting_location: "The Crossroads" } },
+  space_sci_fi: { label: "Space sci-fi", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 }, oxygen: { value: 6, max: 6 } }, starting_location: "Orbital Station" } },
+  cyberpunk: { label: "Cyberpunk", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 }, focus: { value: 6, max: 6 } }, starting_location: "The Neon District" } },
+  modern: { label: "Modern", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 } }, starting_location: "Home" } },
+  blank: { label: "Blank", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 } }, starting_location: "" } },
+} as const;
+
+function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevision, busy, onNavigate, onSelectBranch, onCommit, onMainCommit, onCreateAdventure, onRevisionChange, onRefresh }: {
   entities: Entity[];
   claims: Claim[];
   workspaceId: string;
   branchId: string;
   revision: number;
+  mainRevision: number;
   busy: boolean;
   onNavigate: (page: Page) => void;
+  onSelectBranch: (branchId: string) => void;
   onCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<Record<string, unknown>>;
+  onMainCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<Record<string, unknown>>;
+  onCreateAdventure: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
   onRevisionChange: (revision: number) => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -1060,6 +1120,25 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [generating, setGenerating] = useState(false);
   const [exportIncludesContext, setExportIncludesContext] = useState(false);
   const [exportIncludesPrompts, setExportIncludesPrompts] = useState(true);
+  const [worlds, setWorlds] = useState<StoryWorld[]>([]);
+  const [adventures, setAdventures] = useState<StoryAdventure[]>([]);
+  const [mainCharacters, setMainCharacters] = useState<Entity[]>([]);
+  const [adventureHeroId, setAdventureHeroId] = useState("");
+  const [selectedWorldId, setSelectedWorldId] = useState("");
+  const [worldName, setWorldName] = useState("");
+  const [worldPremise, setWorldPremise] = useState("");
+  const [worldTemplate, setWorldTemplate] = useState("fantasy");
+  const [adventureName, setAdventureName] = useState("");
+  const [heroName, setHeroName] = useState("");
+  const [libraryError, setLibraryError] = useState("");
+  const [rpgState, setRpgState] = useState<RpgState | null>(null);
+  const [rpgError, setRpgError] = useState("");
+  const [checkStat, setCheckStat] = useState("");
+  const [checkTarget, setCheckTarget] = useState(12);
+  const [proposalOperation, setProposalOperation] = useState<"tracker_delta" | "set_location">("tracker_delta");
+  const [proposalTracker, setProposalTracker] = useState("health");
+  const [proposalDelta, setProposalDelta] = useState(-1);
+  const [proposalLocation, setProposalLocation] = useState("");
   const storySelectionRequest = useRef(0);
   const pendingStoryRequest = useRef<{ fingerprint: string; body: string } | null>(null);
   const memoryQueryRequest = useRef(0);
@@ -1069,6 +1148,37 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     storyMounted.current = true;
     return () => { storyMounted.current = false; };
   }, []);
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`),
+      request<StoryAdventure[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures`),
+      request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/entities?branch_id=main`),
+    ]).then(([worldRows, adventureRows, characterRows]) => {
+      if (!active) return;
+      setWorlds(worldRows);
+      setAdventures(adventureRows);
+      setMainCharacters(characterRows.filter((item) => ["character", "person"].includes(item.entity_type)));
+      setSelectedWorldId((current) => worldRows.some((item) => item.world_id === current) ? current : worldRows[0]?.world_id || "");
+      setAdventureHeroId((current) => characterRows.some((item) => item.entity_id === current) ? current : characterRows.find((item) => ["character", "person"].includes(item.entity_type))?.entity_id || "");
+    }).catch((loadError) => {
+      if (active) setLibraryError(loadError instanceof Error ? loadError.message : "The world library could not be loaded.");
+    });
+    return () => { active = false; };
+  }, [workspaceId]);
+  const activeAdventure = adventures.find((item) => item.branch_id === branchId && item.conversation_id === conversationId) || null;
+  useEffect(() => {
+    if (!activeAdventure) {
+      setRpgState(null);
+      setRpgError("");
+      return;
+    }
+    let active = true;
+    request<RpgState>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/rpg?branch_id=${encodeURIComponent(branchId)}`)
+      .then((state) => { if (active) setRpgState(state); })
+      .catch((loadError) => { if (active) setRpgError(loadError instanceof Error ? loadError.message : "Adventure state could not be loaded."); });
+    return () => { active = false; };
+  }, [activeAdventure?.adventure_id, branchId, revision, workspaceId]);
   const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
   const memoryScope = JSON.stringify([workspaceId, branchId, selectedActor, order, model, revision]);
   memoryScopeRef.current = memoryScope;

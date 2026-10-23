@@ -231,6 +231,73 @@ export type StoryConversationSummary = {
   turn_count: number;
 };
 export type StoryConversation = Omit<StoryConversationSummary, "turn_count"> & { turns: StoryTurn[] };
+export type StoryWorld = {
+  world_id: string;
+  name: string;
+  latest_version: number;
+  created_at: string;
+  updated_at: string;
+  description: string;
+  template_key: string;
+};
+export type StoryAdventure = {
+  adventure_id: string;
+  branch_id: string;
+  parent_branch_id: string | null;
+  world_id: string;
+  world_name: string;
+  world_version: number;
+  conversation_id: string;
+  name: string;
+  actor_entity_id: string;
+  actor_label: string;
+  status: "active" | "complete" | "paused";
+  created_revision: number;
+  updated_revision: number;
+  created_at: string;
+  updated_at: string;
+  turn_count: number;
+};
+export type RpgCheck = {
+  check_id: string;
+  conversation_id: string;
+  actor_entity_id: string;
+  stat_name: string;
+  die_roll: number;
+  modifier: number;
+  total: number;
+  target: number;
+  outcome: "success" | "failure";
+  created_revision: number;
+  created_at: string;
+};
+export type RpgStateChange =
+  | { operation: "tracker_delta"; tracker_id: string; delta: number }
+  | { operation: "set_location"; location: string };
+export type RpgStateProposal = {
+  proposal_id: string;
+  conversation_id: string;
+  source_turn_id: string | null;
+  changes: RpgStateChange[];
+  review_status: "proposed" | "accepted" | "rejected";
+  created_revision: number;
+  reviewed_revision: number | null;
+  created_at: string;
+};
+export type RpgState = {
+  adventure: Pick<StoryAdventure, "adventure_id" | "world_id" | "world_version" | "conversation_id" | "name" | "actor_entity_id" | "status" | "updated_revision">;
+  sheet: {
+    stats_json: string;
+    trackers_json: string;
+    current_location: string;
+    created_revision: number;
+    updated_revision: number;
+    stats: Record<string, number>;
+    trackers: Record<string, { value: number; max: number }>;
+  } | null;
+  checks: RpgCheck[];
+  proposals: RpgStateProposal[];
+};
 export type OllamaModelStatus = { available: boolean; models: string[] };
 export type StoryGenerationResult = {
   conversation_id: string;

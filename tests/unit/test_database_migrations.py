@@ -22,6 +22,14 @@ class DatabaseMigrationTests(unittest.TestCase):
 
     def _drop_exchanges(self, database):
         database.connection.execute("DROP TABLE external_exchanges")
+        self._drop_story_rpg(database)
+
+    def _drop_story_rpg(self, database):
+        for table in (
+            "rpg_state_proposals", "rpg_checks", "rpg_sheets", "story_adventures",
+            "story_world_versions", "story_worlds",
+        ):
+            database.connection.execute(f"DROP TABLE {table}")
 
     def test_v1_database_upgrades_through_all_current_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -49,8 +57,8 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 8)
-        self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence", "external_exchanges"} <= tables)
+        self.assertEqual(version, 9)
+        self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence", "external_exchanges", "story_worlds", "story_world_versions", "story_adventures", "rpg_sheets", "rpg_checks", "rpg_state_proposals"} <= tables)
 
     def test_v2_database_upgrades_to_journal_and_rule_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -76,7 +84,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
         self.assertIsNotNone(table)
         self.assertIsNotNone(rules)
 
@@ -100,7 +108,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
         self.assertIsNotNone(table)
 
     def test_v4_database_upgrades_to_scenario_schema(self) -> None:
@@ -125,7 +133,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
         self.assertTrue({"scenarios", "scenario_options", "scenario_assumptions", "scenario_claim_evidence", "scenario_source_evidence"} <= tables)
 
     def test_v5_database_upgrades_to_source_extraction_schema(self) -> None:
@@ -149,7 +157,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
         self.assertTrue({"extraction_batches", "extraction_candidates", "entity_evidence"} <= tables)
 
     def test_v6_database_upgrades_to_external_exchange_schema(self) -> None:
@@ -169,13 +177,14 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
         self.assertIsNotNone(exchange_table)
 
     def test_v7_database_backfills_known_transcript_end(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "knowledge.sqlite3"
             database = Database(database_path)
+            self._drop_story_rpg(database)
             gateway = CommandGateway(database)
             gateway.create_workspace("Migration", "migration-workspace")
             database.connection.execute("DROP TABLE external_exchanges")
@@ -188,7 +197,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ("migration-workspace", "main", "old-exchange", "old-transcript", "old-context", 0,
                  0, 1, "sha256:" + "0" * 64, "{}", "[]", "[]", 0, "2026-01-01T00:00:00.000Z"),
             )
-            database.connection.execute("DELETE FROM schema_migrations WHERE version=8")
+            database.connection.execute("DELETE FROM schema_migrations WHERE version>7")
             database.close()
 
             upgraded = Database(database_path)
@@ -200,7 +209,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
         self.assertEqual(tuple(migrated), (0, 1, 1))
 
 

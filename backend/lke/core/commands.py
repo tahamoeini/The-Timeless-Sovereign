@@ -19,6 +19,8 @@ _ALLOWED_COMMANDS = {
     "create_entity", "update_entity", "add_relation", "update_relation", "review_relation", "add_claim",
     "update_claim", "review_claim", "add_belief", "import_source", "add_evidence",
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
+    "create_story_world", "revise_story_world", "create_story_adventure", "update_rpg_sheet",
+    "record_d20_check", "propose_rpg_state", "review_rpg_state_proposal",
     "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
     "review_scenario_assumption", "record_extraction_batch", "review_extraction_candidate",
     "import_exchange", "promote_branch",
@@ -181,11 +183,92 @@ def _command_request_hash(request: dict[str, Any]) -> str:
         stable_payload.pop("context_manifest_id", None)
         stable_payload.pop("context_manifest", None)
         stable_request["payload"] = stable_payload
+    if stable_request["command_type"] == "record_d20_check":
+        stable_payload = dict(stable_request["payload"])
+        stable_payload.pop("die_roll", None)
+        stable_payload.pop("check_id", None)
+        stable_request["payload"] = stable_payload
     if stable_request["command_type"] == "record_extraction_batch":
         stable_payload = dict(stable_request["payload"])
         stable_payload.pop("candidates", None)
         stable_request["payload"] = stable_payload
     return hashlib.sha256(_json(stable_request).encode("utf-8")).hexdigest()
+
+
+def _validated_world_content(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValidationError("world content must be an object")
+    try:
+        serialized = _json(value)
+        if len(serialized.encode("utf-8")) > 100_000:
+            raise ValidationError("world content is limited to 100 KB")
+    except (TypeError, ValueError) as error:
+        raise ValidationError("world content must contain JSON-compatible values") from error
+
+    def reject_secrets(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, nested in node.items():
+                if any(marker in str(key).casefold() for marker in ("secret", "password", "api_key", "access_token")):
+                    raise ValidationError("world content cannot contain provider credentials")
+                reject_secrets(nested)
+        elif isinstance(node, list):
+            for nested in node:
+                reject_secrets(nested)
+
+    reject_secrets(value)
+    return value
+
+
+def _validated_stats(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict) or len(value) > 20:
+        raise ValidationError("stats must be an object with at most 20 values")
+    stats: dict[str, int] = {}
+    for raw_name, raw_value in value.items():
+        name = _required_text(raw_name, "stat name", 40)
+        if type(raw_value) is not int or not -10 <= raw_value <= 10:
+            raise ValidationError("each stat modifier must be an integer from -10 to 10")
+        stats[name] = raw_value
+    if not stats:
+        raise ValidationError("at least one stat is required")
+    return stats
+
+
+def _validated_trackers(value: Any) -> dict[str, dict[str, int]]:
+    if not isinstance(value, dict) or len(value) > 30:
+        raise ValidationError("trackers must be an object with at most 30 values")
+    trackers: dict[str, dict[str, int]] = {}
+    for raw_name, raw_value in value.items():
+        name = _required_text(raw_name, "tracker name", 60)
+        if not isinstance(raw_value, dict):
+            raise ValidationError("each tracker must contain value and max integers")
+        current, maximum = raw_value.get("value"), raw_value.get("max")
+        if type(current) is not int or type(maximum) is not int or maximum < 0 or maximum > 100_000:
+            raise ValidationError("tracker values must be integers with a non-negative maximum")
+        if current < 0 or current > maximum:
+            raise ValidationError("tracker value must be between zero and its maximum")
+        trackers[name] = {"value": current, "max": maximum}
+    return trackers
+
+
+def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value or len(value) > 20:
+        raise ValidationError("changes must contain between 1 and 20 RPG state changes")
+    clean: list[dict[str, Any]] = []
+    for change in value:
+        if not isinstance(change, dict):
+            raise ValidationError("each RPG state change must be an object")
+        operation = change.get("operation")
+        if operation == "tracker_delta":
+            tracker_id = _required_text(change.get("tracker_id"), "tracker_id", 60)
+            delta = change.get("delta")
+            if type(delta) is not int or not -100_000 <= delta <= 100_000:
+                raise ValidationError("tracker delta must be an integer")
+            clean.append({"operation": operation, "tracker_id": tracker_id, "delta": delta})
+        elif operation == "set_location":
+            clean.append({"operation": operation, "location": _required_text(change.get("location"), "location", 200)})
+        else:
+            raise ValidationError("supported state changes are tracker_delta and set_location")
+    return clean
 
 
 def _validated_extraction_candidate(candidate: Any, source_content: str) -> tuple[str, str, dict[str, Any]]:
@@ -236,6 +319,10 @@ def _promote_branch_snapshot(
         ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision", None, (), ("created_revision",), "belief_id"),
         ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at", "conversation_id", ("actor_entity_id", "title", "actor_is_user_controlled", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "conversation_id"),
         ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id"),
+        ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at", "adventure_id", ("world_id", "world_version", "conversation_id", "name", "actor_entity_id", "status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id"),
+        ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision", "adventure_id", ("conversation_id", "stats_json", "trackers_json", "current_location", "updated_revision"), ("created_revision", "updated_revision"), "adventure_id"),
+        ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at", None, (), ("created_revision",), "check_id"),
+        ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at", "proposal_id", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "proposal_id"),
         ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
         ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at", None, (), ("created_revision",), "event_id,version"),
         ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at", None, (), ("created_revision",), "scenario_id"),
@@ -406,6 +493,10 @@ class CommandGateway:
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
+                    ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at"),
+                    ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision"),
+                    ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at"),
+                    ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at"),
                     ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
                     ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
                     ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at"),
@@ -1533,6 +1624,263 @@ class CommandGateway:
                 "source_id": fields["source_id"],
             }, event_type, True
 
+        if command_type in {"create_story_world", "revise_story_world"}:
+            if branch_id != "main":
+                raise ValidationError("World library changes must be committed on the main workspace branch")
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors can propose world drafts but cannot publish world versions")
+            description = payload.get("description", "")
+            template_key = _required_text(payload.get("template_key", "blank"), "template_key", 60)
+            if not isinstance(description, str) or len(description.strip()) > 4000:
+                raise ValidationError("description must be text of at most 4000 characters")
+            content = _validated_world_content(payload.get("content", {}))
+            now = _now()
+            if command_type == "create_story_world":
+                world_id = _required_text(payload.get("world_id") or str(uuid4()), "world_id", 100)
+                name = _required_text(payload.get("name"), "name", 200)
+                connection.execute(
+                    "INSERT INTO story_worlds(workspace_id,world_id,name,latest_version,created_at,updated_at) "
+                    "VALUES(?,?,?,1,?,?)",
+                    (workspace_id, world_id, name, now, now),
+                )
+                version = 1
+                event_type = "story.world_created"
+            else:
+                world_id = _required_text(payload.get("world_id"), "world_id", 100)
+                expected_version = payload.get("expected_world_version")
+                if type(expected_version) is not int or expected_version < 1:
+                    raise ValidationError("expected_world_version must be a positive integer")
+                existing = connection.execute(
+                    "SELECT name,latest_version FROM story_worlds WHERE workspace_id=? AND world_id=?",
+                    (workspace_id, world_id),
+                ).fetchone()
+                if not existing:
+                    raise NotFoundError("World does not exist in this workspace")
+                if existing["latest_version"] != expected_version:
+                    raise ConflictError(
+                        f"Expected world version {expected_version}; current version is {existing['latest_version']}"
+                    )
+                version = expected_version + 1
+                name = _required_text(payload.get("name", existing["name"]), "name", 200)
+                connection.execute(
+                    "UPDATE story_worlds SET name=?,latest_version=?,updated_at=? WHERE workspace_id=? AND world_id=?",
+                    (name, version, now, workspace_id, world_id),
+                )
+                event_type = "story.world_revised"
+            connection.execute(
+                "INSERT INTO story_world_versions(workspace_id,world_id,version,description,template_key,content_json,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (workspace_id, world_id, version, description.strip(), template_key, _json(content), revision, now),
+            )
+            return {"world_id": world_id, "name": name, "version": version, "template_key": template_key}, event_type, True
+
+        if command_type == "create_story_adventure":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot start adventures")
+            parent = connection.execute(
+                "SELECT parent_branch_id FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not parent or parent["parent_branch_id"] != "main":
+                raise ValidationError("An adventure must start from an isolated snapshot of the main workspace branch")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            world_id = _required_text(payload.get("world_id"), "world_id", 100)
+            world_version = payload.get("world_version")
+            if type(world_version) is not int or world_version < 1:
+                raise ValidationError("world_version must be a positive integer")
+            world = connection.execute(
+                "SELECT content_json FROM story_world_versions WHERE workspace_id=? AND world_id=? AND version=?",
+                (workspace_id, world_id, world_version),
+            ).fetchone()
+            if not world:
+                raise NotFoundError("Pinned world version does not exist in this workspace")
+            conversation_id = _required_text(payload.get("conversation_id"), "conversation_id", 100)
+            actor_entity_id = _required_text(payload.get("actor_entity_id"), "actor_entity_id", 100)
+            name = _required_text(payload.get("name"), "name", 200)
+            actor_is_user_controlled = payload.get("actor_is_user_controlled", True)
+            if not isinstance(actor_is_user_controlled, bool):
+                raise ValidationError("actor_is_user_controlled must be a boolean")
+            character = connection.execute(
+                "SELECT entity_type FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, actor_entity_id),
+            ).fetchone()
+            if not character or character["entity_type"] not in {"character", "person"}:
+                raise ValidationError("An adventure needs a character or person in its snapshot")
+            world_content = json.loads(world["content_json"])
+            stats = _validated_stats(world_content.get("stats", {
+                "might": 0, "agility": 0, "insight": 0, "presence": 0,
+            }))
+            trackers = _validated_trackers(world_content.get("trackers", {
+                "health": {"value": 10, "max": 10},
+            }))
+            location = world_content.get("starting_location", "")
+            if not isinstance(location, str) or len(location.strip()) > 200:
+                raise ValidationError("starting_location must be text of at most 200 characters")
+            now = _now()
+            connection.execute(
+                "INSERT INTO story_conversations(workspace_id,branch_id,conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, conversation_id, actor_entity_id, name, int(actor_is_user_controlled), revision, revision, now, now),
+            )
+            connection.execute(
+                "INSERT INTO story_adventures(workspace_id,branch_id,adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?, 'active',?,?,?,?)",
+                (workspace_id, branch_id, adventure_id, world_id, world_version, conversation_id, name, actor_entity_id, revision, revision, now, now),
+            )
+            connection.execute(
+                "INSERT INTO rpg_sheets(workspace_id,branch_id,adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, adventure_id, conversation_id, _json(stats), _json(trackers), location.strip(), revision, revision),
+            )
+            return {
+                "adventure_id": adventure_id,
+                "world_id": world_id,
+                "world_version": world_version,
+                "conversation_id": conversation_id,
+                "actor_entity_id": actor_entity_id,
+                "name": name,
+            }, "story.adventure_created", True
+
+        if command_type == "update_rpg_sheet":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot change canonical RPG state")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            sheet = connection.execute(
+                "SELECT stats_json,trackers_json,current_location FROM rpg_sheets "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not sheet:
+                raise NotFoundError("Adventure character sheet does not exist in this branch")
+            stats = _validated_stats(payload["stats"]) if "stats" in payload else json.loads(sheet["stats_json"])
+            trackers = _validated_trackers(payload["trackers"]) if "trackers" in payload else json.loads(sheet["trackers_json"])
+            location = payload.get("current_location", sheet["current_location"])
+            if not isinstance(location, str) or len(location.strip()) > 200:
+                raise ValidationError("current_location must be text of at most 200 characters")
+            connection.execute(
+                "UPDATE rpg_sheets SET stats_json=?,trackers_json=?,current_location=?,updated_revision=? "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (_json(stats), _json(trackers), location.strip(), revision, workspace_id, branch_id, adventure_id),
+            )
+            connection.execute(
+                "UPDATE story_adventures SET updated_revision=?,updated_at=? "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (revision, _now(), workspace_id, branch_id, adventure_id),
+            )
+            return {"adventure_id": adventure_id, "stats": stats, "trackers": trackers, "current_location": location.strip()}, "rpg.sheet_updated", True
+
+        if command_type == "record_d20_check":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot roll or record player checks")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            stat_name = _required_text(payload.get("stat_name"), "stat_name", 40)
+            die_roll, target = payload.get("die_roll"), payload.get("target")
+            if type(die_roll) is not int or not 1 <= die_roll <= 20:
+                raise ValidationError("die_roll must be an integer from 1 to 20")
+            if type(target) is not int or not 1 <= target <= 100:
+                raise ValidationError("target must be an integer from 1 to 100")
+            adventure = connection.execute(
+                "SELECT conversation_id,actor_entity_id FROM story_adventures "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            sheet = connection.execute(
+                "SELECT stats_json FROM rpg_sheets WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure or not sheet:
+                raise NotFoundError("Adventure does not exist in this branch")
+            stats = json.loads(sheet["stats_json"])
+            canonical_stat = next((name for name in stats if name.casefold() == stat_name.casefold()), None)
+            if canonical_stat is None:
+                raise ValidationError("Choose a stat on this adventure's character sheet")
+            modifier = stats[canonical_stat]
+            total = die_roll + modifier
+            outcome = "success" if total >= target else "failure"
+            check_id = _required_text(payload.get("check_id") or str(uuid4()), "check_id", 100)
+            connection.execute(
+                "INSERT INTO rpg_checks(workspace_id,branch_id,check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, check_id, adventure_id, adventure["conversation_id"], adventure["actor_entity_id"], canonical_stat, die_roll, modifier, total, target, outcome, revision, _now()),
+            )
+            return {"check_id": check_id, "adventure_id": adventure_id, "stat_name": canonical_stat, "die_roll": die_roll, "modifier": modifier, "total": total, "target": target, "outcome": outcome}, "rpg.check_recorded", True
+
+        if command_type == "propose_rpg_state":
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            adventure = connection.execute(
+                "SELECT conversation_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            changes = _validated_rpg_changes(payload.get("changes"))
+            source_turn_id = payload.get("source_turn_id")
+            if source_turn_id is not None:
+                source_turn_id = _required_text(source_turn_id, "source_turn_id", 100)
+                turn = connection.execute(
+                    "SELECT 1 FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=? AND role='assistant'",
+                    (workspace_id, branch_id, adventure["conversation_id"], source_turn_id),
+                ).fetchone()
+                if not turn:
+                    raise ValidationError("source_turn_id must identify an assistant turn in this adventure")
+            proposal_id = _required_text(payload.get("proposal_id") or str(uuid4()), "proposal_id", 100)
+            connection.execute(
+                "INSERT INTO rpg_state_proposals(workspace_id,branch_id,proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,'proposed',?,NULL,?)",
+                (workspace_id, branch_id, proposal_id, adventure_id, adventure["conversation_id"], source_turn_id, _json(changes), revision, _now()),
+            )
+            return {"proposal_id": proposal_id, "adventure_id": adventure_id, "review_status": "proposed", "changes": changes}, "rpg.state_proposed", True
+
+        if command_type == "review_rpg_state_proposal":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot review RPG state proposals")
+            proposal_id = _required_text(payload.get("proposal_id"), "proposal_id", 100)
+            decision = payload.get("review_status")
+            if decision not in {"accepted", "rejected"}:
+                raise ValidationError("review_status must be accepted or rejected")
+            proposal = connection.execute(
+                "SELECT adventure_id,changes_json,review_status FROM rpg_state_proposals "
+                "WHERE workspace_id=? AND branch_id=? AND proposal_id=?",
+                (workspace_id, branch_id, proposal_id),
+            ).fetchone()
+            if not proposal:
+                raise NotFoundError("RPG state proposal does not exist in this branch")
+            if proposal["review_status"] != "proposed":
+                raise ConflictError("RPG state proposal has already been reviewed")
+            changes = _validated_rpg_changes(payload.get("changes", json.loads(proposal["changes_json"]))) if decision == "accepted" else []
+            if decision == "accepted":
+                sheet = connection.execute(
+                    "SELECT stats_json,trackers_json,current_location FROM rpg_sheets "
+                    "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                    (workspace_id, branch_id, proposal["adventure_id"]),
+                ).fetchone()
+                if not sheet:
+                    raise NotFoundError("Adventure character sheet does not exist in this branch")
+                trackers = json.loads(sheet["trackers_json"])
+                location = sheet["current_location"]
+                for change in changes:
+                    if change["operation"] == "tracker_delta":
+                        tracker = trackers.get(change["tracker_id"])
+                        if not tracker:
+                            raise ValidationError(f"Unknown tracker: {change['tracker_id']}")
+                        value = tracker["value"] + change["delta"]
+                        if not 0 <= value <= tracker["max"]:
+                            raise ValidationError("Accepted tracker changes must keep the value within its limit")
+                        tracker["value"] = value
+                    else:
+                        location = change["location"]
+                connection.execute(
+                    "UPDATE rpg_sheets SET trackers_json=?,current_location=?,updated_revision=? "
+                    "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                    (_json(trackers), location, revision, workspace_id, branch_id, proposal["adventure_id"]),
+                )
+            connection.execute(
+                "UPDATE rpg_state_proposals SET review_status=?,reviewed_revision=? "
+                "WHERE workspace_id=? AND branch_id=? AND proposal_id=?",
+                (decision, revision, workspace_id, branch_id, proposal_id),
+            )
+            return {"proposal_id": proposal_id, "adventure_id": proposal["adventure_id"], "review_status": decision, "applied_changes": changes}, f"rpg.state_{decision}", True
+
         if command_type == "create_conversation":
             conversation_id = _required_text(payload.get("conversation_id") or str(uuid4()), "conversation_id", 100)
             actor_entity_id = _required_text(payload.get("actor_entity_id"), "actor_entity_id", 100)
@@ -2095,6 +2443,108 @@ class CommandGateway:
                  "target_entity_id": r["target_entity_id"], "relation_type": r["relation_type"],
                  "properties": json.loads(r["properties_json"]), "review_status": r["review_status"],
                  "created_revision": r["created_revision"]} for r in rows]
+
+    def list_story_worlds(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self.db.lock:
+            rows = self.db.connection.execute(
+                "SELECT w.world_id,w.name,w.latest_version,w.created_at,w.updated_at,"
+                "v.description,v.template_key FROM story_worlds w JOIN story_world_versions v "
+                "ON v.workspace_id=w.workspace_id AND v.world_id=w.world_id AND v.version=w.latest_version "
+                "WHERE w.workspace_id=? ORDER BY w.updated_at DESC,w.name COLLATE NOCASE",
+                (workspace_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_story_world(self, workspace_id: str, world_id: str) -> dict[str, Any]:
+        with self.db.lock:
+            world = self.db.connection.execute(
+                "SELECT world_id,name,latest_version,created_at,updated_at FROM story_worlds "
+                "WHERE workspace_id=? AND world_id=?",
+                (workspace_id, world_id),
+            ).fetchone()
+            if not world:
+                raise NotFoundError("World does not exist in this workspace")
+            versions = self.db.connection.execute(
+                "SELECT version,description,template_key,content_json,created_revision,created_at "
+                "FROM story_world_versions WHERE workspace_id=? AND world_id=? ORDER BY version DESC",
+                (workspace_id, world_id),
+            ).fetchall()
+        return {
+            **dict(world),
+            "versions": [
+                {**dict(row), "content": json.loads(row["content_json"])}
+                for row in versions
+            ],
+        }
+
+    def list_story_adventures(self, workspace_id: str, branch_id: str | None = None) -> list[dict[str, Any]]:
+        with self.db.lock:
+            if branch_id is not None:
+                branch = self.db.connection.execute(
+                    "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
+                    (workspace_id, branch_id),
+                ).fetchone()
+                if not branch:
+                    raise NotFoundError("Branch does not exist in this workspace")
+            query = (
+                "SELECT a.adventure_id,a.branch_id,b.parent_branch_id,a.world_id,w.name AS world_name,a.world_version,"
+                "a.conversation_id,a.name,a.actor_entity_id,e.label AS actor_label,a.status,"
+                "a.created_revision,a.updated_revision,a.created_at,a.updated_at,COUNT(t.turn_id) AS turn_count "
+                "FROM story_adventures a JOIN story_worlds w ON w.workspace_id=a.workspace_id AND w.world_id=a.world_id "
+                "JOIN branches b ON b.workspace_id=a.workspace_id AND b.branch_id=a.branch_id "
+                "JOIN entities e ON e.workspace_id=a.workspace_id AND e.branch_id=a.branch_id AND e.entity_id=a.actor_entity_id "
+                "LEFT JOIN story_turns t ON t.workspace_id=a.workspace_id AND t.branch_id=a.branch_id AND t.conversation_id=a.conversation_id "
+                "WHERE a.workspace_id=?"
+            )
+            parameters: tuple[Any, ...] = (workspace_id,)
+            if branch_id is not None:
+                query += " AND a.branch_id=?"
+                parameters += (branch_id,)
+            rows = self.db.connection.execute(
+                query + " GROUP BY a.workspace_id,a.branch_id,a.adventure_id ORDER BY a.updated_at DESC,a.adventure_id",
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_rpg_state(self, workspace_id: str, branch_id: str, adventure_id: str) -> dict[str, Any]:
+        with self.db.lock:
+            adventure = self.db.connection.execute(
+                "SELECT adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,updated_revision "
+                "FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            sheet = self.db.connection.execute(
+                "SELECT stats_json,trackers_json,current_location,created_revision,updated_revision "
+                "FROM rpg_sheets WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            checks = self.db.connection.execute(
+                "SELECT check_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at "
+                "FROM rpg_checks WHERE workspace_id=? AND branch_id=? AND adventure_id=? "
+                "ORDER BY created_revision DESC LIMIT 50",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            proposals = self.db.connection.execute(
+                "SELECT proposal_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at "
+                "FROM rpg_state_proposals WHERE workspace_id=? AND branch_id=? AND adventure_id=? "
+                "ORDER BY created_revision DESC",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+        return {
+            "adventure": dict(adventure),
+            "sheet": {
+                **dict(sheet),
+                "stats": json.loads(sheet["stats_json"]),
+                "trackers": json.loads(sheet["trackers_json"]),
+            } if sheet else None,
+            "checks": [dict(row) for row in checks],
+            "proposals": [
+                {**dict(row), "changes": json.loads(row["changes_json"])}
+                for row in proposals
+            ],
+        }
 
     def list_claims(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
         with self.db.lock:

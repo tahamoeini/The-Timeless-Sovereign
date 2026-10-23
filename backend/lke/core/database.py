@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class Database:
@@ -70,6 +70,9 @@ class Database:
                 current = 7
             if current < 8:
                 self._apply_migration(8, _SCHEMA_V8)
+                current = 8
+            if current < 9:
+                self._apply_migration(9, _SCHEMA_V9)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -651,4 +654,131 @@ CREATE TRIGGER external_exchanges_no_update BEFORE UPDATE ON external_exchanges
 BEGIN SELECT RAISE(ABORT, 'external exchanges are immutable'); END;
 CREATE TRIGGER external_exchanges_no_delete BEFORE DELETE ON external_exchanges
 BEGIN SELECT RAISE(ABORT, 'external exchanges are immutable'); END;
+"""
+
+
+_SCHEMA_V9 = """
+CREATE TABLE story_worlds (
+    workspace_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 200),
+    latest_version INTEGER NOT NULL CHECK(latest_version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,world_id),
+    FOREIGN KEY(workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
+);
+CREATE TABLE story_world_versions (
+    workspace_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    description TEXT NOT NULL DEFAULT '',
+    template_key TEXT NOT NULL DEFAULT 'blank',
+    content_json TEXT NOT NULL CHECK(json_valid(content_json)),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,world_id,version),
+    FOREIGN KEY(workspace_id,world_id)
+        REFERENCES story_worlds(workspace_id,world_id) ON DELETE CASCADE
+);
+CREATE INDEX story_worlds_updated_idx ON story_worlds(workspace_id,updated_at DESC);
+CREATE TRIGGER story_world_versions_no_update BEFORE UPDATE ON story_world_versions
+BEGIN SELECT RAISE(ABORT, 'world versions are immutable'); END;
+CREATE TRIGGER story_world_versions_no_delete BEFORE DELETE ON story_world_versions
+BEGIN SELECT RAISE(ABORT, 'world versions are immutable'); END;
+
+CREATE TABLE story_adventures (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    world_version INTEGER NOT NULL CHECK(world_version >= 1),
+    conversation_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 200),
+    actor_entity_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','complete','paused')),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    updated_revision INTEGER NOT NULL CHECK(updated_revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,adventure_id),
+    UNIQUE(workspace_id,branch_id,conversation_id),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,world_id,world_version)
+        REFERENCES story_world_versions(workspace_id,world_id,version),
+    FOREIGN KEY(workspace_id,branch_id,conversation_id)
+        REFERENCES story_conversations(workspace_id,branch_id,conversation_id),
+    FOREIGN KEY(workspace_id,branch_id,actor_entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id)
+);
+CREATE INDEX story_adventures_library_idx
+    ON story_adventures(workspace_id,updated_at DESC,adventure_id);
+
+CREATE TABLE rpg_sheets (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    stats_json TEXT NOT NULL CHECK(json_valid(stats_json)),
+    trackers_json TEXT NOT NULL CHECK(json_valid(trackers_json)),
+    current_location TEXT NOT NULL DEFAULT '',
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    updated_revision INTEGER NOT NULL CHECK(updated_revision >= 0),
+    PRIMARY KEY(workspace_id,branch_id,adventure_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+
+CREATE TABLE rpg_checks (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    actor_entity_id TEXT NOT NULL,
+    stat_name TEXT NOT NULL,
+    die_roll INTEGER NOT NULL CHECK(die_roll BETWEEN 1 AND 20),
+    modifier INTEGER NOT NULL CHECK(modifier BETWEEN -20 AND 20),
+    total INTEGER NOT NULL,
+    target INTEGER NOT NULL CHECK(target BETWEEN 1 AND 100),
+    outcome TEXT NOT NULL CHECK(outcome IN ('success','failure')),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,check_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX rpg_checks_adventure_idx
+    ON rpg_checks(workspace_id,branch_id,adventure_id,created_revision DESC);
+CREATE TRIGGER rpg_checks_no_update BEFORE UPDATE ON rpg_checks
+BEGIN SELECT RAISE(ABORT, 'RPG check results are immutable'); END;
+CREATE TRIGGER rpg_checks_no_delete BEFORE DELETE ON rpg_checks
+BEGIN SELECT RAISE(ABORT, 'RPG check results are immutable'); END;
+
+CREATE TABLE rpg_state_proposals (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    source_turn_id TEXT,
+    changes_json TEXT NOT NULL CHECK(json_valid(changes_json)),
+    review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    reviewed_revision INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,proposal_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX rpg_state_proposals_review_idx
+    ON rpg_state_proposals(workspace_id,branch_id,adventure_id,review_status,created_revision);
+CREATE TRIGGER rpg_state_proposal_content_immutable BEFORE UPDATE ON rpg_state_proposals
+WHEN OLD.adventure_id IS NOT NEW.adventure_id OR OLD.conversation_id IS NOT NEW.conversation_id OR
+     OLD.source_turn_id IS NOT NEW.source_turn_id OR OLD.changes_json IS NOT NEW.changes_json OR
+     OLD.created_revision IS NOT NEW.created_revision OR OLD.created_at IS NOT NEW.created_at
+BEGIN SELECT RAISE(ABORT, 'state proposal content is immutable'); END;
+CREATE TRIGGER rpg_state_proposals_no_delete BEFORE DELETE ON rpg_state_proposals
+BEGIN SELECT RAISE(ABORT, 'state proposals are immutable'); END;
 """

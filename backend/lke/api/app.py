@@ -82,6 +82,39 @@ class StoryGenerateRequest(BaseModel):
     narrative_order: int = Field(ge=0)
 
 
+class StoryWorldRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    template_key: str = Field(default="blank", min_length=1, max_length=60)
+    content: dict[str, Any] = Field(default_factory=dict)
+
+
+class StoryWorldRevisionRequest(StoryWorldRequest):
+    expected_world_version: int = Field(ge=1)
+
+
+class StoryAdventureRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=180)
+    adventure_id: str = Field(min_length=1, max_length=100)
+    world_id: str = Field(min_length=1, max_length=100)
+    world_version: int = Field(ge=1)
+    conversation_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    actor_entity_id: str = Field(min_length=1, max_length=100)
+    actor_is_user_controlled: bool = True
+
+
+class D20CheckRequest(BaseModel):
+    branch_id: str = Field(min_length=1, max_length=100)
+    expected_revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    stat_name: str = Field(min_length=1, max_length=40)
+    target: int = Field(ge=1, le=100)
+
+
 class SourceExtractRequest(BaseModel):
     branch_id: str = "main"
     expected_revision: int = Field(ge=0)
@@ -90,6 +123,7 @@ class SourceExtractRequest(BaseModel):
 
 
 _STORY_TURN_REASON = "Generate a local story continuation"
+_STORY_ADVENTURE_REASON = "Start an isolated adventure from a pinned world version"
 _EXTRACTION_REASON = "Extract source-grounded proposals with local Ollama"
 _TEMPORAL_QUERY_INSUFFICIENT = "I do not have reviewed, character-known information to answer this at this story order."
 _TEMPORAL_QUERY_SYSTEM_PROMPT = """You answer questions about one character's memory at a specific story order in Living Knowledge Engine.
@@ -241,6 +275,133 @@ def create_app(
     @app.get("/api/v1/workspaces")
     def list_workspaces():
         return gateway.list_workspaces()
+
+    @app.get("/api/v1/workspaces/{workspace_id}/story/worlds")
+    def list_story_worlds(workspace_id: str):
+        return gateway.list_story_worlds(workspace_id)
+
+    @app.get("/api/v1/workspaces/{workspace_id}/story/worlds/{world_id}")
+    def get_story_world(workspace_id: str, world_id: str):
+        return gateway.get_story_world(workspace_id, world_id)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/story/worlds", status_code=201)
+    def create_story_world(workspace_id: str, body: StoryWorldRequest):
+        return gateway.execute(
+            workspace_id=workspace_id,
+            branch_id="main",
+            idempotency_key=body.idempotency_key,
+            expected_revision=body.expected_revision,
+            command_type="create_story_world",
+            payload={
+                "world_id": "world_" + hashlib.sha256(body.idempotency_key.encode("utf-8")).hexdigest()[:16],
+                "name": body.name,
+                "description": body.description,
+                "template_key": body.template_key,
+                "content": body.content,
+            },
+            actor="user",
+            reason="Create a reviewed local story world",
+        )
+
+    @app.put("/api/v1/workspaces/{workspace_id}/story/worlds/{world_id}")
+    def revise_story_world(workspace_id: str, world_id: str, body: StoryWorldRevisionRequest):
+        return gateway.execute(
+            workspace_id=workspace_id,
+            branch_id="main",
+            idempotency_key=body.idempotency_key,
+            expected_revision=body.expected_revision,
+            command_type="revise_story_world",
+            payload={
+                "world_id": world_id,
+                "expected_world_version": body.expected_world_version,
+                "name": body.name,
+                "description": body.description,
+                "template_key": body.template_key,
+                "content": body.content,
+            },
+            actor="user",
+            reason="Create a new immutable story world version",
+        )
+
+    @app.get("/api/v1/workspaces/{workspace_id}/story/adventures")
+    def list_story_adventures(workspace_id: str, branch_id: str | None = None):
+        return gateway.list_story_adventures(workspace_id, branch_id)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/story/adventures", status_code=201)
+    def create_story_adventure(workspace_id: str, body: StoryAdventureRequest):
+        if not any(world["world_id"] == body.world_id for world in gateway.list_story_worlds(workspace_id)):
+            raise NotFoundError("World does not exist in this workspace")
+        world = gateway.get_story_world(workspace_id, body.world_id)
+        if not any(version["version"] == body.world_version for version in world["versions"]):
+            raise NotFoundError("Pinned world version does not exist in this workspace")
+        if not any(entity["entity_id"] == body.actor_entity_id for entity in gateway.list_entities(workspace_id, "main")):
+            raise ValidationError("Choose a character from the main workspace branch")
+        branch_id = body.adventure_id
+        branch_key = f"{body.idempotency_key}.snapshot"
+        record_key = f"{body.idempotency_key}.record"
+        gateway.create_branch(
+            workspace_id=workspace_id,
+            parent_branch_id="main",
+            branch_id=branch_id,
+            expected_revision=body.expected_revision,
+            idempotency_key=branch_key,
+            reason=_STORY_ADVENTURE_REASON,
+        )
+        created = gateway.execute(
+            workspace_id=workspace_id,
+            branch_id=branch_id,
+            idempotency_key=record_key,
+            expected_revision=body.expected_revision,
+            command_type="create_story_adventure",
+            payload={
+                "adventure_id": body.adventure_id,
+                "world_id": body.world_id,
+                "world_version": body.world_version,
+                "conversation_id": body.conversation_id,
+                "name": body.name,
+                "actor_entity_id": body.actor_entity_id,
+                "actor_is_user_controlled": body.actor_is_user_controlled,
+            },
+            actor="user",
+            reason=_STORY_ADVENTURE_REASON,
+        )
+        return {
+            **created,
+            "adventure": gateway.list_story_adventures(workspace_id, branch_id)[0],
+            "conversation": gateway.get_conversation(workspace_id, branch_id, body.conversation_id),
+        }
+
+    @app.get("/api/v1/workspaces/{workspace_id}/story/adventures/{adventure_id}/rpg")
+    def get_rpg_state(workspace_id: str, adventure_id: str, branch_id: str):
+        return gateway.get_rpg_state(workspace_id, branch_id, adventure_id)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/story/adventures/{adventure_id}/checks")
+    def record_d20_check(workspace_id: str, adventure_id: str, body: D20CheckRequest):
+        reason = "Roll a player-facing d20 check"
+        stable_payload = {"adventure_id": adventure_id, "stat_name": body.stat_name, "target": body.target}
+        prior = gateway.replay(
+            workspace_id=workspace_id,
+            branch_id=body.branch_id,
+            idempotency_key=body.idempotency_key,
+            expected_revision=body.expected_revision,
+            command_type="record_d20_check",
+            payload=stable_payload,
+            actor="user",
+            reason=reason,
+        )
+        if prior:
+            return {**prior, "idempotent_replay": True, "state": gateway.get_rpg_state(workspace_id, body.branch_id, adventure_id)}
+        result = gateway.execute(
+            workspace_id=workspace_id,
+            branch_id=body.branch_id,
+            idempotency_key=body.idempotency_key,
+            expected_revision=body.expected_revision,
+            command_type="record_d20_check",
+            payload={**stable_payload, "die_roll": secrets.randbelow(20) + 1},
+            actor="user",
+            reason=reason,
+        )
+        return {**result, "idempotent_replay": False, "state": gateway.get_rpg_state(workspace_id, body.branch_id, adventure_id)}
 
     @app.post("/api/v1/workspaces/{workspace_id}/branches", status_code=201)
     def create_branch(workspace_id: str, body: BranchCreate):
