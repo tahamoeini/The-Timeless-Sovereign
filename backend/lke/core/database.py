@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class Database:
@@ -76,6 +76,9 @@ class Database:
                 current = 9
             if current < 10:
                 self._apply_migration(10, _SCHEMA_V10)
+                current = 10
+            if current < 11:
+                self._apply_migration(11, _SCHEMA_V11)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -798,4 +801,143 @@ UPDATE story_world_versions SET name=(
 );
 CREATE TRIGGER story_world_versions_no_update BEFORE UPDATE ON story_world_versions
 BEGIN SELECT RAISE(ABORT, 'world versions are immutable'); END;
+"""
+
+
+_SCHEMA_V11 = """
+ALTER TABLE story_adventures ADD COLUMN completed_turns INTEGER NOT NULL DEFAULT 0
+    CHECK(completed_turns >= 0);
+ALTER TABLE story_adventures ADD COLUMN npc_simulation_enabled INTEGER NOT NULL DEFAULT 0
+    CHECK(npc_simulation_enabled IN (0,1));
+UPDATE story_adventures SET completed_turns=(
+    SELECT COUNT(*) FROM story_turns
+    WHERE story_turns.workspace_id=story_adventures.workspace_id
+      AND story_turns.branch_id=story_adventures.branch_id
+      AND story_turns.conversation_id=story_adventures.conversation_id
+      AND story_turns.role='assistant'
+);
+
+CREATE TABLE story_turn_edits (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    content TEXT NOT NULL CHECK(length(trim(content)) > 0),
+    status TEXT NOT NULL CHECK(status IN ('active','deleted','superseded')),
+    provider TEXT,
+    model TEXT,
+    context_manifest_id TEXT,
+    context_manifest_json TEXT,
+    context_revision INTEGER,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,conversation_id,turn_id,version),
+    FOREIGN KEY(workspace_id,branch_id,conversation_id,turn_id)
+        REFERENCES story_turns(workspace_id,branch_id,conversation_id,turn_id) ON DELETE CASCADE
+);
+CREATE INDEX story_turn_edits_latest_idx
+    ON story_turn_edits(workspace_id,branch_id,conversation_id,turn_id,version DESC);
+CREATE TRIGGER story_turn_edits_content_immutable BEFORE UPDATE ON story_turn_edits
+WHEN OLD.content IS NOT NEW.content OR OLD.status IS NOT NEW.status OR OLD.provider IS NOT NEW.provider OR
+     OLD.model IS NOT NEW.model OR OLD.context_manifest_id IS NOT NEW.context_manifest_id OR
+     OLD.context_manifest_json IS NOT NEW.context_manifest_json OR OLD.context_revision IS NOT NEW.context_revision OR
+     OLD.created_revision IS NOT NEW.created_revision OR OLD.created_at IS NOT NEW.created_at
+BEGIN SELECT RAISE(ABORT, 'story turn edit history is immutable'); END;
+CREATE TRIGGER story_turn_edits_no_delete BEFORE DELETE ON story_turn_edits
+BEGIN SELECT RAISE(ABORT, 'story turn edit history is immutable'); END;
+
+CREATE TABLE story_memories (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    kind TEXT NOT NULL CHECK(kind IN ('note','event','situation')),
+    content TEXT NOT NULL CHECK(length(trim(content)) BETWEEN 1 AND 4000),
+    context_enabled INTEGER NOT NULL DEFAULT 1 CHECK(context_enabled IN (0,1)),
+    review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    source_turn_id TEXT,
+    narrative_order INTEGER NOT NULL DEFAULT 0 CHECK(narrative_order >= 0),
+    supersedes_version INTEGER,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    reviewed_revision INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,adventure_id,memory_id,version),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX story_memories_latest_idx
+    ON story_memories(workspace_id,branch_id,adventure_id,memory_id,version DESC);
+CREATE TRIGGER story_memories_content_immutable BEFORE UPDATE ON story_memories
+WHEN OLD.kind IS NOT NEW.kind OR OLD.content IS NOT NEW.content OR
+     OLD.context_enabled IS NOT NEW.context_enabled OR OLD.source_turn_id IS NOT NEW.source_turn_id OR
+     OLD.narrative_order IS NOT NEW.narrative_order OR OLD.supersedes_version IS NOT NEW.supersedes_version OR
+     OLD.created_revision IS NOT NEW.created_revision OR OLD.created_at IS NOT NEW.created_at
+BEGIN SELECT RAISE(ABORT, 'story memory versions are immutable'); END;
+CREATE TRIGGER story_memories_no_delete BEFORE DELETE ON story_memories
+BEGIN SELECT RAISE(ABORT, 'story memory history is immutable'); END;
+
+CREATE TABLE story_threads (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 200),
+    detail TEXT NOT NULL DEFAULT '' CHECK(length(detail) <= 2000),
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    updated_revision INTEGER NOT NULL CHECK(updated_revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,adventure_id,thread_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX story_threads_open_idx
+    ON story_threads(workspace_id,branch_id,adventure_id,status,updated_revision DESC);
+
+CREATE TABLE story_npc_profiles (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    npc_entity_id TEXT NOT NULL,
+    aliases_json TEXT NOT NULL CHECK(json_valid(aliases_json)),
+    public_profile_json TEXT NOT NULL CHECK(json_valid(public_profile_json)),
+    private_profile_json TEXT NOT NULL CHECK(json_valid(private_profile_json)),
+    review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    updated_revision INTEGER NOT NULL CHECK(updated_revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,adventure_id,npc_entity_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,branch_id,npc_entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id)
+);
+
+CREATE TABLE story_assets (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('character','scene')),
+    target_id TEXT NOT NULL,
+    display_name TEXT NOT NULL CHECK(length(trim(display_name)) BETWEEN 1 AND 200),
+    mime_type TEXT NOT NULL CHECK(mime_type IN ('image/png','image/jpeg','image/webp')),
+    content BLOB NOT NULL CHECK(length(content) BETWEEN 1 AND 5242880),
+    provenance_json TEXT NOT NULL CHECK(json_valid(provenance_json)),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,adventure_id,asset_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX story_assets_target_idx
+    ON story_assets(workspace_id,branch_id,adventure_id,target_kind,target_id,created_revision DESC);
+CREATE TRIGGER story_assets_no_update BEFORE UPDATE ON story_assets
+BEGIN SELECT RAISE(ABORT, 'story assets are immutable'); END;
+CREATE TRIGGER story_assets_no_delete BEFORE DELETE ON story_assets
+BEGIN SELECT RAISE(ABORT, 'story assets are immutable'); END;
 """

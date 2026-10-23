@@ -47,7 +47,7 @@ With backend requirements installed in the project environment, run the full uni
 python -m unittest discover -s tests\unit -v
 ```
 
-The current RPG slice passes 86 unit tests with `test_api_boundary.py` excluded, including seven RPG tests, and the frontend production build passes. The new authenticated RPG API boundary test is present, but the present Windows sandbox blocks its async socket-pair setup before the first request; API route behavior therefore remains unverified here. Browser checks for the RPG flow, live-model behavior, current-source installer, and clean-machine verification remain open.
+The current RPG slice passes 87 unit tests with `test_api_boundary.py` excluded, including seven RPG tests and the v9-to-v10 world-version migration check, and the frontend production build passes. The new authenticated RPG API boundary test is present, but the present Windows sandbox blocks its async socket-pair setup before the first request; API route behavior therefore remains unverified here. Browser checks for the RPG flow, live-model behavior, current-source installer, and clean-machine verification remain open.
 
 ## Quality targets
 

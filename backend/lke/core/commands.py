@@ -6,6 +6,8 @@ import hashlib
 import json
 import re
 import sqlite3
+import base64
+import binascii
 from datetime import date, datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -21,6 +23,9 @@ _ALLOWED_COMMANDS = {
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
     "create_story_world", "revise_story_world", "create_story_adventure", "update_rpg_sheet",
     "record_d20_check", "propose_rpg_state", "review_rpg_state_proposal",
+    "edit_story_turn", "create_story_memory", "revise_story_memory", "review_story_memory",
+    "save_story_thread", "update_story_npc", "travel_to_location", "add_story_asset",
+    "set_npc_simulation",
     "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
     "review_scenario_assumption", "record_extraction_batch", "review_extraction_candidate",
     "import_exchange", "promote_branch",
@@ -183,6 +188,13 @@ def _command_request_hash(request: dict[str, Any]) -> str:
         stable_payload.pop("context_manifest_id", None)
         stable_payload.pop("context_manifest", None)
         stable_request["payload"] = stable_payload
+    if stable_request["command_type"] == "edit_story_turn" and stable_request["payload"].get("provider") == "ollama":
+        stable_payload = dict(stable_request["payload"])
+        stable_payload.pop("content", None)
+        stable_payload.pop("context_manifest_id", None)
+        stable_payload.pop("context_manifest", None)
+        stable_payload.pop("context_revision", None)
+        stable_request["payload"] = stable_payload
     if stable_request["command_type"] == "record_d20_check":
         stable_payload = dict(stable_request["payload"])
         stable_payload.pop("die_roll", None)
@@ -266,8 +278,25 @@ def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
             clean.append({"operation": operation, "tracker_id": tracker_id, "delta": delta})
         elif operation == "set_location":
             clean.append({"operation": operation, "location": _required_text(change.get("location"), "location", 200)})
+        elif operation == "npc_profile":
+            npc_entity_id = _required_text(change.get("npc_entity_id"), "npc_entity_id", 100)
+            updates = change.get("updates")
+            allowed_fields = {"motivation", "current_goal", "whereabouts", "memory"}
+            if not isinstance(updates, dict) or not updates or len(updates) > 4 or not set(updates) <= allowed_fields:
+                raise ValidationError("NPC simulation updates must use the supported public profile fields")
+            clean_updates = {key: _required_text(value, f"NPC {key}", 500) for key, value in updates.items()}
+            clean.append({"operation": operation, "npc_entity_id": npc_entity_id, "updates": clean_updates})
+        elif operation == "add_event_memory":
+            context_enabled = change.get("context_enabled", True)
+            if not isinstance(context_enabled, bool):
+                raise ValidationError("event memory context_enabled must be a boolean")
+            clean.append({
+                "operation": operation,
+                "content": _required_text(change.get("content"), "event memory", 1000),
+                "context_enabled": context_enabled,
+            })
         else:
-            raise ValidationError("supported state changes are tracker_delta and set_location")
+            raise ValidationError("unsupported RPG state change")
     return clean
 
 
@@ -319,8 +348,13 @@ def _promote_branch_snapshot(
         ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision", None, (), ("created_revision",), "belief_id"),
         ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at", "conversation_id", ("actor_entity_id", "title", "actor_is_user_controlled", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "conversation_id"),
         ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id"),
-        ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at", "adventure_id", ("world_id", "world_version", "conversation_id", "name", "actor_entity_id", "status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id"),
+        ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled", "adventure_id", ("world_id", "world_version", "conversation_id", "name", "actor_entity_id", "status", "updated_revision", "updated_at", "completed_turns", "npc_simulation_enabled"), ("created_revision", "updated_revision"), "adventure_id"),
         ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision", "adventure_id", ("conversation_id", "stats_json", "trackers_json", "current_location", "updated_revision"), ("created_revision", "updated_revision"), "adventure_id"),
+        ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id,version"),
+        ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at", "adventure_id,memory_id,version", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "adventure_id,memory_id,version"),
+        ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at", "adventure_id,thread_id", ("title", "detail", "status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,thread_id"),
+        ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at", "adventure_id,npc_entity_id", ("aliases_json", "public_profile_json", "private_profile_json", "review_status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,npc_entity_id"),
+        ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at", None, (), ("created_revision",), "adventure_id,asset_id"),
         ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at", None, (), ("created_revision",), "check_id"),
         ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at", "proposal_id", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "proposal_id"),
         ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
@@ -493,8 +527,13 @@ class CommandGateway:
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
-                    ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at"),
+                    ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled"),
                     ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision"),
+                    ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
+                    ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at"),
+                    ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at"),
+                    ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at"),
+                    ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at"),
                     ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at"),
                     ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at"),
                     ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
@@ -1839,7 +1878,7 @@ class CommandGateway:
             if decision not in {"accepted", "rejected"}:
                 raise ValidationError("review_status must be accepted or rejected")
             proposal = connection.execute(
-                "SELECT adventure_id,changes_json,review_status,created_revision FROM rpg_state_proposals "
+                "SELECT adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision FROM rpg_state_proposals "
                 "WHERE workspace_id=? AND branch_id=? AND proposal_id=?",
                 (workspace_id, branch_id, proposal_id),
             ).fetchone()
@@ -1849,17 +1888,22 @@ class CommandGateway:
                 raise ConflictError("RPG state proposal has already been reviewed")
             changes = _validated_rpg_changes(payload.get("changes", json.loads(proposal["changes_json"]))) if decision == "accepted" else []
             if decision == "accepted":
-                sheet = connection.execute(
-                    "SELECT stats_json,trackers_json,current_location,updated_revision FROM rpg_sheets "
-                    "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
-                    (workspace_id, branch_id, proposal["adventure_id"]),
-                ).fetchone()
-                if not sheet:
-                    raise NotFoundError("Adventure character sheet does not exist in this branch")
-                if sheet["updated_revision"] > proposal["created_revision"]:
-                    raise ConflictError("RPG state proposal is stale because the character sheet changed after it was proposed")
-                trackers = json.loads(sheet["trackers_json"])
-                location = sheet["current_location"]
+                sheet_changes = [change for change in changes if change["operation"] in {"tracker_delta", "set_location"}]
+                sheet = None
+                trackers: dict[str, Any] = {}
+                location = ""
+                if sheet_changes:
+                    sheet = connection.execute(
+                        "SELECT stats_json,trackers_json,current_location,updated_revision FROM rpg_sheets "
+                        "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                        (workspace_id, branch_id, proposal["adventure_id"]),
+                    ).fetchone()
+                    if not sheet:
+                        raise NotFoundError("Adventure character sheet does not exist in this branch")
+                    if sheet["updated_revision"] > proposal["created_revision"]:
+                        raise ConflictError("RPG state proposal is stale because the character sheet changed after it was proposed")
+                    trackers = json.loads(sheet["trackers_json"])
+                    location = sheet["current_location"]
                 for change in changes:
                     if change["operation"] == "tracker_delta":
                         tracker = trackers.get(change["tracker_id"])
@@ -1869,19 +1913,382 @@ class CommandGateway:
                         if not 0 <= value <= tracker["max"]:
                             raise ValidationError("Accepted tracker changes must keep the value within its limit")
                         tracker["value"] = value
-                    else:
+                    elif change["operation"] == "set_location":
                         location = change["location"]
-                connection.execute(
-                    "UPDATE rpg_sheets SET trackers_json=?,current_location=?,updated_revision=? "
-                    "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
-                    (_json(trackers), location, revision, workspace_id, branch_id, proposal["adventure_id"]),
-                )
+                    elif change["operation"] == "npc_profile":
+                        profile = connection.execute(
+                            "SELECT public_profile_json,review_status,updated_revision FROM story_npc_profiles "
+                            "WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND npc_entity_id=?",
+                            (workspace_id, branch_id, proposal["adventure_id"], change["npc_entity_id"]),
+                        ).fetchone()
+                        if not profile or profile["review_status"] != "accepted":
+                            raise ValidationError("NPC simulation changes require an approved NPC profile")
+                        if profile["updated_revision"] > proposal["created_revision"]:
+                            raise ConflictError("NPC simulation proposal is stale because the profile changed after it was proposed")
+                        public_profile = json.loads(profile["public_profile_json"])
+                        public_profile.update(change["updates"])
+                        connection.execute(
+                            "UPDATE story_npc_profiles SET public_profile_json=?,updated_revision=?,updated_at=? "
+                            "WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND npc_entity_id=?",
+                            (_json(public_profile), revision, _now(), workspace_id, branch_id, proposal["adventure_id"], change["npc_entity_id"]),
+                        )
+                    elif change["operation"] == "add_event_memory":
+                        source_turn_id = proposal["source_turn_id"]
+                        narrative_order = 0
+                        if source_turn_id:
+                            source_turn = connection.execute(
+                                "SELECT narrative_order FROM story_turns t WHERE t.workspace_id=? AND t.branch_id=? AND t.conversation_id=? AND t.turn_id=? "
+                                "AND COALESCE((SELECT status FROM story_turn_edits e WHERE e.workspace_id=t.workspace_id AND e.branch_id=t.branch_id AND e.conversation_id=t.conversation_id AND e.turn_id=t.turn_id ORDER BY version DESC LIMIT 1),'active')='active'",
+                                (workspace_id, branch_id, proposal["conversation_id"], source_turn_id),
+                            ).fetchone()
+                            if not source_turn:
+                                raise ConflictError("Event memory proposal refers to a turn that is no longer active")
+                            narrative_order = source_turn["narrative_order"]
+                        connection.execute(
+                            "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at) "
+                            "VALUES(?,?,?,?,1,'event',?,?, 'accepted',?,?,NULL,?,?,?)",
+                            (workspace_id, branch_id, proposal["adventure_id"], str(uuid4()), change["content"],
+                             int(change["context_enabled"]), source_turn_id, narrative_order, revision, revision, _now()),
+                        )
+                if sheet is not None:
+                    connection.execute(
+                        "UPDATE rpg_sheets SET trackers_json=?,current_location=?,updated_revision=? "
+                        "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                        (_json(trackers), location, revision, workspace_id, branch_id, proposal["adventure_id"]),
+                    )
             connection.execute(
                 "UPDATE rpg_state_proposals SET review_status=?,reviewed_revision=? "
                 "WHERE workspace_id=? AND branch_id=? AND proposal_id=?",
                 (decision, revision, workspace_id, branch_id, proposal_id),
             )
             return {"proposal_id": proposal_id, "adventure_id": proposal["adventure_id"], "review_status": decision, "applied_changes": changes}, f"rpg.state_{decision}", True
+
+        if command_type == "edit_story_turn":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot edit or remove saved story turns")
+            conversation_id = _required_text(payload.get("conversation_id"), "conversation_id", 100)
+            turn_id = _required_text(payload.get("turn_id"), "turn_id", 100)
+            action = payload.get("action", "edit")
+            if action not in {"edit", "delete"}:
+                raise ValidationError("story turn action must be edit or delete")
+            turn = connection.execute(
+                "SELECT role,content,provider,model,context_manifest_id,context_manifest_json,context_revision FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=?",
+                (workspace_id, branch_id, conversation_id, turn_id),
+            ).fetchone()
+            if not turn:
+                raise NotFoundError("Story turn does not exist in this conversation")
+            current = connection.execute(
+                "SELECT content,status,version,provider,model,context_manifest_id,context_manifest_json,context_revision FROM story_turn_edits WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=? ORDER BY version DESC LIMIT 1",
+                (workspace_id, branch_id, conversation_id, turn_id),
+            ).fetchone()
+            current_content = current["content"] if current else turn["content"]
+            current_status = current["status"] if current else "active"
+            if current_status != "active":
+                raise ConflictError("Only an active story turn can be edited or deleted")
+            content = current_content if action == "delete" else _required_text(payload.get("content"), "content", 20000)
+            latest_fields = current or turn
+            replacement_provider = payload.get("provider", latest_fields["provider"])
+            replacement_model = payload.get("model", latest_fields["model"])
+            replacement_manifest_id = payload.get("context_manifest_id", latest_fields["context_manifest_id"])
+            replacement_manifest = payload.get("context_manifest", json.loads(latest_fields["context_manifest_json"]) if latest_fields["context_manifest_json"] else None)
+            replacement_context_revision = payload.get("context_revision", latest_fields["context_revision"])
+            if "provider" in payload:
+                if action != "edit" or replacement_provider != "ollama":
+                    raise ValidationError("Only local Ollama retry results can replace generated turn metadata")
+                replacement_model = _required_text(replacement_model, "model", 200)
+                replacement_manifest_id = _required_text(replacement_manifest_id, "context_manifest_id", 100)
+                if (not isinstance(replacement_manifest, dict) or replacement_manifest.get("manifest_id") != replacement_manifest_id or
+                        replacement_manifest.get("base_revision") != replacement_context_revision or
+                        replacement_manifest.get("workspace_id") != workspace_id or replacement_manifest.get("branch_id") != branch_id):
+                    raise ValidationError("Replacement turn context manifest does not match its branch revision")
+                if type(replacement_context_revision) is not int:
+                    raise ValidationError("Replacement turn context revision must be an integer")
+            targets: list[dict[str, Any]] = [{
+                "turn_id": turn_id, "content": content, "status": "deleted" if action == "delete" else "active",
+                "version": (current["version"] if current else 0) + 1,
+                "provider": replacement_provider, "model": replacement_model,
+                "context_manifest_id": replacement_manifest_id,
+                "context_manifest_json": _json(replacement_manifest) if replacement_manifest else None,
+                "context_revision": replacement_context_revision,
+            }]
+            raw_superseded = payload.get("superseded_turn_ids", [])
+            if not isinstance(raw_superseded, list) or len(raw_superseded) > 500:
+                raise ValidationError("superseded_turn_ids must be a list of at most 500 turns")
+            for superseded_id in raw_superseded:
+                superseded_id = _required_text(superseded_id, "superseded turn id", 100)
+                if superseded_id == turn_id:
+                    continue
+                later = connection.execute(
+                    "SELECT t.content,t.provider,t.model,t.context_manifest_id,t.context_manifest_json,t.context_revision,"
+                    "e.content AS edited_content,e.status AS edit_status,e.version AS edit_version,e.provider AS edit_provider,e.model AS edit_model,"
+                    "e.context_manifest_id AS edit_manifest_id,e.context_manifest_json AS edit_manifest_json,e.context_revision AS edit_context_revision "
+                    "FROM story_turns t LEFT JOIN story_turn_edits e ON e.workspace_id=t.workspace_id AND e.branch_id=t.branch_id "
+                    "AND e.conversation_id=t.conversation_id AND e.turn_id=t.turn_id AND e.version=(SELECT MAX(x.version) FROM story_turn_edits x "
+                    "WHERE x.workspace_id=t.workspace_id AND x.branch_id=t.branch_id AND x.conversation_id=t.conversation_id AND x.turn_id=t.turn_id) "
+                    "WHERE t.workspace_id=? AND t.branch_id=? AND t.conversation_id=? AND t.turn_id=?",
+                    (workspace_id, branch_id, conversation_id, superseded_id),
+                ).fetchone()
+                if not later:
+                    raise ValidationError("A superseded turn must belong to the same conversation")
+                status = later["edit_status"] or "active"
+                if status == "active":
+                    targets.append({
+                        "turn_id": superseded_id, "content": later["edited_content"] or later["content"], "status": "superseded",
+                        "version": (later["edit_version"] or 0) + 1,
+                        "provider": later["edit_provider"] or later["provider"], "model": later["edit_model"] or later["model"],
+                        "context_manifest_id": later["edit_manifest_id"] or later["context_manifest_id"],
+                        "context_manifest_json": later["edit_manifest_json"] or later["context_manifest_json"],
+                        "context_revision": later["edit_context_revision"] if later["edit_context_revision"] is not None else later["context_revision"],
+                    })
+            now = _now()
+            connection.executemany(
+                "INSERT INTO story_turn_edits(workspace_id,branch_id,conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(workspace_id, branch_id, conversation_id, target["turn_id"], target["version"], target["content"], target["status"],
+                  target["provider"], target["model"], target["context_manifest_id"], target["context_manifest_json"],
+                  target["context_revision"], revision, now) for target in targets],
+            )
+            connection.execute(
+                "UPDATE story_conversations SET updated_revision=?,updated_at=? WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (revision, now, workspace_id, branch_id, conversation_id),
+            )
+            return {"conversation_id": conversation_id, "turn_id": turn_id, "action": action, "superseded_count": len(targets) - 1}, "story.turn_edited" if action == "edit" else "story.turn_deleted", True
+
+        if command_type in {"create_story_memory", "revise_story_memory"}:
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            adventure = connection.execute(
+                "SELECT conversation_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            kind = payload.get("kind", "note")
+            if kind not in {"note", "event", "situation"}:
+                raise ValidationError("memory kind must be note, event, or situation")
+            content = _required_text(payload.get("content"), "content", 4000)
+            enabled = payload.get("context_enabled", True)
+            if not isinstance(enabled, bool):
+                raise ValidationError("context_enabled must be a boolean")
+            source_turn_id = payload.get("source_turn_id")
+            if source_turn_id is not None:
+                source_turn_id = _required_text(source_turn_id, "source_turn_id", 100)
+                source_turn = connection.execute(
+                    "SELECT narrative_order FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=? AND role='assistant'",
+                    (workspace_id, branch_id, adventure["conversation_id"], source_turn_id),
+                ).fetchone()
+                if not source_turn:
+                    raise ValidationError("source_turn_id must identify an assistant turn in this adventure")
+                narrative_order = source_turn["narrative_order"]
+            else:
+                narrative_order = payload.get("narrative_order", 0)
+            if type(narrative_order) is not int or narrative_order < 0:
+                raise ValidationError("narrative_order must be a non-negative integer")
+            review_status = payload.get("review_status", "accepted" if kind == "note" else "proposed")
+            if review_status not in {"proposed", "accepted"}:
+                raise ValidationError("new memories must be proposed or accepted")
+            if actor.startswith("ai:") and review_status == "accepted":
+                raise ValidationError("AI actors may only propose memories")
+            now = _now()
+            if command_type == "create_story_memory":
+                memory_id = _required_text(payload.get("memory_id") or str(uuid4()), "memory_id", 100)
+                version, supersedes = 1, None
+            else:
+                memory_id = _required_text(payload.get("memory_id"), "memory_id", 100)
+                expected_version = payload.get("expected_version")
+                if type(expected_version) is not int or expected_version < 1:
+                    raise ValidationError("expected_version must be a positive integer")
+                latest = connection.execute(
+                    "SELECT MAX(version) FROM story_memories WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND memory_id=?",
+                    (workspace_id, branch_id, adventure_id, memory_id),
+                ).fetchone()[0]
+                if latest is None:
+                    raise NotFoundError("Story memory does not exist in this adventure")
+                if latest != expected_version:
+                    raise ConflictError(f"Expected memory version {expected_version}; current version is {latest}")
+                version, supersedes = expected_version + 1, expected_version
+            connection.execute(
+                "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)",
+                (workspace_id, branch_id, adventure_id, memory_id, version, kind, content, int(enabled), review_status,
+                 source_turn_id, narrative_order, supersedes, revision, now),
+            )
+            return {"adventure_id": adventure_id, "memory_id": memory_id, "version": version, "kind": kind, "review_status": review_status}, "story.memory_created" if version == 1 else "story.memory_revised", True
+
+        if command_type == "review_story_memory":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot review memories")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            memory_id = _required_text(payload.get("memory_id"), "memory_id", 100)
+            version = payload.get("version")
+            decision = payload.get("review_status")
+            if type(version) is not int or version < 1 or decision not in {"accepted", "rejected"}:
+                raise ValidationError("Review requires a version and accepted/rejected status")
+            result = connection.execute(
+                "UPDATE story_memories SET review_status=?,reviewed_revision=? WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND memory_id=? AND version=? AND review_status='proposed'",
+                (decision, revision, workspace_id, branch_id, adventure_id, memory_id, version),
+            )
+            if result.rowcount != 1:
+                raise ConflictError("Only a pending memory can be reviewed")
+            return {"adventure_id": adventure_id, "memory_id": memory_id, "version": version, "review_status": decision}, "story.memory_reviewed", True
+
+        if command_type == "save_story_thread":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot change canonical open threads")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            thread_id = _required_text(payload.get("thread_id") or str(uuid4()), "thread_id", 100)
+            title = _required_text(payload.get("title"), "title", 200)
+            detail = payload.get("detail", "")
+            status = payload.get("status", "open")
+            if not isinstance(detail, str) or len(detail) > 2000 or status not in {"open", "closed"}:
+                raise ValidationError("Thread detail or status is invalid")
+            exists = connection.execute(
+                "SELECT created_revision FROM story_threads WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND thread_id=?",
+                (workspace_id, branch_id, adventure_id, thread_id),
+            ).fetchone()
+            now = _now()
+            if exists:
+                connection.execute(
+                    "UPDATE story_threads SET title=?,detail=?,status=?,updated_revision=?,updated_at=? WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND thread_id=?",
+                    (title, detail.strip(), status, revision, now, workspace_id, branch_id, adventure_id, thread_id),
+                )
+                created_revision = exists["created_revision"]
+            else:
+                connection.execute(
+                    "INSERT INTO story_threads(workspace_id,branch_id,adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?, ?,?,?,?)",
+                    (workspace_id, branch_id, adventure_id, thread_id, title, detail.strip(), status, revision, revision, now, now),
+                )
+                created_revision = revision
+            return {"adventure_id": adventure_id, "thread_id": thread_id, "title": title, "status": status, "created_revision": created_revision}, "story.thread_saved", True
+
+        if command_type == "update_story_npc":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot write NPC profiles")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            npc_entity_id = _required_text(payload.get("npc_entity_id"), "npc_entity_id", 100)
+            entity = connection.execute(
+                "SELECT entity_type FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, npc_entity_id),
+            ).fetchone()
+            if not entity or entity["entity_type"] not in {"character", "person"}:
+                raise ValidationError("NPC must be a character or person in this adventure")
+            adventure = connection.execute(
+                "SELECT actor_entity_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure or npc_entity_id == adventure["actor_entity_id"]:
+                raise ValidationError("Choose an NPC entity other than the protagonist")
+            aliases = payload.get("aliases", [])
+            public_profile, private_profile = payload.get("public_profile", {}), payload.get("private_profile", {})
+            status = payload.get("review_status", "proposed")
+            if (not isinstance(aliases, list) or len(aliases) > 20 or
+                    any(not isinstance(alias, str) or not alias.strip() or len(alias.strip()) > 100 for alias in aliases) or
+                    not isinstance(public_profile, dict) or not isinstance(private_profile, dict) or
+                    status not in {"proposed", "accepted", "rejected"}):
+                raise ValidationError("NPC aliases, profiles, or review status are invalid")
+            if len(_json(public_profile).encode("utf-8")) > 20000 or len(_json(private_profile).encode("utf-8")) > 20000:
+                raise ValidationError("NPC profiles are limited to 20 KB each")
+            old = connection.execute(
+                "SELECT created_revision FROM story_npc_profiles WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND npc_entity_id=?",
+                (workspace_id, branch_id, adventure_id, npc_entity_id),
+            ).fetchone()
+            now = _now()
+            connection.execute(
+                "INSERT INTO story_npc_profiles(workspace_id,branch_id,adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,branch_id,adventure_id,npc_entity_id) DO UPDATE SET "
+                "aliases_json=excluded.aliases_json,public_profile_json=excluded.public_profile_json,private_profile_json=excluded.private_profile_json,review_status=excluded.review_status,updated_revision=excluded.updated_revision,updated_at=excluded.updated_at",
+                (workspace_id, branch_id, adventure_id, npc_entity_id, _json([alias.strip() for alias in aliases]), _json(public_profile), _json(private_profile), status, old["created_revision"] if old else revision, revision, now, now),
+            )
+            return {"adventure_id": adventure_id, "npc_entity_id": npc_entity_id, "review_status": status}, "story.npc_profile_saved", True
+
+        if command_type == "travel_to_location":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot move the player between locations")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            location = _required_text(payload.get("location"), "location", 200)
+            adventure = connection.execute(
+                "SELECT world_id,world_version FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            world = connection.execute(
+                "SELECT content_json FROM story_world_versions WHERE workspace_id=? AND world_id=? AND version=?",
+                (workspace_id, adventure["world_id"], adventure["world_version"]),
+            ).fetchone()
+            locations = json.loads(world["content_json"]).get("locations", []) if world else []
+            if not isinstance(locations, list) or location not in locations:
+                raise ValidationError("Travel is limited to locations in the pinned world version")
+            connection.execute(
+                "UPDATE rpg_sheets SET current_location=?,updated_revision=? WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (location, revision, workspace_id, branch_id, adventure_id),
+            )
+            connection.execute(
+                "UPDATE story_adventures SET updated_revision=?,updated_at=? WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (revision, _now(), workspace_id, branch_id, adventure_id),
+            )
+            return {"adventure_id": adventure_id, "location": location}, "story.location_changed", True
+
+        if command_type == "set_npc_simulation":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot enable NPC simulation")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValidationError("enabled must be a boolean")
+            result = connection.execute(
+                "UPDATE story_adventures SET npc_simulation_enabled=?,updated_revision=?,updated_at=? "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (int(enabled), revision, _now(), workspace_id, branch_id, adventure_id),
+            )
+            if result.rowcount != 1:
+                raise NotFoundError("Adventure does not exist in this branch")
+            return {"adventure_id": adventure_id, "enabled": enabled}, "story.npc_simulation_setting_changed", True
+
+        if command_type == "add_story_asset":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot attach or publish story images")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            target_kind = payload.get("target_kind")
+            if target_kind not in {"character", "scene"}:
+                raise ValidationError("target_kind must be character or scene")
+            target_id = _required_text(payload.get("target_id"), "target_id", 100)
+            display_name = _required_text(payload.get("display_name"), "display_name", 200)
+            mime_type = payload.get("mime_type")
+            if mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+                raise ValidationError("Only PNG, JPEG, and WebP images are supported")
+            encoded = payload.get("data_base64")
+            if not isinstance(encoded, str) or len(encoded) > 7_000_000:
+                raise ValidationError("Image data is missing or exceeds the upload limit")
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as error:
+                raise ValidationError("Image data must be valid base64") from error
+            if not data or len(data) > 5 * 1024 * 1024:
+                raise ValidationError("Images are limited to 5 MiB")
+            signature_ok = (mime_type == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n")) or (mime_type == "image/jpeg" and data.startswith(b"\xff\xd8\xff")) or (mime_type == "image/webp" and len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP")
+            if not signature_ok:
+                raise ValidationError("Image bytes do not match the declared file type")
+            adventure = connection.execute(
+                "SELECT conversation_id,actor_entity_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            if target_kind == "character":
+                found = connection.execute("SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?", (workspace_id, branch_id, target_id)).fetchone()
+            else:
+                found = connection.execute("SELECT 1 FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=? AND role='assistant'", (workspace_id, branch_id, adventure["conversation_id"], target_id)).fetchone()
+            if not found:
+                raise NotFoundError("Image target does not exist in this adventure")
+            provenance = payload.get("provenance", {})
+            if not isinstance(provenance, dict) or len(_json(provenance).encode("utf-8")) > 4000:
+                raise ValidationError("Image provenance must be a small JSON object")
+            asset_id = _required_text(payload.get("asset_id") or str(uuid4()), "asset_id", 100)
+            connection.execute(
+                "INSERT INTO story_assets(workspace_id,branch_id,adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, adventure_id, asset_id, target_kind, target_id, display_name, mime_type, data, _json(provenance), revision, _now()),
+            )
+            return {"adventure_id": adventure_id, "asset_id": asset_id, "target_kind": target_kind, "target_id": target_id, "display_name": display_name, "mime_type": mime_type}, "story.asset_added", True
 
         if command_type == "create_conversation":
             conversation_id = _required_text(payload.get("conversation_id") or str(uuid4()), "conversation_id", 100)
@@ -1956,6 +2363,11 @@ class CommandGateway:
             )
             connection.execute(
                 "UPDATE story_conversations SET updated_revision=?,updated_at=? "
+                "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (revision, now, workspace_id, branch_id, conversation_id),
+            )
+            connection.execute(
+                "UPDATE story_adventures SET completed_turns=completed_turns+1,updated_revision=?,updated_at=? "
                 "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
                 (revision, now, workspace_id, branch_id, conversation_id),
             )
@@ -2511,7 +2923,7 @@ class CommandGateway:
     def get_rpg_state(self, workspace_id: str, branch_id: str, adventure_id: str) -> dict[str, Any]:
         with self.db.lock:
             adventure = self.db.connection.execute(
-                "SELECT adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,updated_revision "
+                "SELECT adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,updated_revision,completed_turns,npc_simulation_enabled "
                 "FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
                 (workspace_id, branch_id, adventure_id),
             ).fetchone()
@@ -2535,7 +2947,7 @@ class CommandGateway:
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
         return {
-            "adventure": dict(adventure),
+            "adventure": {**dict(adventure), "npc_simulation_enabled": bool(adventure["npc_simulation_enabled"])},
             "sheet": {
                 **dict(sheet),
                 "stats": json.loads(sheet["stats_json"]),
@@ -2547,6 +2959,71 @@ class CommandGateway:
                 for row in proposals
             ],
         }
+
+    def get_story_memories(self, workspace_id: str, branch_id: str, adventure_id: str) -> dict[str, Any]:
+        with self.db.lock:
+            adventure = self.db.connection.execute(
+                "SELECT conversation_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            rows = self.db.connection.execute(
+                "SELECT memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at "
+                "FROM story_memories WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY memory_id,version",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            threads = self.db.connection.execute(
+                "SELECT thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at FROM story_threads "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY status,title COLLATE NOCASE",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+        by_id: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            by_id.setdefault(row["memory_id"], []).append({**dict(row), "context_enabled": bool(row["context_enabled"])})
+        latest = [versions[-1] for versions in by_id.values()]
+        return {
+            "memories": sorted(latest, key=lambda item: (item["created_revision"], item["memory_id"]), reverse=True),
+            "history": {memory_id: versions for memory_id, versions in by_id.items()},
+            "threads": [dict(row) for row in threads],
+            "conversation_id": adventure["conversation_id"],
+        }
+
+    def list_story_npcs(self, workspace_id: str, branch_id: str, adventure_id: str) -> list[dict[str, Any]]:
+        with self.db.lock:
+            rows = self.db.connection.execute(
+                "SELECT p.npc_entity_id,e.label,e.entity_type,p.aliases_json,p.public_profile_json,p.private_profile_json,"
+                "p.review_status,p.created_revision,p.updated_revision,p.created_at,p.updated_at FROM story_npc_profiles p "
+                "JOIN entities e ON e.workspace_id=p.workspace_id AND e.branch_id=p.branch_id AND e.entity_id=p.npc_entity_id "
+                "WHERE p.workspace_id=? AND p.branch_id=? AND p.adventure_id=? ORDER BY e.label COLLATE NOCASE",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+        return [
+            {**dict(row), "aliases": json.loads(row["aliases_json"]),
+             "public_profile": json.loads(row["public_profile_json"]),
+             "private_profile": json.loads(row["private_profile_json"])}
+            for row in rows
+        ]
+
+    def list_story_assets(self, workspace_id: str, branch_id: str, adventure_id: str) -> list[dict[str, Any]]:
+        with self.db.lock:
+            rows = self.db.connection.execute(
+                "SELECT asset_id,target_kind,target_id,display_name,mime_type,provenance_json,created_revision,created_at,length(content) AS size_bytes "
+                "FROM story_assets WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY created_revision,asset_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+        return [{**dict(row), "provenance": json.loads(row["provenance_json"])} for row in rows]
+
+    def get_story_asset(self, workspace_id: str, branch_id: str, adventure_id: str, asset_id: str) -> dict[str, Any]:
+        with self.db.lock:
+            row = self.db.connection.execute(
+                "SELECT asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at "
+                "FROM story_assets WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND asset_id=?",
+                (workspace_id, branch_id, adventure_id, asset_id),
+            ).fetchone()
+        if not row:
+            raise NotFoundError("Story image does not exist in this adventure")
+        return {**dict(row), "provenance": json.loads(row["provenance_json"])}
 
     def list_claims(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
         with self.db.lock:
@@ -2619,13 +3096,36 @@ class CommandGateway:
                 "ORDER BY turn_order",
                 (workspace_id, branch_id, conversation_id),
             ).fetchall()
+            edit_rows = self.db.connection.execute(
+                "SELECT turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at FROM story_turn_edits "
+                "WHERE workspace_id=? AND branch_id=? AND conversation_id=? ORDER BY turn_id,version",
+                (workspace_id, branch_id, conversation_id),
+            ).fetchall()
         conversation = dict(row)
         conversation["actor_is_user_controlled"] = bool(conversation["actor_is_user_controlled"])
         conversation["turns"] = []
+        edits_by_turn: dict[str, list[dict[str, Any]]] = {}
+        for edit in edit_rows:
+            edits_by_turn.setdefault(edit["turn_id"], []).append(dict(edit))
         for turn in turns:
             item = dict(turn)
             manifest_json = item.pop("context_manifest_json")
             item["context_manifest"] = json.loads(manifest_json) if manifest_json else None
+            history = edits_by_turn.get(item["turn_id"], [])
+            if history:
+                item["content"] = history[-1]["content"]
+                item["status"] = history[-1]["status"]
+                for field in ("provider", "model", "context_manifest_id", "context_revision"):
+                    if history[-1][field] is not None:
+                        item[field] = history[-1][field]
+                if history[-1]["context_manifest_json"] is not None:
+                    item["context_manifest"] = json.loads(history[-1]["context_manifest_json"])
+            else:
+                item["status"] = "active"
+            for edit in history:
+                manifest_json = edit.pop("context_manifest_json")
+                edit["context_manifest"] = json.loads(manifest_json) if manifest_json else None
+            item["edit_history"] = history
             conversation["turns"].append(item)
         return conversation
 

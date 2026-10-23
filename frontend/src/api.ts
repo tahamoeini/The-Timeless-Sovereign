@@ -170,6 +170,8 @@ export type StoryTurn = {
   context_revision: number | null;
   created_revision: number;
   created_at: string;
+  status: "active" | "deleted" | "superseded";
+  edit_history: Array<{ version: number; content: string; status: "active" | "deleted" | "superseded"; created_revision: number; created_at: string }>;
 };
 export type ContextManifest = {
   protocol: string;
@@ -205,6 +207,11 @@ export type ContextManifest = {
       current_location: string;
     };
     recent_checks: { stat_name: string; die_roll: number; modifier: number; total: number; target: number; outcome: "success" | "failure" }[];
+    memories: Array<{ memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string; narrative_order: number; source_turn_id: string | null }>;
+    excluded_memories: Array<{ memory_id: string; reason: string }>;
+    open_threads: Array<{ thread_id: string; title: string; detail: string }>;
+    public_npcs: Array<{ entity_id: string; name: string; aliases: string[]; profile: Record<string, unknown> }>;
+    approved_locations: string[];
   };
 };
 export type TemporalQueryResult = {
@@ -286,7 +293,9 @@ export type RpgCheck = {
 };
 export type RpgStateChange =
   | { operation: "tracker_delta"; tracker_id: string; delta: number }
-  | { operation: "set_location"; location: string };
+  | { operation: "set_location"; location: string }
+  | { operation: "npc_profile"; npc_entity_id: string; updates: Record<string, string> }
+  | { operation: "add_event_memory"; content: string; context_enabled: boolean };
 export type RpgStateProposal = {
   proposal_id: string;
   conversation_id: string;
@@ -298,7 +307,7 @@ export type RpgStateProposal = {
   created_at: string;
 };
 export type RpgState = {
-  adventure: Pick<StoryAdventure, "adventure_id" | "world_id" | "world_version" | "conversation_id" | "name" | "actor_entity_id" | "status" | "updated_revision">;
+  adventure: Pick<StoryAdventure, "adventure_id" | "world_id" | "world_version" | "conversation_id" | "name" | "actor_entity_id" | "status" | "updated_revision"> & { completed_turns: number; npc_simulation_enabled: boolean };
   sheet: {
     stats_json: string;
     trackers_json: string;
@@ -324,6 +333,19 @@ export type StoryGenerationResult = {
   idempotent_replay: boolean;
   conversation: StoryConversation;
 };
+export type StoryMemory = {
+  memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string;
+  context_enabled: boolean; review_status: "proposed" | "accepted" | "rejected"; source_turn_id: string | null;
+  narrative_order: number; supersedes_version: number | null; created_revision: number; reviewed_revision: number | null; created_at: string;
+};
+export type StoryThread = { thread_id: string; title: string; detail: string; status: "open" | "closed"; created_revision: number; updated_revision: number; created_at: string; updated_at: string };
+export type StoryNpc = {
+  npc_entity_id: string; label: string; entity_type: string; aliases: string[];
+  public_profile: Record<string, string>; private_profile: Record<string, string>;
+  review_status: "proposed" | "accepted" | "rejected"; created_revision: number; updated_revision: number;
+};
+export type StoryAsset = { asset_id: string; target_kind: "character" | "scene"; target_id: string; display_name: string; mime_type: string; provenance: Record<string, unknown>; size_bytes: number; created_revision: number; created_at: string };
+export type StoryStudioData = { memories: { memories: StoryMemory[]; history: Record<string, StoryMemory[]>; threads: StoryThread[]; conversation_id: string }; npcs: StoryNpc[]; assets: StoryAsset[] };
 
 export type RuntimeConfig = { baseUrl: string; token: string };
 

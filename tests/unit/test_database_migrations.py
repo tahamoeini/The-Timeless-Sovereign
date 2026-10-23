@@ -14,6 +14,12 @@ class DatabaseMigrationTests(unittest.TestCase):
         for table in ("extraction_candidates", "extraction_batches", "entity_evidence"):
             database.connection.execute(f"DROP TABLE {table}")
 
+    def _drop_story_extensions(self, database):
+        for table in ("story_assets", "story_npc_profiles", "story_threads", "story_memories", "story_turn_edits"):
+            database.connection.execute(f"DROP TABLE IF EXISTS {table}")
+        database.connection.execute("ALTER TABLE story_adventures DROP COLUMN npc_simulation_enabled")
+        database.connection.execute("ALTER TABLE story_adventures DROP COLUMN completed_turns")
+
     def _drop_scenarios(self, database):
         for table in (
             "scenario_assumptions", "scenario_source_evidence", "scenario_claim_evidence",
@@ -26,6 +32,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         self._drop_story_rpg(database)
 
     def _drop_story_rpg(self, database):
+        self._drop_story_extensions(database)
         for table in (
             "rpg_state_proposals", "rpg_checks", "rpg_sheets", "story_adventures",
             "story_world_versions", "story_worlds",
@@ -226,7 +233,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                 reason="Create migration fixture",
             )
             database.connection.execute("ALTER TABLE story_world_versions DROP COLUMN name")
-            database.connection.execute("DELETE FROM schema_migrations WHERE version=10")
+            self._drop_story_extensions(database)
+            database.connection.execute("DELETE FROM schema_migrations WHERE version>9")
             database.close()
 
             upgraded = Database(database_path)
