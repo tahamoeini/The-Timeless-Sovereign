@@ -39,7 +39,7 @@ Each saved story turn retains the exact context manifest JSON and its manifest I
 
 ## Temporal character-memory query
 
-`POST /api/v1/workspaces/{workspace_id}/temporal-query` answers a question about one actor's memory at a relative narrative order. The request names the workspace path, branch, actor, expected revision, order, local Ollama model, and question. This is narrative-order character memory; calendar-date questions over Journal events and richer valid-time timelines remain pending.
+`POST /api/v1/workspaces/{workspace_id}/temporal-query` answers a question about one actor's memory at a relative narrative order. The request names the workspace path, branch, actor, expected revision, order, optional local Ollama model, and question. A model is required only when eligible claims exist. This is narrative-order character memory; calendar-date questions over Journal events and richer valid-time timelines remain pending.
 
 The route compiles the same revision-bound actor context used by Story Studio. Only included claims are sent to the local model; excluded claim content and exclusion records are not provider input. The model must return an answer status and claim IDs, and the API accepts an answer only when it cites one or more claim IDs from that exact included set. Citation records retain epistemic status, actor stance, narrative and awareness order, and evidence IDs. `unknown`, `believed`, and `contested` claims must remain qualified rather than being stated as settled truth. Unsupported answers and out-of-manifest citations become a deterministic insufficient-memory response.
 
