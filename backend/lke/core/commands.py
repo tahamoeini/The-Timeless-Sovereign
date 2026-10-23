@@ -33,6 +33,9 @@ _ALLOWED_COMMANDS = {
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
 
+_ALLOWED_STORY_PROVIDERS = {"ollama", "openai", "claude", "codex", "huggingface", "huggingface_local"}
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -2011,8 +2014,8 @@ class CommandGateway:
             replacement_manifest = payload.get("context_manifest", json.loads(latest_fields["context_manifest_json"]) if latest_fields["context_manifest_json"] else None)
             replacement_context_revision = payload.get("context_revision", latest_fields["context_revision"])
             if "provider" in payload:
-                if action != "edit" or replacement_provider != "ollama":
-                    raise ValidationError("Only local Ollama retry results can replace generated turn metadata")
+                if action != "edit" or replacement_provider not in _ALLOWED_STORY_PROVIDERS:
+                    raise ValidationError("Only supported story-provider retry results can replace generated turn metadata")
                 replacement_model = _required_text(replacement_model, "model", 200)
                 replacement_manifest_id = _required_text(replacement_manifest_id, "context_manifest_id", 100)
                 if (not isinstance(replacement_manifest, dict) or replacement_manifest.get("manifest_id") != replacement_manifest_id or
@@ -2338,8 +2341,8 @@ class CommandGateway:
             user_content = _required_text(payload.get("user_content"), "user_content", 4000)
             assistant_content = _required_text(payload.get("assistant_content"), "assistant_content", 20000)
             provider = payload.get("provider")
-            if provider != "ollama":
-                raise ValidationError("Only the local Ollama provider can record generated story turns")
+            if provider not in _ALLOWED_STORY_PROVIDERS:
+                raise ValidationError("The story turn uses an unsupported provider")
             model = _required_text(payload.get("model"), "model", 200)
             narrative_order = payload.get("narrative_order")
             if not isinstance(narrative_order, int) or narrative_order < 0:

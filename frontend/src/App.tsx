@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { buildStoryExport } from "./storyExport";
-import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAdventure, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryMemory, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAdventure, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -1110,8 +1110,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [conversations, setConversations] = useState<StoryConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState("");
   const [conversation, setConversation] = useState<StoryConversation | null>(null);
-  const [models, setModels] = useState<string[]>([]);
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+  const [storyProviders, setStoryProviders] = useState<StoryProvider[]>([]);
+  const [providerId, setProviderId] = useState<StoryProvider["id"]>("ollama");
   const [model, setModel] = useState("");
   const [title, setTitle] = useState("");
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
@@ -1166,6 +1166,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const generationAbort = useRef<AbortController | null>(null);
   const memoryScopeRef = useRef("");
   const storyMounted = useRef(true);
+  const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
+  const storyProviderAvailable = selectedStoryProvider?.available ?? false;
+  const models = selectedStoryProvider?.models ?? [];
   useEffect(() => {
     storyMounted.current = true;
     return () => { storyMounted.current = false; };
@@ -1319,16 +1322,17 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     }).catch((loadError) => {
       if (active) setStoryError(loadError instanceof Error ? loadError.message : "Stories could not be loaded.");
     });
-    request<OllamaModelStatus>("/api/v1/providers/ollama/models").then((status) => {
+    request<{ providers: StoryProvider[] }>("/api/v1/providers/story").then((status) => {
       if (!active) return;
-      setOllamaAvailable(status.available);
-      setModels(status.models);
-      setModel((current) => status.models.includes(current) ? current : status.models[0] || "");
+      setStoryProviders(status.providers);
+      const selected = status.providers.find((provider) => provider.id === providerId)
+        || status.providers.find((provider) => provider.available)
+        || status.providers[0];
+      if (!selected) return;
+      if (!status.providers.some((provider) => provider.id === providerId)) setProviderId(selected.id);
+      setModel((current) => current || selected.default_model || selected.models[0] || (selected.id === "codex" ? "auto" : ""));
     }).catch(() => {
-      if (active) {
-        setOllamaAvailable(false);
-        setModels([]);
-      }
+      if (active) setStoryProviders([]);
     });
     return () => { active = false; };
   }, [workspaceId, branchId]);
@@ -1465,8 +1469,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
 
   async function generateStoryTurn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!conversation || generating || busy || !model) return;
-    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, model, prompt, order]);
+    if (!conversation || generating || busy || !model || !storyProviderAvailable) return;
+    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, prompt, order]);
     if (pendingStoryRequest.current?.fingerprint !== fingerprint) {
       pendingStoryRequest.current = {
         fingerprint,
@@ -1475,6 +1479,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           conversation_id: conversation.conversation_id,
           expected_revision: revision,
           idempotency_key: newId("story-turn"),
+          provider: providerId,
           model,
           prompt,
           narrative_order: order,
@@ -1540,7 +1545,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const result = await request<StoryGenerationResult>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/retry`,
         { method: "POST", signal: controller.signal,
-          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), model }) },
+          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, model }) },
       );
       setConversation(result.conversation);
       onRevisionChange(result.revision);

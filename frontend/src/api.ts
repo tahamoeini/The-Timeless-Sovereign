@@ -163,7 +163,7 @@ export type StoryTurn = {
   role: "user" | "assistant";
   narrative_order: number;
   content: string;
-  provider: "ollama" | null;
+  provider: string | null;
   model: string | null;
   context_manifest_id: string | null;
   context_manifest: ContextManifest | null;
@@ -321,11 +321,15 @@ export type RpgState = {
   proposals: RpgStateProposal[];
 };
 export type OllamaModelStatus = { available: boolean; models: string[] };
+export type StoryProvider = {
+  id: "ollama" | "openai" | "claude" | "codex" | "huggingface" | "huggingface_local";
+  label: string; local: boolean; available: boolean; models: string[]; default_model: string; setup: string;
+};
 export type StoryGenerationResult = {
   conversation_id: string;
   user_turn_id: string;
   assistant_turn_id: string;
-  provider: "ollama";
+  provider: string;
   model: string;
   context_manifest_id: string;
   context_revision: number;

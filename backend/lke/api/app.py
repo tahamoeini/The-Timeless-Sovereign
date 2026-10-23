@@ -22,7 +22,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from lke.ai import OllamaClient, OllamaError
+from lke.ai import OllamaClient, OllamaError, StoryProviderError, StoryProviderRegistry
 from lke.core import CommandGateway, Database
 from lke.core.errors import ConflictError, IdempotencyConflictError, LKEError, NotFoundError, ValidationError
 from lke.extraction import EXTRACTOR_VERSION, OUTPUT_SCHEMA_VERSION, PROMPT_VERSION, extraction_messages, validate_candidates
@@ -78,6 +78,7 @@ class StoryGenerateRequest(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=100)
     expected_revision: int = Field(ge=0)
     idempotency_key: str = Field(min_length=1, max_length=200)
+    provider: str = Field(default="ollama", min_length=1, max_length=40)
     model: str = Field(min_length=1, max_length=200)
     prompt: str = Field(min_length=1, max_length=4000)
     narrative_order: int = Field(ge=0)
@@ -89,6 +90,7 @@ class StoryRetryRequest(BaseModel):
     turn_id: str = Field(min_length=1, max_length=100)
     expected_revision: int = Field(ge=0)
     idempotency_key: str = Field(min_length=1, max_length=200)
+    provider: str = Field(default="ollama", min_length=1, max_length=40)
     model: str = Field(min_length=1, max_length=200)
 
 
@@ -165,12 +167,14 @@ def create_app(
     database: Database | None = None,
     auth_token: str | None = None,
     ollama: OllamaClient | None = None,
+    story_providers: StoryProviderRegistry | None = None,
 ) -> FastAPI:
     data_dir = Path(os.environ.get("LKE_DATA_DIR", Path.home() / "AppData" / "Local" / "LKE"))
     db = database or Database(data_dir / "knowledge.sqlite3")
     gateway = CommandGateway(db)
     context_compiler = ContextCompiler(db)
     ollama_client = ollama or OllamaClient()
+    story_provider_registry = story_providers or StoryProviderRegistry(ollama_client)
     allowed_origins = _TAURI_ORIGINS | (_DEV_ORIGINS if os.environ.get("LKE_DEV_MODE") == "1" else set())
     token = auth_token or os.environ.get("LKE_API_TOKEN") or secrets.token_urlsafe(32)
 
@@ -280,6 +284,10 @@ def create_app(
             return {"available": True, "models": ollama_client.list_models()}
         except OllamaError:
             return {"available": False, "models": []}
+
+    @app.get("/api/v1/providers/story")
+    def story_providers_status():
+        return {"providers": story_provider_registry.list_providers()}
 
     @app.post("/api/v1/workspaces", status_code=201)
     def create_workspace(body: WorkspaceCreate):
@@ -485,7 +493,7 @@ def create_app(
         stable_payload = {
             "conversation_id": body.conversation_id,
             "user_content": prompt,
-            "provider": "ollama",
+            "provider": body.provider,
             "model": model,
             "narrative_order": body.narrative_order,
             "context_revision": body.expected_revision,
@@ -527,8 +535,8 @@ def create_app(
 
         messages = _story_messages(conversation, context, prompt)
         try:
-            assistant_content = await run_in_threadpool(ollama_client.generate, model, messages)
-        except OllamaError as error:
+            assistant_content = await run_in_threadpool(story_provider_registry.generate, body.provider, model, messages)
+        except StoryProviderError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="Story generation was stopped before it could be saved")
@@ -569,7 +577,8 @@ def create_app(
                     }
                     try:
                         simulation = await run_in_threadpool(
-                            ollama_client.generate_json,
+                            story_provider_registry.generate_json,
+                            body.provider,
                             model,
                             [{"role": "system", "content": _NPC_SIMULATION_SYSTEM_PROMPT},
                              {"role": "user", "content": json.dumps(simulation_payload, ensure_ascii=False)}],
@@ -590,7 +599,7 @@ def create_app(
                                              "source_turn_id": result["assistant_turn_id"], "changes": changes},
                                     actor="ai:local", reason="Propose opt-in off-screen NPC activity for review",
                                 )
-                    except (OllamaError, LKEError, ValueError, TypeError):
+                    except (StoryProviderError, LKEError, ValueError, TypeError):
                         # Optional simulation cannot invalidate a successfully saved story turn.
                         simulation_proposal = None
         return {
@@ -608,7 +617,7 @@ def create_app(
             "conversation_id": body.conversation_id,
             "turn_id": body.turn_id,
             "action": "edit",
-            "provider": "ollama",
+            "provider": body.provider,
             "model": body.model,
         }
         prior = gateway.replay(
@@ -643,8 +652,8 @@ def create_app(
         prefix = {**conversation, "turns": turns[:turns.index(preceding_user)]}
         messages = _story_messages(prefix, context, preceding_user["content"])
         try:
-            assistant_content = await run_in_threadpool(ollama_client.generate, body.model, messages)
-        except OllamaError as error:
+            assistant_content = await run_in_threadpool(story_provider_registry.generate, body.provider, body.model, messages)
+        except StoryProviderError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="Story retry was stopped before it could be saved")
