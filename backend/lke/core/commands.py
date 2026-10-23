@@ -16,12 +16,12 @@ from ..reasoning import evaluate_rule
 
 
 _ALLOWED_COMMANDS = {
-    "create_entity", "update_entity", "add_relation", "review_relation", "add_claim",
-    "review_claim", "add_belief", "import_source", "add_evidence",
+    "create_entity", "update_entity", "add_relation", "update_relation", "review_relation", "add_claim",
+    "update_claim", "review_claim", "add_belief", "import_source", "add_evidence",
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
     "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
     "review_scenario_assumption", "record_extraction_batch", "review_extraction_candidate",
-    "promote_branch",
+    "import_exchange", "promote_branch",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -38,6 +38,110 @@ def _required_text(value: Any, field: str, limit: int = 500) -> str:
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > limit:
         raise ValidationError(f"{field} must be non-empty text of at most {limit} characters")
     return value.strip()
+
+
+def _validated_exchange_payload(
+    payload: dict[str, Any], workspace_id: str, branch_id: str
+) -> dict[str, Any]:
+    try:
+        payload_size = len(_json(payload).encode("utf-8"))
+    except (TypeError, ValueError) as error:
+        raise ValidationError("Exchange must contain JSON-compatible data") from error
+    if payload_size > 10 * 1024 * 1024:
+        raise ValidationError("Exchange is limited to 10 MiB")
+    if payload.get("protocol") != "lke.exchange.v1":
+        raise ValidationError("Unsupported exchange protocol")
+    if payload.get("workspace_id") != workspace_id or payload.get("branch_id") != branch_id:
+        raise ValidationError("Exchange workspace and branch must match the import target")
+
+    exchange_id = _required_text(payload.get("exchange_id"), "exchange_id", 100)
+    transcript_id = _required_text(payload.get("transcript_id"), "transcript_id", 200)
+    context_manifest_id = _required_text(payload.get("context_manifest_id"), "context_manifest_id", 100)
+    base_revision = payload.get("base_revision")
+    if type(base_revision) is not int or base_revision < 0:
+        raise ValidationError("base_revision must be a non-negative integer")
+    context_manifest = payload.get("context_manifest")
+    if (
+        not isinstance(context_manifest, dict)
+        or context_manifest.get("protocol") != "lke.context.v1"
+        or context_manifest.get("manifest_id") != context_manifest_id
+        or context_manifest.get("workspace_id") != workspace_id
+        or context_manifest.get("branch_id") != branch_id
+        or type(context_manifest.get("base_revision")) is not int
+        or context_manifest["base_revision"] != base_revision
+        or not isinstance(context_manifest.get("actor"), dict)
+        or not isinstance(context_manifest.get("included"), list)
+        or not isinstance(context_manifest.get("excluded"), list)
+    ):
+        raise ValidationError("Exchange context manifest does not match its workspace, branch, or revision")
+
+    transcript_range = payload.get("transcript_range")
+    if not isinstance(transcript_range, dict):
+        raise ValidationError("transcript_range must contain from_turn and to_turn")
+    from_turn, to_turn = transcript_range.get("from_turn"), transcript_range.get("to_turn")
+    if type(from_turn) is not int or type(to_turn) is not int or from_turn < 0 or to_turn < from_turn:
+        raise ValidationError("transcript range must be an ordered non-negative turn range")
+    turns = payload.get("turns")
+    if not isinstance(turns, list) or not turns or len(turns) > 500:
+        raise ValidationError("turns must contain between 1 and 500 transcript turns")
+    if len(turns) != to_turn - from_turn + 1:
+        raise ValidationError("Transcript range contains missing turns")
+    allowed_roles = {"user", "assistant", "system", "developer", "tool"}
+    for offset, turn in enumerate(turns):
+        if not isinstance(turn, dict) or type(turn.get("turn_number")) is not int:
+            raise ValidationError("Each transcript turn needs an integer turn_number")
+        if turn["turn_number"] != from_turn + offset:
+            raise ValidationError("Transcript turns must be contiguous and ordered")
+        messages = turn.get("messages")
+        if not isinstance(messages, list) or not messages or len(messages) > 50:
+            raise ValidationError("Each turn must contain between 1 and 50 messages")
+        roles: set[str] = set()
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValidationError("Transcript messages must be objects")
+            role = message.get("role")
+            content = message.get("content")
+            if not isinstance(role, str) or role not in allowed_roles or not isinstance(content, str) or not content.strip() or len(content) > 20000:
+                raise ValidationError("Each transcript message needs a supported role and text content")
+            roles.add(role)
+        if not {"user", "assistant"} <= roles:
+            raise ValidationError("Each transcript turn must include user and assistant messages")
+
+    transcript_hash = payload.get("transcript_hash")
+    computed_hash = "sha256:" + hashlib.sha256(_json(turns).encode("utf-8")).hexdigest()
+    if transcript_hash != computed_hash:
+        raise ValidationError("transcript_hash does not match the supplied turns")
+    raw_change_ids = payload.get("proposed_change_ids", [])
+    if not isinstance(raw_change_ids, list) or len(raw_change_ids) > 100:
+        raise ValidationError("proposed_change_ids must contain at most 100 ids")
+    change_ids = [_required_text(item, "proposed change id", 100) for item in raw_change_ids]
+    if len(change_ids) != len(set(change_ids)):
+        raise ValidationError("proposed_change_ids must be unique")
+    return {
+        "exchange_id": exchange_id,
+        "transcript_id": transcript_id,
+        "context_manifest_id": context_manifest_id,
+        "base_revision": base_revision,
+        "from_turn": from_turn,
+        "to_turn": to_turn,
+        "transcript_hash": computed_hash,
+        "context_manifest": context_manifest,
+        "turns": turns,
+        "proposed_change_ids": change_ids,
+    }
+
+
+def _missing_turn_ranges(ranges: list[tuple[int, int]]) -> list[dict[str, int]]:
+    ordered = sorted(ranges)
+    missing: list[dict[str, int]] = []
+    if not ordered:
+        return missing
+    previous_end = ordered[0][1]
+    for start, end in ordered[1:]:
+        if start > previous_end + 1:
+            missing.append({"from_turn": previous_end + 1, "to_turn": start - 1})
+        previous_end = max(previous_end, end)
+    return missing
 
 
 def _optional_iso_date(value: Any, field: str) -> str | None:
@@ -124,6 +228,7 @@ def _promote_branch_snapshot(
         ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision", None, (), ("created_revision",), "belief_id"),
         ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at", "conversation_id", ("actor_entity_id", "title", "actor_is_user_controlled", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "conversation_id"),
         ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id"),
+        ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
         ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at", None, (), ("created_revision",), "event_id,version"),
         ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at", None, (), ("created_revision",), "scenario_id"),
         ("scenario_options", "scenario_id,option_id,label,description,position,created_revision", None, (), ("created_revision",), "scenario_id,option_id"),
@@ -154,9 +259,17 @@ def _promote_branch_snapshot(
             sql += " ORDER BY event_id,version"
         elif table == "scenario_assumptions":
             sql += " ORDER BY scenario_id,option_id,assumption_id,version"
+        elif table == "external_exchanges":
+            sql += " ORDER BY created_revision,exchange_id"
         if update_columns:
             updates = ",".join(f"{column}=excluded.{column}" for column in update_columns)
-            sql += f" ON CONFLICT(workspace_id,branch_id,{primary_key}) DO UPDATE SET {updates}"
+            changed_columns = " OR ".join(
+                f"{table}.{column} IS NOT excluded.{column}" for column in update_columns
+            )
+            sql += (
+                f" ON CONFLICT(workspace_id,branch_id,{primary_key}) DO UPDATE SET {updates}"
+                f" WHERE {changed_columns}"
+            )
         before = connection.total_changes
         connection.execute(
             sql,
@@ -171,8 +284,8 @@ def _promote_branch_snapshot(
     before = connection.total_changes
     connection.execute(
         "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) "
-        "SELECT workspace_id,?,entity_id,label,properties FROM entity_search "
-        "WHERE workspace_id=? AND branch_id=?",
+        "SELECT workspace_id,?,entity_id,label,properties_json FROM entities "
+        "WHERE workspace_id=? AND branch_id=? ORDER BY entity_id",
         (target_branch_id, workspace_id, source_branch_id),
     )
     row_counts["entity_search"] = connection.total_changes - before
@@ -285,6 +398,7 @@ class CommandGateway:
                     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
                     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
                     ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
+                    ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
                     ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
                     ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at"),
                     ("scenario_options", "scenario_id,option_id,label,description,position,created_revision"),
@@ -299,6 +413,7 @@ class CommandGateway:
                     ordering = {
                         "journal_events": " ORDER BY event_id,version",
                         "scenario_assumptions": " ORDER BY scenario_id,option_id,assumption_id,version",
+                        "external_exchanges": " ORDER BY created_revision,exchange_id",
                         "extraction_candidates": " ORDER BY candidate_id",
                     }.get(table, "")
                     connection.execute(
@@ -637,22 +752,33 @@ class CommandGateway:
             return {"entity_id": entity_id, "entity_type": entity_type, "label": label}, "entity.created", True
 
         if command_type == "update_entity":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot directly correct canonical entities")
             entity_id = _required_text(payload.get("entity_id"), "entity_id", 100)
             row = connection.execute(
-                "SELECT label,properties_json FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                "SELECT entity_type,label,properties_json FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
                 (workspace_id, branch_id, entity_id),
             ).fetchone()
             if not row:
                 raise NotFoundError("Entity does not exist in this branch")
+            before = {
+                "entity_type": row["entity_type"],
+                "label": row["label"],
+                "properties": json.loads(row["properties_json"]),
+            }
+            entity_type = _required_text(payload.get("entity_type", row["entity_type"]), "entity_type", 100)
             label = _required_text(payload.get("label", row["label"]), "label")
             properties = payload.get("properties", json.loads(row["properties_json"]))
             if not isinstance(properties, dict):
                 raise ValidationError("properties must be an object")
             properties_json = _json(properties)
+            after = {"entity_type": entity_type, "label": label, "properties": json.loads(properties_json)}
+            if after == before:
+                return {"entity_id": entity_id, "before": before, "after": after}, "entity.updated", False
             connection.execute(
-                "UPDATE entities SET label=?,properties_json=?,updated_revision=? "
+                "UPDATE entities SET entity_type=?,label=?,properties_json=?,updated_revision=? "
                 "WHERE workspace_id=? AND branch_id=? AND entity_id=?",
-                (label, properties_json, revision, workspace_id, branch_id, entity_id),
+                (entity_type, label, properties_json, revision, workspace_id, branch_id, entity_id),
             )
             connection.execute(
                 "DELETE FROM entity_search WHERE workspace_id=? AND branch_id=? AND entity_id=?",
@@ -662,7 +788,7 @@ class CommandGateway:
                 "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) VALUES(?,?,?,?,?)",
                 (workspace_id, branch_id, entity_id, label, properties_json),
             )
-            return {"entity_id": entity_id, "label": label}, "entity.updated", True
+            return {"entity_id": entity_id, "before": before, "after": after}, "entity.updated", True
 
         if command_type == "add_relation":
             relation_id = _required_text(payload.get("relation_id") or str(uuid4()), "relation_id", 100)
@@ -684,6 +810,62 @@ class CommandGateway:
             )
             return {"relation_id": relation_id, "review_status": status}, "relation.created", True
 
+        if command_type == "update_relation":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot directly correct canonical relationships")
+            relation_id = _required_text(payload.get("relation_id"), "relation_id", 100)
+            row = connection.execute(
+                "SELECT source_entity_id,target_entity_id,relation_type,properties_json,review_status "
+                "FROM relations WHERE workspace_id=? AND branch_id=? AND relation_id=?",
+                (workspace_id, branch_id, relation_id),
+            ).fetchone()
+            if not row:
+                raise NotFoundError("Relationship does not exist in this branch")
+            before = {
+                "source_entity_id": row["source_entity_id"],
+                "target_entity_id": row["target_entity_id"],
+                "relation_type": row["relation_type"],
+                "properties": json.loads(row["properties_json"]),
+                "review_status": row["review_status"],
+            }
+            source_id = _required_text(payload.get("source_entity_id", row["source_entity_id"]), "source_entity_id", 100)
+            target_id = _required_text(payload.get("target_entity_id", row["target_entity_id"]), "target_entity_id", 100)
+            relation_type = _required_text(payload.get("relation_type", row["relation_type"]), "relation_type", 100)
+            properties = payload.get("properties", json.loads(row["properties_json"]))
+            if not isinstance(properties, dict):
+                raise ValidationError("properties must be an object")
+            endpoints = connection.execute(
+                "SELECT entity_id FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id IN (?,?)",
+                (workspace_id, branch_id, source_id, target_id),
+            ).fetchall()
+            if len({endpoint["entity_id"] for endpoint in endpoints}) != len({source_id, target_id}):
+                raise NotFoundError("Relationship endpoint does not exist in this branch")
+            properties_json = _json(properties)
+            fields_changed = (
+                source_id != row["source_entity_id"]
+                or target_id != row["target_entity_id"]
+                or relation_type != row["relation_type"]
+                or properties_json != row["properties_json"]
+            )
+            next_status = row["review_status"]
+            if fields_changed and next_status != "proposed":
+                next_status = "proposed"
+            after = {
+                "source_entity_id": source_id,
+                "target_entity_id": target_id,
+                "relation_type": relation_type,
+                "properties": json.loads(properties_json),
+                "review_status": next_status,
+            }
+            if not fields_changed:
+                return {"relation_id": relation_id, "before": before, "after": after}, "relation.updated", False
+            connection.execute(
+                "UPDATE relations SET source_entity_id=?,target_entity_id=?,relation_type=?,properties_json=?,review_status=? "
+                "WHERE workspace_id=? AND branch_id=? AND relation_id=?",
+                (source_id, target_id, relation_type, properties_json, next_status, workspace_id, branch_id, relation_id),
+            )
+            return {"relation_id": relation_id, "before": before, "after": after}, "relation.updated", True
+
         if command_type == "review_relation":
             relation_id = _required_text(payload.get("relation_id"), "relation_id", 100)
             status = payload.get("review_status")
@@ -691,13 +873,21 @@ class CommandGateway:
                 raise ValidationError("review_status must be accepted or rejected")
             if actor.startswith("ai:"):
                 raise ValidationError("AI actors cannot review or accept relations")
+            row = connection.execute(
+                "SELECT review_status FROM relations WHERE workspace_id=? AND branch_id=? AND relation_id=?",
+                (workspace_id, branch_id, relation_id),
+            ).fetchone()
+            if not row:
+                raise NotFoundError("Relation does not exist in this branch")
+            if row["review_status"] == status:
+                return {"relation_id": relation_id, "before": status, "after": status}, "relation.reviewed", False
             result = connection.execute(
                 "UPDATE relations SET review_status=? WHERE workspace_id=? AND branch_id=? AND relation_id=?",
                 (status, workspace_id, branch_id, relation_id),
             )
             if result.rowcount != 1:
                 raise NotFoundError("Relation does not exist in this branch")
-            return {"relation_id": relation_id, "review_status": status}, "relation.reviewed", True
+            return {"relation_id": relation_id, "before": row["review_status"], "after": status}, "relation.reviewed", True
 
         if command_type == "add_claim":
             claim_id = _required_text(payload.get("claim_id") or str(uuid4()), "claim_id", 100)
@@ -735,6 +925,81 @@ class CommandGateway:
             )
             return {"claim_id": claim_id, "review_status": status, "epistemic_status": epistemic, "visibility": visibility}, "claim.created", True
 
+        if command_type == "update_claim":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot directly correct canonical claims")
+            claim_id = _required_text(payload.get("claim_id"), "claim_id", 100)
+            row = connection.execute(
+                "SELECT subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility,"
+                "narrative_order,evidence_json FROM claims WHERE workspace_id=? AND branch_id=? AND claim_id=?",
+                (workspace_id, branch_id, claim_id),
+            ).fetchone()
+            if not row:
+                raise NotFoundError("Claim does not exist in this branch")
+            before = {
+                "subject_entity_id": row["subject_entity_id"],
+                "predicate": row["predicate"],
+                "object_value": row["object_value"],
+                "epistemic_status": row["epistemic_status"],
+                "review_status": row["review_status"],
+                "visibility": row["visibility"],
+                "narrative_order": row["narrative_order"],
+                "evidence": json.loads(row["evidence_json"]),
+            }
+            subject_id = _required_text(payload.get("subject_entity_id", row["subject_entity_id"]), "subject_entity_id", 100)
+            subject = connection.execute(
+                "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, subject_id),
+            ).fetchone()
+            if not subject:
+                raise NotFoundError("Claim subject does not exist in this branch")
+            predicate = _required_text(payload.get("predicate", row["predicate"]), "predicate", 200)
+            object_value = _required_text(payload.get("object_value", row["object_value"]), "object_value", 4000)
+            epistemic = payload.get("epistemic_status", row["epistemic_status"])
+            visibility = payload.get("visibility", row["visibility"])
+            narrative_order = payload.get("narrative_order", row["narrative_order"])
+            if epistemic not in {"unknown", "believed", "known", "contested"}:
+                raise ValidationError("invalid epistemic_status")
+            if visibility not in {"public", "actor_scoped", "author_only"}:
+                raise ValidationError("invalid visibility")
+            if type(narrative_order) is not int or narrative_order < 0:
+                raise ValidationError("narrative_order must be a non-negative integer")
+            evidence = payload.get("evidence", json.loads(row["evidence_json"]))
+            if not isinstance(evidence, list) or any(not isinstance(item, str) for item in evidence):
+                raise ValidationError("evidence must be a list of evidence ids")
+            if len(evidence) != len(set(evidence)):
+                raise ValidationError("evidence ids must be unique")
+            for evidence_id in evidence:
+                linked = connection.execute(
+                    "SELECT 1 FROM evidence WHERE workspace_id=? AND branch_id=? AND evidence_id=?",
+                    (workspace_id, branch_id, evidence_id),
+                ).fetchone()
+                if not linked:
+                    raise NotFoundError(f"Evidence {evidence_id!r} does not exist in this branch")
+            semantic_fields = {
+                "subject_entity_id": subject_id,
+                "predicate": predicate,
+                "object_value": object_value,
+                "epistemic_status": epistemic,
+                "visibility": visibility,
+                "narrative_order": narrative_order,
+                "evidence": evidence,
+            }
+            fields_changed = any(before[key] != value for key, value in semantic_fields.items())
+            status = row["review_status"]
+            if fields_changed and status != "proposed":
+                status = "proposed"
+            after = {**semantic_fields, "review_status": status}
+            if not fields_changed:
+                return {"claim_id": claim_id, "before": before, "after": after}, "claim.updated", False
+            connection.execute(
+                "UPDATE claims SET subject_entity_id=?,predicate=?,object_value=?,epistemic_status=?,review_status=?,"
+                "visibility=?,narrative_order=?,evidence_json=? WHERE workspace_id=? AND branch_id=? AND claim_id=?",
+                (subject_id, predicate, object_value, epistemic, status, visibility, narrative_order, _json(evidence),
+                 workspace_id, branch_id, claim_id),
+            )
+            return {"claim_id": claim_id, "before": before, "after": after}, "claim.updated", True
+
         if command_type == "review_claim":
             claim_id = _required_text(payload.get("claim_id"), "claim_id", 100)
             status = payload.get("review_status")
@@ -742,13 +1007,21 @@ class CommandGateway:
                 raise ValidationError("review_status must be accepted or rejected")
             if actor.startswith("ai:"):
                 raise ValidationError("AI actors cannot review or accept claims")
+            row = connection.execute(
+                "SELECT review_status FROM claims WHERE workspace_id=? AND branch_id=? AND claim_id=?",
+                (workspace_id, branch_id, claim_id),
+            ).fetchone()
+            if not row:
+                raise NotFoundError("Claim does not exist in this branch")
+            if row["review_status"] == status:
+                return {"claim_id": claim_id, "before": status, "after": status}, "claim.reviewed", False
             result = connection.execute(
                 "UPDATE claims SET review_status=? WHERE workspace_id=? AND branch_id=? AND claim_id=?",
                 (status, workspace_id, branch_id, claim_id),
             )
             if result.rowcount != 1:
                 raise NotFoundError("Claim does not exist in this branch")
-            return {"claim_id": claim_id, "review_status": status}, "claim.reviewed", True
+            return {"claim_id": claim_id, "before": row["review_status"], "after": status}, "claim.reviewed", True
 
         if command_type == "create_rule":
             rule_id = _required_text(payload.get("rule_id") or str(uuid4()), "rule_id", 100)
@@ -1338,6 +1611,89 @@ class CommandGateway:
                 "context_revision": context_revision,
             }, "story.turn_recorded", True
 
+        if command_type == "import_exchange":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot import or approve external exchanges")
+            exchange = _validated_exchange_payload(payload, workspace_id, branch_id)
+            if exchange["base_revision"] > revision - 1:
+                raise ConflictError("Exchange is based on a future branch revision")
+            existing = connection.execute(
+                "SELECT exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,"
+                "context_manifest_json,proposed_change_ids_json,created_revision "
+                "FROM external_exchanges WHERE workspace_id=? AND branch_id=? AND exchange_id=?",
+                (workspace_id, branch_id, exchange["exchange_id"]),
+            ).fetchone()
+            if existing:
+                same_exchange = (
+                    existing["transcript_hash"] == exchange["transcript_hash"]
+                    and existing["transcript_id"] == exchange["transcript_id"]
+                    and existing["context_manifest_id"] == exchange["context_manifest_id"]
+                    and existing["base_revision"] == exchange["base_revision"]
+                    and existing["from_turn"] == exchange["from_turn"]
+                    and existing["to_turn"] == exchange["to_turn"]
+                    and existing["context_manifest_json"] == _json(exchange["context_manifest"])
+                    and existing["proposed_change_ids_json"] == _json(exchange["proposed_change_ids"])
+                )
+                if not same_exchange:
+                    raise ConflictError("Exchange identity was already used with different content or context")
+                return {
+                    "exchange_id": existing["exchange_id"], "transcript_id": existing["transcript_id"], "duplicate": True,
+                    "stale_context": existing["base_revision"] != existing["created_revision"] - 1
+                    or existing["created_revision"] != revision - 1,
+                }, "exchange.duplicate", False
+
+            transcript_rows = connection.execute(
+                "SELECT from_turn,to_turn,turns_json FROM external_exchanges "
+                "WHERE workspace_id=? AND branch_id=? AND transcript_id=?",
+                (workspace_id, branch_id, exchange["transcript_id"]),
+            ).fetchall()
+            incoming_turns = {turn["turn_number"]: turn for turn in exchange["turns"]}
+            for row in transcript_rows:
+                if row["to_turn"] < exchange["from_turn"] or row["from_turn"] > exchange["to_turn"]:
+                    continue
+                saved_turns = {turn["turn_number"]: turn for turn in json.loads(row["turns_json"])}
+                for turn_number in incoming_turns.keys() & saved_turns.keys():
+                    if _json(incoming_turns[turn_number]) != _json(saved_turns[turn_number]):
+                        raise ConflictError("Overlapping transcript turns conflict for this transcript identity")
+
+            same_transcript = connection.execute(
+                "SELECT exchange_id,base_revision,created_revision FROM external_exchanges "
+                "WHERE workspace_id=? AND branch_id=? AND transcript_id=? AND transcript_hash=?",
+                (workspace_id, branch_id, exchange["transcript_id"], exchange["transcript_hash"]),
+            ).fetchone()
+            if same_transcript:
+                return {
+                    "exchange_id": same_transcript["exchange_id"],
+                    "transcript_id": exchange["transcript_id"],
+                    "requested_exchange_id": exchange["exchange_id"],
+                    "duplicate": True,
+                    "stale_context": same_transcript["base_revision"] != same_transcript["created_revision"] - 1
+                    or same_transcript["created_revision"] != revision - 1,
+                }, "exchange.duplicate", False
+
+            connection.execute(
+                "INSERT INTO external_exchanges(workspace_id,branch_id,exchange_id,transcript_id,context_manifest_id,base_revision,"
+                "from_turn,to_turn,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,"
+                "created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, exchange["exchange_id"], exchange["transcript_id"], exchange["context_manifest_id"],
+                 exchange["base_revision"], exchange["from_turn"], exchange["to_turn"], exchange["transcript_hash"],
+                 _json(exchange["context_manifest"]), _json(exchange["turns"]),
+                 _json(exchange["proposed_change_ids"]), revision, _now()),
+            )
+            missing_turns = _missing_turn_ranges([
+                (row["from_turn"], row["to_turn"]) for row in transcript_rows
+            ] + [(exchange["from_turn"], exchange["to_turn"])])
+            return {
+                "exchange_id": exchange["exchange_id"],
+                "transcript_id": exchange["transcript_id"],
+                "transcript_hash": exchange["transcript_hash"],
+                "turn_count": len(exchange["turns"]),
+                "proposed_change_ids": exchange["proposed_change_ids"],
+                "duplicate": False,
+                "stale_context": exchange["base_revision"] != revision - 1,
+                "missing_turns": missing_turns,
+            }, "exchange.imported", True
+
         raise ValidationError(f"Unsupported command type: {command_type}")
 
     def list_entities(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
@@ -1639,15 +1995,65 @@ class CommandGateway:
             raise NotFoundError("Source does not exist in this workspace")
         return dict(row)
 
+    def list_external_exchanges(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+        with self.db.lock:
+            branch = self.db.connection.execute(
+                "SELECT head_revision FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not branch:
+                raise NotFoundError("Branch does not exist in this workspace")
+            rows = self.db.connection.execute(
+                "SELECT exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_hash,"
+                "context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at "
+                "FROM external_exchanges WHERE workspace_id=? AND branch_id=? "
+                "ORDER BY created_revision DESC,exchange_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+        head_revision = int(branch["head_revision"])
+        transcript_ranges: dict[str, list[tuple[int, int]]] = {}
+        for row in rows:
+            transcript_ranges.setdefault(row["transcript_id"], []).append((row["from_turn"], row["to_turn"]))
+        exchanges = []
+        for row in rows:
+            context_manifest = json.loads(row["context_manifest_json"])
+            is_stale = (
+                context_manifest.get("branch_id") != branch_id
+                or row["base_revision"] != row["created_revision"] - 1
+                or row["created_revision"] != head_revision
+            )
+            exchanges.append({
+                "exchange_id": row["exchange_id"],
+                "transcript_id": row["transcript_id"],
+                "context_manifest_id": row["context_manifest_id"],
+                "base_revision": row["base_revision"],
+                "from_turn": row["from_turn"],
+                "to_turn": row["to_turn"],
+                "transcript_hash": row["transcript_hash"],
+                "context_manifest": context_manifest,
+                "turns": json.loads(row["turns_json"]),
+                "proposed_change_ids": json.loads(row["proposed_change_ids_json"]),
+                "created_revision": row["created_revision"],
+                "created_at": row["created_at"],
+                "stale_context": is_stale,
+                "missing_turns": _missing_turn_ranges(transcript_ranges[row["transcript_id"]]),
+                "current_revision": head_revision,
+            })
+        return exchanges
+
     def revisions(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
         with self.db.lock:
             rows = self.db.connection.execute(
-                "SELECT revision,parent_revision,actor,reason,created_at,payload_json "
-                "FROM revisions WHERE workspace_id=? AND branch_id=? ORDER BY revision",
+                "SELECT r.revision,r.parent_revision,r.actor,r.reason,r.created_at,r.payload_json,"
+                "a.event_type,a.payload_json AS result_json FROM revisions r "
+                "LEFT JOIN audit_events a ON a.workspace_id=r.workspace_id AND a.branch_id=r.branch_id "
+                "AND a.revision=r.revision WHERE r.workspace_id=? AND r.branch_id=? ORDER BY r.revision",
                 (workspace_id, branch_id),
             ).fetchall()
         return [{"revision": r["revision"], "parent_revision": r["parent_revision"], "actor": r["actor"],
-                 "reason": r["reason"], "created_at": r["created_at"], "payload": json.loads(r["payload_json"])} for r in rows]
+                 "reason": r["reason"], "created_at": r["created_at"], "event_type": r["event_type"],
+                 "payload": json.loads(r["payload_json"]),
+                 "result": json.loads(r["result_json"]) if r["result_json"] is not None else None} for r in rows]
 
     def current_revision(self, workspace_id: str, branch_id: str = "main") -> int:
         with self.db.lock:

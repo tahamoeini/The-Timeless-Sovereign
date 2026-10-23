@@ -1,6 +1,10 @@
 # Exchange Protocol
 
-External conversation exchange is a proposal channel, not a direct write path. The transcript envelope is versioned and carries enough identity to find missing turns, prevent duplicate imports, and detect stale context.
+The external conversation bridge is an immutable, branch-scoped archive and proposal channel. It never imports transcript text as a story turn or writes claims, events, relationships, or other canonical facts. Every later change must use a separate reviewed command against the current branch revision.
+
+## `lke.exchange.v1`
+
+Each JSON package identifies one segment of an external transcript. Use the same stable `transcript_id` for every segment from one external conversation; assign a new ID for a different conversation. `exchange_id` identifies one imported package. Turn numbers are ordered within that transcript and must be contiguous inside each package.
 
 ```json
 {
@@ -9,17 +13,48 @@ External conversation exchange is a proposal channel, not a direct write path. T
   "branch_id": "main",
   "base_revision": 42,
   "exchange_id": "exchange_009",
+  "transcript_id": "external-chat-2026-01",
   "context_manifest_id": "context_118",
-  "transcript_range": {"from_turn": 51, "to_turn": 58},
+  "context_manifest": {
+    "protocol": "lke.context.v1",
+    "manifest_id": "context_118",
+    "workspace_id": "workspace_001",
+    "branch_id": "main",
+    "base_revision": 42,
+    "actor": {"entity_id": "aria", "label": "Aria", "entity_type": "character"},
+    "included": [],
+    "excluded": []
+  },
+  "transcript_range": {"from_turn": 51, "to_turn": 52},
   "transcript_hash": "sha256:...",
+  "turns": [
+    {"turn_number": 51, "messages": [
+      {"role": "user", "content": "Continue the scene."},
+      {"role": "assistant", "content": "Aria waits by the archive."}
+    ]},
+    {"turn_number": 52, "messages": [
+      {"role": "user", "content": "Open the door."},
+      {"role": "assistant", "content": "The lock turns."}
+    ]}
+  ],
   "proposed_change_ids": ["change_101", "change_102"]
 }
 ```
 
-Validate protocol version, workspace, branch, context manifest, contiguous turn sequence, range, and transcript hash. Store original turns unchanged. Deduplicate by exchange identity and transcript hash; same identity with different content is a conflict. If the current branch revision differs from `base_revision`, retain the exchange as a proposal for review and show the stale-context difference. Imported text is untrusted content. Accepting a proposed change requires a new command with a current expected revision.
+`transcript_hash` is `sha256:` followed by the lowercase SHA-256 hex digest of the UTF-8 bytes of the `turns` array serialized as canonical JSON: recursively sort object keys, preserve array order and Unicode characters, and emit no insignificant whitespace. The gateway verifies the supplied hash. The browser import panel can calculate it when the field is omitted.
 
-## Context-only export
+The gateway validates protocol and workspace/branch identity, the context manifest's declared protocol, ID, workspace, branch, and revision, a non-future base revision, turn range, contiguous turn numbering, message roles and sizes, transcript hash, and unique proposal references. The manifest is untrusted imported data; these checks do not cryptographically authenticate its origin. Each turn needs at least one user and one assistant message. Packages are limited to 10 MiB, 500 turns, 50 messages per turn, and 20,000 characters per message.
 
-Story Studio can save the current actor-aware context as a local `lke.context-export.v1` JSON package. It contains the export time, workspace, branch, base revision, and exact `lke.context.v1` manifest, including included facts and exclusion reasons. The preview shows included facts and the exclusion count before saving; the downloaded package preserves the full details for inspection. The package does not include full source text or the story transcript. The user chooses separately whether to share it. Redaction controls and transcript import are not implemented yet.
+## Continuity, duplicates, and stale context
 
-Transcript export should support privacy review and redaction without changing canonical records. Full backup is a separate format that includes source content, canonical data, revisions, branch snapshots, settings, conversations, and a versioned integrity manifest. Transcript import is not implemented; backup/restore is implemented with a separate-device drill still pending.
+- A stable `transcript_id` groups imported segments. Gaps between saved ranges are reported as missing turn ranges. Conflicting text for overlapping turn numbers under one transcript ID is rejected. Identical overlapping turns are allowed.
+- Re-importing the same transcript segment under the same transcript ID and hash is a no-op. Reusing an `exchange_id` with different text or context is a conflict. Identical text belonging to a different transcript ID remains a separate transcript.
+- A base revision ahead of the selected branch is rejected. An older base revision is retained and marked stale. The UI shows the imported context snapshot alongside the current branch revision so the user can review what changed after export.
+- Imported transcript text is untrusted. A gap or stale context blocks no canonical data because the importer never creates canonical events or claims. Proposal references are labels only; they are not executable changes.
+- Exchanges are immutable branch records. Branch creation snapshots them, and explicit fast-forward promotion preserves their provenance.
+
+## Context-only export and backups
+
+Story Studio can save the current actor-aware context as a local `lke.context-export.v1` JSON package. It contains the export time, workspace, branch, base revision, and exact `lke.context.v1` manifest, including included facts and exclusion reasons. The preview shows included facts and the exclusion count before saving; the downloaded package preserves the full details for inspection. The package does not include full source text or the story transcript. The user chooses separately whether to share it.
+
+Transcript export and redaction controls are not implemented. Full backup is a separate format that includes source content, canonical data, revisions, branch snapshots, settings, conversations, external exchanges, and a versioned integrity manifest. Backup/restore is implemented; a separate-device restore drill remains pending.

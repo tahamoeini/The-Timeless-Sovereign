@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -515,6 +517,67 @@ class ApiBoundaryTests(unittest.TestCase):
         listed = self.request("GET", "/api/v1/workspaces", headers=self.headers)
         self.assertEqual(response.status_code, 422)
         self.assertEqual([item["workspace_id"] for item in listed.json()], ["preserved"])
+
+    def test_external_exchange_import_and_listing_are_authenticated(self) -> None:
+        created = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "exchange-api", "name": "Exchange API"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        turns = [{
+            "turn_number": 1,
+            "messages": [
+                {"role": "user", "content": "Continue the scene."},
+                {"role": "assistant", "content": "The archive door opens."},
+            ],
+        }]
+        canonical_turns = json.dumps(turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        transcript_hash = "sha256:" + hashlib.sha256(canonical_turns.encode("utf-8")).hexdigest()
+        envelope = {
+            "protocol": "lke.exchange.v1",
+            "transcript_id": "external-conversation-api",
+            "workspace_id": "exchange-api",
+            "branch_id": "main",
+            "base_revision": 0,
+            "exchange_id": "external-api-1",
+            "context_manifest_id": "context-api-0",
+            "context_manifest": {
+                "protocol": "lke.context.v1",
+                "manifest_id": "context-api-0",
+                "workspace_id": "exchange-api",
+                "branch_id": "main",
+                "base_revision": 0,
+                "actor": {"entity_id": None, "label": "Narrator", "entity_type": "narrator"},
+                "included": [],
+                "excluded": [],
+            },
+            "transcript_range": {"from_turn": 1, "to_turn": 1},
+            "transcript_hash": transcript_hash,
+            "turns": turns,
+            "proposed_change_ids": ["proposal-1"],
+        }
+        imported = self.request(
+            "POST", "/api/v1/workspaces/exchange-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 0, "idempotency_key": "import-exchange-api",
+                "command_type": "import_exchange", "reason": "Import an external transcript",
+                "payload": envelope,
+            },
+        )
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["result"]["exchange_id"], "external-api-1")
+
+        listed = self.request(
+            "GET", "/api/v1/workspaces/exchange-api/exchanges?branch_id=main", headers=self.headers,
+        )
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()[0]["turns"], turns)
+        self.assertFalse(listed.json()[0]["stale_context"])
+        conversations = self.request(
+            "GET", "/api/v1/workspaces/exchange-api/conversations?branch_id=main", headers=self.headers,
+        )
+        self.assertEqual(conversations.status_code, 200, conversations.text)
+        self.assertEqual(conversations.json(), [])
 
 
 if __name__ == "__main__":

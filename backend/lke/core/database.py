@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class Database:
@@ -64,6 +64,9 @@ class Database:
                 current = 5
             if current < 6:
                 self._apply_migration(6, _SCHEMA_V6)
+                current = 6
+            if current < 7:
+                self._apply_migration(7, _SCHEMA_V7)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -538,4 +541,34 @@ CREATE TRIGGER entity_evidence_no_update BEFORE UPDATE ON entity_evidence
 BEGIN SELECT RAISE(ABORT, 'entity evidence links are immutable'); END;
 CREATE TRIGGER entity_evidence_no_delete BEFORE DELETE ON entity_evidence
 BEGIN SELECT RAISE(ABORT, 'entity evidence links are immutable'); END;
+"""
+
+
+_SCHEMA_V7 = """
+CREATE TABLE external_exchanges (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    exchange_id TEXT NOT NULL,
+    transcript_id TEXT NOT NULL,
+    context_manifest_id TEXT NOT NULL,
+    base_revision INTEGER NOT NULL CHECK(base_revision >= 0),
+    from_turn INTEGER NOT NULL CHECK(from_turn >= 0),
+    to_turn INTEGER NOT NULL CHECK(to_turn >= from_turn),
+    transcript_hash TEXT NOT NULL CHECK(length(transcript_hash)=71 AND transcript_hash LIKE 'sha256:%'),
+    context_manifest_json TEXT NOT NULL,
+    turns_json TEXT NOT NULL,
+    proposed_change_ids_json TEXT NOT NULL,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,exchange_id),
+    UNIQUE(workspace_id,branch_id,transcript_id,transcript_hash),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE
+);
+CREATE INDEX external_exchanges_created_idx
+    ON external_exchanges(workspace_id,branch_id,created_revision DESC);
+CREATE TRIGGER external_exchanges_no_update BEFORE UPDATE ON external_exchanges
+BEGIN SELECT RAISE(ABORT, 'external exchanges are immutable'); END;
+CREATE TRIGGER external_exchanges_no_delete BEFORE DELETE ON external_exchanges
+BEGIN SELECT RAISE(ABORT, 'external exchanges are immutable'); END;
 """

@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -381,7 +381,11 @@ export default function App() {
     }
   }
 
-  const visibleClaims = claims.filter((claim) => !query || `${claim.predicate} ${claim.object_value}`.toLowerCase().includes(query.toLowerCase()));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const entityLabels = new Map(entities.map((entity) => [entity.entity_id, entity.label]));
+  const visibleClaims = claims.filter((claim) => !normalizedQuery ||
+    `${entityLabels.get(claim.subject_entity_id) || claim.subject_entity_id} ${claim.subject_entity_id} ${claim.predicate} ${claim.object_value}`
+      .toLocaleLowerCase().includes(normalizedQuery));
 
   return (
     <div className="app-shell">
@@ -444,20 +448,209 @@ function KnowledgePage(props: {
   onExtract: (sourceId: string, model: string) => Promise<void>;
   onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
 }) {
-  const [tab, setTab] = useState<"map" | "matrix" | "history" | "evidence" | "extraction" | "review">("map");
+  const [tab, setTab] = useState<"map" | "matrix" | "records" | "history" | "evidence" | "extraction" | "review">("map");
   return <>
     <PageHeader kicker="Your knowledge space" title="Knowledge Explorer" summary="Build a source-backed map of people, ideas, events, and their relationships." />
     <div className="metric-row"><Metric value={props.entities.length} label="Concepts" icon="◉" /><Metric value={props.relations.length} label="Relationships" icon="⟷" /><Metric value={props.claims.length} label="Claims" icon="≋" /><Metric value={props.claims.filter((item) => item.review_status === "proposed").length + props.relations.filter((item) => item.review_status === "proposed").length} label="Needs review" icon="◷" accent /></div>
-    <div className="toolbar knowledge-toolbar"><div className="tabs knowledge-tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "matrix" ? "selected" : ""} onClick={() => setTab("matrix")}>Relationship matrix</button><button className={tab === "history" ? "selected" : ""} onClick={() => setTab("history")}>History</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "extraction" ? "selected" : ""} onClick={() => setTab("extraction")}>AI extraction</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
+    <div className="toolbar knowledge-toolbar"><div className="tabs knowledge-tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "matrix" ? "selected" : ""} onClick={() => setTab("matrix")}>Relationship matrix</button><button className={tab === "records" ? "selected" : ""} onClick={() => setTab("records")}>Edit records</button><button className={tab === "history" ? "selected" : ""} onClick={() => setTab("history")}>History</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "extraction" ? "selected" : ""} onClick={() => setTab("extraction")}>AI extraction</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
     {tab === "map" && <div className="knowledge-grid"><section className="panel graph-panel"><div className="panel-heading"><div><h2>Concept map</h2><p>Accepted links and proposals share one editable source.</p></div><span className="panel-count">{props.entities.length} nodes</span></div><Graph entities={props.entities} relations={props.relations} /><div className="graph-legend"><span><i className="legend-node" />Concept</span><span><i className="legend-line" />Accepted relationship</span><span><i className="legend-line proposed" />Needs review</span></div></section>
       <div className="stacked-panels"><EntityForm busy={props.busy} onSubmit={props.addEntity} /><RelationForm entities={props.entities} busy={props.busy} onSubmit={props.addRelation} /></div></div>}
     {tab === "matrix" && <RelationMatrix entities={props.entities} relations={props.relations} />}
+    {tab === "records" && <KnowledgeRecords entities={props.entities} relations={props.relations} claims={props.claims} query={props.query} busy={props.busy} onCommit={props.onCommit} />}
     {tab === "history" && <RevisionHistory workspaceId={props.workspaceId} branchId={props.branchId} />}
     {tab === "evidence" && <div className="knowledge-grid"><SourceForm busy={props.busy} onSubmit={props.importText} /><SourceResults workspaceId={props.workspaceId} query={props.query} /> </div>}
     {tab === "extraction" && <ExtractionReviewPanel workspaceId={props.workspaceId} branchId={props.branchId} revision={props.revision} entities={props.entities} sources={props.sources} busy={props.busy} onExtract={props.onExtract} onCommit={props.onCommit} />}
     {tab === "review" && <div className="review-list"><ReviewList claims={props.claims} relations={props.relations} review={props.review} busy={props.busy} /></div>}
-    <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} sources={props.sources} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility} · {claim.evidence.length} evidence</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>
+    {tab !== "records" && <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} sources={props.sources} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility} · {claim.evidence.length} evidence</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>}
   </>;
+}
+
+function KnowledgeRecords({ entities, relations, claims, query, busy, onCommit }: {
+  entities: Entity[];
+  relations: Relation[];
+  claims: Claim[];
+  query: string;
+  busy: boolean;
+  onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
+  const search = query.trim().toLocaleLowerCase();
+  const entityById = new Map(entities.map((item) => [item.entity_id, item]));
+  const visibleEntities = entities.filter((item) => !search || `${item.label} ${item.entity_type} ${JSON.stringify(item.properties)}`.toLocaleLowerCase().includes(search));
+  const visibleRelations = relations.filter((item) => {
+    const source = entityById.get(item.source_entity_id)?.label || item.source_entity_id;
+    const target = entityById.get(item.target_entity_id)?.label || item.target_entity_id;
+    return !search || `${source} ${target} ${item.relation_type} ${item.review_status} ${JSON.stringify(item.properties)}`.toLocaleLowerCase().includes(search);
+  });
+  const visibleClaims = claims.filter((item) => {
+    const subject = entityById.get(item.subject_entity_id)?.label || item.subject_entity_id;
+    return !search || `${subject} ${item.subject_entity_id} ${item.predicate} ${item.object_value} ${item.epistemic_status} ${item.review_status}`.toLocaleLowerCase().includes(search);
+  });
+
+  return <div className="knowledge-records">
+    <section className="panel knowledge-record-panel">
+      <div className="panel-heading"><div><h2>Concepts</h2><p>Correct names, types, and structured properties. Stable IDs remain unchanged.</p></div><span className="panel-count">{visibleEntities.length} shown</span></div>
+      {visibleEntities.length ? visibleEntities.map((entity) => <EntityRecordEditor key={entity.entity_id} entity={entity} busy={busy} onCommit={onCommit} />)
+        : <p className="empty-hint">No concepts match this search.</p>}
+    </section>
+    <section className="panel knowledge-record-panel">
+      <div className="panel-heading"><div><h2>Relationships</h2><p>Correct endpoints, relationship type, or properties. A changed relationship returns to proposed review.</p></div><span className="panel-count">{visibleRelations.length} shown</span></div>
+      {visibleRelations.length ? visibleRelations.map((relation) => <RelationRecordEditor key={relation.relation_id} relation={relation} entities={entities} entityById={entityById} busy={busy} onCommit={onCommit} />)
+        : <p className="empty-hint">No relationships match this search.</p>}
+    </section>
+    <section className="panel knowledge-record-panel">
+      <div className="panel-heading"><div><h2>Claims</h2><p>Correct the assertion or its epistemic context. Meaning changes return reviewed claims to proposed status.</p></div><span className="panel-count">{visibleClaims.length} shown</span></div>
+      {visibleClaims.length ? visibleClaims.map((claim) => <ClaimRecordEditor key={claim.claim_id} claim={claim} entities={entities} entityById={entityById} busy={busy} onCommit={onCommit} />)
+        : <p className="empty-hint">No claims match this search.</p>}
+    </section>
+  </div>;
+}
+
+function EntityRecordEditor({ entity, busy, onCommit }: {
+  entity: Entity;
+  busy: boolean;
+  onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    let properties: unknown;
+    try { properties = JSON.parse(String(data.get("properties") || "{}")); }
+    catch { setError("Properties must be valid JSON."); return; }
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+      setError("Properties must be a JSON object.");
+      return;
+    }
+    try {
+      await onCommit("update_entity", {
+        entity_id: entity.entity_id,
+        entity_type: String(data.get("entity_type") || ""),
+        label: String(data.get("label") || ""),
+        properties: properties as Record<string, unknown>,
+      }, `Correct entity ${entity.label}`, "Entity correction saved.");
+      setError("");
+      setEditing(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Entity correction failed."); }
+  }
+
+  return <article className="knowledge-record-row">
+    <div className="knowledge-record-heading"><div><strong>{entity.label}</strong><small>{entity.entity_type} · updated at revision {entity.updated_revision}</small></div>
+      <button type="button" className="link-button" disabled={busy} onClick={() => { setEditing((value) => !value); setError(""); }}>{editing ? "Cancel" : "Edit"}</button>
+    </div>
+    <details className="record-properties"><summary>Current properties</summary><pre>{JSON.stringify(entity.properties, null, 2)}</pre></details>
+    {editing && <form className="record-edit-form" onSubmit={(event) => void save(event)}>
+      <label>Display name<input name="label" required maxLength={500} defaultValue={entity.label} disabled={busy} /></label>
+      <label>Type<input name="entity_type" required maxLength={100} defaultValue={entity.entity_type} disabled={busy} /></label>
+      <label>Properties (JSON)<textarea name="properties" rows={5} maxLength={10000} defaultValue={JSON.stringify(entity.properties, null, 2)} disabled={busy} /></label>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <button className="secondary-button" disabled={busy}>Save correction</button>
+    </form>}
+  </article>;
+}
+
+function RelationRecordEditor({ relation, entities, entityById, busy, onCommit }: {
+  relation: Relation;
+  entities: Entity[];
+  entityById: Map<string, Entity>;
+  busy: boolean;
+  onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState("");
+  const sourceLabel = entityById.get(relation.source_entity_id)?.label || relation.source_entity_id;
+  const targetLabel = entityById.get(relation.target_entity_id)?.label || relation.target_entity_id;
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    let properties: unknown;
+    try { properties = JSON.parse(String(data.get("properties") || "{}")); }
+    catch { setError("Properties must be valid JSON."); return; }
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+      setError("Properties must be a JSON object.");
+      return;
+    }
+    try {
+      await onCommit("update_relation", {
+        relation_id: relation.relation_id,
+        source_entity_id: String(data.get("source_entity_id") || ""),
+        target_entity_id: String(data.get("target_entity_id") || ""),
+        relation_type: String(data.get("relation_type") || ""),
+        properties: properties as Record<string, unknown>,
+      }, `Correct relationship ${sourceLabel} · ${relation.relation_type} · ${targetLabel}`, "Relationship correction saved for review.");
+      setError("");
+      setEditing(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Relationship correction failed."); }
+  }
+
+  return <article className="knowledge-record-row">
+    <div className="knowledge-record-heading"><div><strong>{sourceLabel} · {relation.relation_type} · {targetLabel}</strong><small>{relation.review_status} · relationship {relation.relation_id}</small></div>
+      <button type="button" className="link-button" disabled={busy} onClick={() => { setEditing((value) => !value); setError(""); }}>{editing ? "Cancel" : "Edit"}</button>
+    </div>
+    <details className="record-properties"><summary>Current properties</summary><pre>{JSON.stringify(relation.properties, null, 2)}</pre></details>
+    {editing && <form className="record-edit-form" onSubmit={(event) => void save(event)}>
+      <label>From<select name="source_entity_id" required defaultValue={relation.source_entity_id} disabled={busy}>{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label} · {item.entity_type} · {item.entity_id}</option>)}</select></label>
+      <label>Relationship<input name="relation_type" required maxLength={100} defaultValue={relation.relation_type} disabled={busy} /></label>
+      <label>To<select name="target_entity_id" required defaultValue={relation.target_entity_id} disabled={busy}>{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label} · {item.entity_type} · {item.entity_id}</option>)}</select></label>
+      <label>Properties (JSON)<textarea name="properties" rows={4} maxLength={10000} defaultValue={JSON.stringify(relation.properties, null, 2)} disabled={busy} /></label>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <button className="secondary-button" disabled={busy || entities.length === 0}>Save correction</button>
+    </form>}
+  </article>;
+}
+
+function ClaimRecordEditor({ claim, entities, entityById, busy, onCommit }: {
+  claim: Claim;
+  entities: Entity[];
+  entityById: Map<string, Entity>;
+  busy: boolean;
+  onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState("");
+  const subjectLabel = entityById.get(claim.subject_entity_id)?.label || claim.subject_entity_id;
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const narrativeOrder = Number(data.get("narrative_order"));
+    if (!Number.isSafeInteger(narrativeOrder) || narrativeOrder < 0) {
+      setError("Narrative order must be a non-negative whole number.");
+      return;
+    }
+    try {
+      await onCommit("update_claim", {
+        claim_id: claim.claim_id,
+        subject_entity_id: String(data.get("subject_entity_id") || ""),
+        predicate: String(data.get("predicate") || ""),
+        object_value: String(data.get("object_value") || ""),
+        epistemic_status: String(data.get("epistemic_status") || "unknown"),
+        visibility: String(data.get("visibility") || "public"),
+        narrative_order: narrativeOrder,
+      }, `Correct claim ${subjectLabel} · ${claim.predicate}`, "Claim correction saved as a proposal for review.");
+      setError("");
+      setEditing(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Claim correction failed."); }
+  }
+
+  return <article className="knowledge-record-row">
+    <div className="knowledge-record-heading"><div><strong>{subjectLabel} · {claim.predicate} · {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility}</small></div>
+      <button type="button" className="link-button" disabled={busy} onClick={() => { setEditing((value) => !value); setError(""); }}>{editing ? "Cancel" : "Edit"}</button>
+    </div>
+    {!!claim.evidence.length && <details className="record-properties"><summary>{claim.evidence.length} linked evidence record{claim.evidence.length === 1 ? "" : "s"}</summary><pre>{JSON.stringify(claim.evidence, null, 2)}</pre></details>}
+    {editing && <form className="record-edit-form" onSubmit={(event) => void save(event)}>
+      <label>Subject<select name="subject_entity_id" required defaultValue={claim.subject_entity_id} disabled={busy}>{entities.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label} · {item.entity_type} · {item.entity_id}</option>)}</select></label>
+      <label>Predicate<input name="predicate" required maxLength={200} defaultValue={claim.predicate} disabled={busy} /></label>
+      <label>Claimed value<textarea name="object_value" required maxLength={4000} rows={3} defaultValue={claim.object_value} disabled={busy} /></label>
+      <label>Epistemic status<select name="epistemic_status" defaultValue={claim.epistemic_status} disabled={busy}><option value="unknown">Unknown</option><option value="believed">Believed</option><option value="known">Known</option><option value="contested">Contested</option></select></label>
+      <label>Visibility<select name="visibility" defaultValue={claim.visibility} disabled={busy}><option value="public">Public</option><option value="actor_scoped">Actor scoped</option><option value="author_only">Author only</option></select></label>
+      <label>Narrative order<input name="narrative_order" type="number" min="0" step="1" required defaultValue={claim.narrative_order} disabled={busy} /></label>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <button className="secondary-button" disabled={busy || entities.length === 0}>Save correction</button>
+    </form>}
+  </article>;
 }
 
 function ExtractionReviewPanel({ workspaceId, branchId, revision, entities, sources, busy, onExtract, onCommit }: {
@@ -684,6 +877,7 @@ function RevisionHistory({ workspaceId, branchId }: { workspaceId: string; branc
         <div className="revision-copy">
           <div className="revision-heading"><strong>{item.reason}</strong><span>Revision {item.revision}</span></div>
           <small>{item.actor} · follows revision {item.parent_revision ?? "none"} · {new Date(item.created_at).toLocaleString()}</small>
+          <details className="revision-detail"><summary>{item.event_type || "Command"} · inspect request and result</summary><pre>{JSON.stringify({ request: item.payload, result: item.result }, null, 2)}</pre></details>
         </div>
       </li>)}</ol>
       : !error && <p className="empty-hint">No saved changes on this branch yet.</p>}
@@ -1083,7 +1277,121 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </div>}
       </section>
     </div>
+    <ExternalExchangePanel workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onCommit={onCommit} />
   </>;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Transcript contains a value that cannot be hashed.");
+  return serialized;
+}
+
+async function hashExchangeTurns(turns: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalJson(turns)));
+  const hex = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  return `sha256:${hex}`;
+}
+
+function ExternalExchangePanel({ workspaceId, branchId, revision, busy, onCommit }: {
+  workspaceId: string;
+  branchId: string;
+  revision: number;
+  busy: boolean;
+  onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<Record<string, unknown>>;
+}) {
+  const [exchanges, setExchanges] = useState<ExternalExchange[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    request<ExternalExchange[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/exchanges?branch_id=${encodeURIComponent(branchId)}`)
+      .then((rows) => { if (active) setExchanges(rows); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "External exchanges could not be loaded."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, branchId, revision]);
+
+  async function importExchange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const file = new FormData(form).get("exchange_file");
+    if (!(file instanceof File) || !file.size) {
+      setError("Choose a non-empty lke.exchange.v1 JSON file.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("Exchange files are limited to 10 MiB.");
+      return;
+    }
+
+    setImporting(true);
+    setError("");
+    setNotice("");
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Exchange file must contain a JSON object.");
+      const payload = parsed as Record<string, unknown>;
+      if (payload.protocol !== "lke.exchange.v1") throw new Error("This file is not an lke.exchange.v1 exchange.");
+      if (typeof payload.transcript_id !== "string" || !payload.transcript_id.trim()) {
+        throw new Error("Exchange needs a stable transcript_id shared by every imported segment of the same conversation.");
+      }
+      if (typeof payload.exchange_id !== "string" || !payload.exchange_id.trim()) payload.exchange_id = newId("exchange");
+      if (payload.transcript_hash === undefined && Array.isArray(payload.turns)) {
+        payload.transcript_hash = await hashExchangeTurns(payload.turns);
+      }
+      const result = await onCommit(
+        "import_exchange", payload, `Import external exchange ${payload.exchange_id}`,
+        "External transcript saved as a reviewable exchange.",
+      );
+      setNotice(result.duplicate
+        ? "This transcript was already imported; no duplicate was added."
+        : Array.isArray(result.missing_turns) && result.missing_turns.length
+          ? "Transcript saved. Missing turn ranges were detected; review continuity before using this exchange."
+        : result.stale_context
+          ? "Transcript saved. Its context is stale and needs review."
+          : "Transcript saved. External text remains separate from canonical knowledge.");
+      form.reset();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The exchange could not be imported.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  return <section className="panel external-exchange-panel">
+    <div className="panel-heading"><div><h2>External conversation exchange</h2><p>Import a versioned transcript from ChatGPT or Codex. Imported text stays separate from story turns and canonical knowledge.</p></div><span className="panel-count">{exchanges.length} saved</span></div>
+    <div className="external-exchange-warning">External messages are untrusted transcript data. Importing never accepts facts or applies proposed changes. Keep the same transcript_id on every segment so missing turns can be detected.</div>
+    <form className="external-exchange-form" onSubmit={(event) => void importExchange(event)}>
+      <label className="field-label">Exchange JSON<input name="exchange_file" type="file" accept=".json,application/json" disabled={busy || importing} /></label>
+      <button className="secondary-button" disabled={busy || importing}>{importing ? "Importing…" : "Import transcript"}</button>
+    </form>
+    {notice && <p className="context-export-success" role="status">{notice}</p>}
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    {loading ? <p className="empty-hint">Loading saved exchanges…</p>
+      : exchanges.length ? <div className="external-exchange-list">{exchanges.map((exchange) => <details className="external-exchange" key={`${exchange.exchange_id}-${exchange.created_revision}`}>
+        <summary><strong>{exchange.exchange_id}</strong><span className={exchange.stale_context ? "exchange-status stale" : "exchange-status"}>{exchange.stale_context ? "Stale context" : "Current context"}</span><small>Turns {exchange.from_turn}–{exchange.to_turn} · base r{exchange.base_revision} · imported r{exchange.created_revision}</small></summary>
+        <p className="external-exchange-identity">Transcript {exchange.transcript_id} · context snapshot r{exchange.base_revision} · branch now r{exchange.current_revision}</p>
+        {exchange.missing_turns.length > 0 && <p className="exchange-gap-warning" role="status">Missing turns in this transcript: {exchange.missing_turns.map((gap) => `${gap.from_turn}–${gap.to_turn}`).join(", ")}. Keep dependent changes out of the canonical record until the gaps are resolved.</p>}
+        <details className="external-context-snapshot"><summary>Context manifest snapshot</summary>
+          {exchange.context_manifest.included.length > 0 ? <ul>{exchange.context_manifest.included.map((fact) => <li key={fact.claim_id}>{fact.subject} · {fact.predicate} · {fact.object}</li>)}</ul> : <p>No facts were included in the exported context.</p>}
+          {exchange.context_manifest.excluded.length > 0 && <p>{exchange.context_manifest.excluded.length} facts were excluded; the manifest preserves the reasons.</p>}
+        </details>
+        {exchange.proposed_change_ids.length > 0 && <p className="exchange-change-ids">Proposed change references: {exchange.proposed_change_ids.join(", ")}. Review and apply each separately through the command gateway.</p>}
+        {exchange.turns.map((turn) => <div className="external-exchange-turn" key={turn.turn_number}><strong>Turn {turn.turn_number}</strong>{turn.messages.map((message, index) => <p key={`${message.role}-${index}`}><b>{message.role}</b> · {message.content}</p>)}</div>)}
+      </details>)}</div>
+      : <p className="empty-hint">No external exchanges have been imported on this branch.</p>}
+    <small className="field-note">The importer verifies branch identity, contiguous turns within each segment, matching content across overlaps, transcript hash, and context revision. A stale or incomplete transcript is retained for review without changing official state.</small>
+  </section>;
 }
 
 function JournalPage({ workspaceId, branchId, revision, sources, importText, busy, onCommit }: {
@@ -1281,6 +1589,7 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   const [branchRevisions, setBranchRevisions] = useState<Revision[]>([]);
   const [branchRevisionsLoading, setBranchRevisionsLoading] = useState(false);
   const [branchRevisionsError, setBranchRevisionsError] = useState("");
+  const [promotionReviewed, setPromotionReviewed] = useState(false);
   const [ruleEvaluations, setRuleEvaluations] = useState<RuleEvaluation[]>([]);
   const [ruleError, setRuleError] = useState("");
   const [rulesLoading, setRulesLoading] = useState(true);
@@ -1362,6 +1671,8 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
     return () => { active = false; };
   }, [workspaceId, branchId, parentBranchId, revision]);
 
+  useEffect(() => { setPromotionReviewed(false); }, [branchId, revision]);
+
   const entityIds = new Set((baseline?.entities || []).map((item) => item.entity_id));
   const entityById = new Map((baseline?.entities || []).map((item) => [item.entity_id, item]));
   const relationById = new Map((baseline?.relations || []).map((item) => [item.relation_id, item]));
@@ -1393,7 +1704,7 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   const differenceCount = addedEntities.length + changedEntities.length + addedRelations.length + changedRelations.length + addedClaims.length + changedClaims.length;
   const branchChanges = branchRevisions.filter((item) => item.revision > (branch?.base_revision ?? 0));
   const canPromote = Boolean(
-    branch && parentBranch && parentSnapshotCurrent && revision > branch.base_revision &&
+    branch && parentBranch && parentSnapshotCurrent && branch.head_revision === revision && revision > branch.base_revision && branchChanges.length > 0 &&
     !branchRevisionsLoading && !branchRevisionsError && !busy,
   );
 
@@ -1428,20 +1739,38 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
             : !baseline
               ? <p className="empty-hint">Loading the parent branch records…</p>
               : <>
-                {parentHasAdvanced && <p className="branch-stale-note">The parent has changed since this branch was created. Differences below use its current state.</p>}
+                {parentHasAdvanced && <p className="branch-stale-note">The parent no longer matches revision {branch?.parent_revision}. This comparison uses its current state; the command history below shows child-only changes. Rebase is unavailable, so create a fresh branch from the current parent and reapply the changes you want.</p>}
                 {differenceCount === 0
                   ? <p className="empty-hint">No record differences from the current parent state.</p>
                   : <div className="branch-differences">
-                  {addedEntities.map((item) => <div className="branch-difference" key={`entity-${item.entity_id}`}><span>New concept</span><strong>{item.label}</strong><small>{item.entity_type}</small></div>)}
-                  {addedRelations.map((item) => <div className="branch-difference" key={`relation-${item.relation_id}`}><span>New relationship · {item.review_status}</span><strong>{relationLabel(item)}</strong></div>)}
-                  {changedRelations.map((item) => <div className="branch-difference" key={`relation-status-${item.relation_id}`}><span>Relationship review changed</span><strong>{relationLabel(item)}</strong><small>{relationById.get(item.relation_id)?.review_status} → {item.review_status}</small></div>)}
-                  {addedClaims.map((item) => <div className="branch-difference" key={`claim-${item.claim_id}`}><span>New claim · {item.review_status}</span><strong>{claimLabel(item)}</strong></div>)}
-                  {changedClaims.map((item) => <div className="branch-difference" key={`claim-status-${item.claim_id}`}><span>Claim review changed</span><strong>{claimLabel(item)}</strong><small>{claimById.get(item.claim_id)?.review_status} → {item.review_status}</small></div>)}
+                  {addedEntities.map((item) => <div className="branch-difference" key={`entity-${item.entity_id}`}><span>New concept</span><strong>{item.label}</strong><small>{item.entity_type}</small><details><summary>Inspect record</summary><pre>{JSON.stringify(item, null, 2)}</pre></details></div>)}
+                  {changedEntities.map((item) => <div className="branch-difference" key={`entity-change-${item.entity_id}`}><span>Concept changed</span><strong>{item.label}</strong><details><summary>Before and after</summary><pre>{JSON.stringify({ before: entityById.get(item.entity_id), after: item }, null, 2)}</pre></details></div>)}
+                  {addedRelations.map((item) => <div className="branch-difference" key={`relation-${item.relation_id}`}><span>New relationship · {item.review_status}</span><strong>{relationLabel(item)}</strong><details><summary>Inspect record</summary><pre>{JSON.stringify(item, null, 2)}</pre></details></div>)}
+                  {changedRelations.map((item) => <div className="branch-difference" key={`relation-change-${item.relation_id}`}><span>Relationship changed</span><strong>{relationLabel(item)}</strong><details><summary>Before and after</summary><pre>{JSON.stringify({ before: relationById.get(item.relation_id), after: item }, null, 2)}</pre></details></div>)}
+                  {addedClaims.map((item) => <div className="branch-difference" key={`claim-${item.claim_id}`}><span>New claim · {item.review_status}</span><strong>{claimLabel(item)}</strong><details><summary>Inspect record</summary><pre>{JSON.stringify(item, null, 2)}</pre></details></div>)}
+                  {changedClaims.map((item) => <div className="branch-difference" key={`claim-change-${item.claim_id}`}><span>Claim changed</span><strong>{claimLabel(item)}</strong><details><summary>Before and after</summary><pre>{JSON.stringify({ before: claimById.get(item.claim_id), after: item }, null, 2)}</pre></details></div>)}
                   </div>}
               </>}
-        <div className="branch-note">These are deterministic record differences from the current parent branch. Options and assumptions below are stored separately from the branch’s canonical facts.</div>
+        <div className="branch-note">Scenario assumptions remain separate from canonical facts, including after a branch promotion.</div>
       </section>
     </div>
+    {parentBranchId && <section className="panel branch-review-panel">
+      <div className="panel-heading"><div><h2>Review branch changes</h2><p>Every command after the branch’s starting revision is available with its full payload, including story text, journal entries, evidence, and scenario assumptions.</p></div>
+        <div className="branch-review-actions"><span className="panel-count">{branchRevisionsLoading ? "Loading history…" : `${branchChanges.length} branch changes`}</span>
+          <button className="primary-button" disabled={!canPromote || !promotionReviewed} title={parentHasAdvanced ? "The parent must still be at the branch starting revision." : branchRevisionsError || undefined} onClick={() => void confirmPromotion()}>Promote to {parentBranchId} <span>↗</span></button>
+        </div>
+      </div>
+      {branchRevisionsError ? <p className="inline-error" role="alert">{branchRevisionsError}</p>
+        : branchRevisionsLoading ? <p className="empty-hint" role="status">Loading the complete branch command history…</p>
+          : !branchChanges.length ? <p className="empty-hint">No branch changes are available to promote yet.</p>
+            : <ol className="branch-review-list">{[...branchChanges].reverse().map((item) => <li key={item.revision}>
+              <details><summary><span>Revision {item.revision}</span><strong>{item.reason}</strong><small>{item.actor} · follows {item.parent_revision ?? "none"} · {new Date(item.created_at).toLocaleString()}</small></summary>
+                <pre>{JSON.stringify({ request: item.payload, result: item.result }, null, 2)}</pre>
+              </details>
+            </li>)}</ol>}
+      {branchChanges.length > 0 && !branchRevisionsError && <label className="branch-review-check"><input type="checkbox" checked={promotionReviewed} disabled={!canPromote} onChange={(event) => setPromotionReviewed(event.target.checked)} /><span>I reviewed these branch changes and want to promote them into {parentBranchId}.</span></label>}
+      {!parentSnapshotCurrent && <p className="branch-stale-note">Promotion requires {parentBranchId} to remain at revision {branch?.parent_revision ?? "the branch starting point"}. If it has changed, create a fresh branch and reapply the changes; automatic conflict merging is unavailable.</p>}
+    </section>}
     <section className="panel scenario-create-panel"><div className="panel-heading"><div><h2>Frame a decision</h2><p>Record the problem, constraints, options, and evidence before comparing outcomes.</p></div><span className="panel-count">Scenario input</span></div>
       <ScenarioCreateForm claims={claims} entities={entities} sources={sources} busy={busy} onCommit={onCommit} onCreated={setSelectedScenarioId} />
     </section>

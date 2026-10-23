@@ -136,10 +136,12 @@ class BranchPromotionTests(unittest.TestCase):
         self.assertEqual(self.gateway.current_revision(self.workspace_id, "what-if"), branch_revision)
 
         entities = {item["entity_id"]: item for item in self.gateway.list_entities(self.workspace_id)}
+        vault_entity = next(item for item in entities.values() if item["label"] == "Vault")
         self.assertEqual(entities["hero"]["label"], "Mira of the Station")
         self.assertEqual(entities["hero"]["properties"], {"role": "lead"})
         self.assertIn("station", entities)
-        self.assertEqual(entities["vault"]["label"], "Vault")
+        self.assertEqual(vault_entity["label"], "Vault")
+        self.assertEqual(entities["station"]["created_revision"], result["revision"])
         self.assertEqual(entities["hero"]["updated_revision"], result["revision"])
         indexed = self.database.connection.execute(
             "SELECT label FROM entity_search WHERE workspace_id=? AND branch_id='main' AND entity_id='hero'",
@@ -149,6 +151,7 @@ class BranchPromotionTests(unittest.TestCase):
 
         relation = self.gateway.relations(self.workspace_id, "main")[0]
         self.assertEqual(relation["review_status"], "accepted")
+        self.assertEqual(relation["created_revision"], result["revision"])
         claim = self.gateway.list_claims(self.workspace_id, "main")[0]
         self.assertEqual(claim["review_status"], "accepted")
         assumption = self.database.connection.execute(
@@ -162,14 +165,26 @@ class BranchPromotionTests(unittest.TestCase):
         self.assertFalse(any(item["object_value"] == "a hidden vault" for item in self.gateway.list_claims(self.workspace_id, "main")))
 
         journal = self.gateway.list_journal_events(self.workspace_id, "main")
-        self.assertEqual(journal[0]["history"][0]["source_quote"], "Mira enters the old station.")
+        self.assertEqual(journal[0]["source_quote"], "Mira enters the old station.")
+        self.assertEqual(journal[0]["created_revision"], result["revision"])
         conversation = self.gateway.get_conversation(self.workspace_id, "main", "mira-story")
         self.assertEqual(len(conversation["turns"]), 2)
         self.assertEqual(conversation["turns"][1]["context_manifest"]["branch_id"], "what-if")
+        self.assertEqual(conversation["turns"][1]["created_revision"], result["revision"])
         candidate = self.gateway.list_extraction_batches(self.workspace_id, "main")[0]["candidates"][0]
         self.assertEqual(candidate["review_status"], "accepted")
-        self.assertEqual(candidate["canonical_record_id"], entities["vault"]["entity_id"])
+        self.assertEqual(candidate["canonical_record_id"], vault_entity["entity_id"])
+        self.assertEqual(candidate["reviewed_revision"], result["revision"])
+        evidence = self.database.connection.execute(
+            "SELECT e.quote FROM entity_evidence ee JOIN evidence e ON e.workspace_id=ee.workspace_id "
+            "AND e.branch_id=ee.branch_id AND e.evidence_id=ee.evidence_id "
+            "WHERE ee.workspace_id=? AND ee.branch_id='main' AND ee.entity_id=?",
+            (self.workspace_id, vault_entity["entity_id"]),
+        ).fetchone()
+        self.assertEqual(evidence["quote"], "The hidden vault contains maps.")
         self.assertEqual(len(self.gateway.evaluate_rules(self.workspace_id, "main")), 1)
+        self.assertEqual(len(self.gateway.get_conversation(self.workspace_id, "what-if", "mira-story")["turns"]), 2)
+        self.assertGreater(len(self.gateway.revisions(self.workspace_id, "what-if")), 1)
 
         audit = self.database.connection.execute(
             "SELECT revision,event_type,payload_json FROM audit_events WHERE workspace_id=? AND branch_id='main' "

@@ -257,6 +257,10 @@ def create_app(
     def list_conversations(workspace_id: str, branch_id: str = "main"):
         return gateway.list_conversations(workspace_id, branch_id)
 
+    @app.get("/api/v1/workspaces/{workspace_id}/exchanges")
+    def list_external_exchanges(workspace_id: str, branch_id: str = "main"):
+        return gateway.list_external_exchanges(workspace_id, branch_id)
+
     @app.get("/api/v1/workspaces/{workspace_id}/conversations/{conversation_id}")
     def get_conversation(workspace_id: str, conversation_id: str, branch_id: str = "main"):
         return gateway.get_conversation(workspace_id, branch_id, conversation_id)

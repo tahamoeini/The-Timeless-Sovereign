@@ -89,6 +89,47 @@ class ExtractionWorkflowTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(evidence["quote"], "Aria guards the archive.")
 
+    def test_reprocessing_does_not_overwrite_a_reviewed_manual_claim_correction(self):
+        accepted_entity = self.command("manual-entity", self.revision, "review_extraction_candidate", {
+            "candidate_id": "person-aria", "review_status": "accepted",
+        })
+        accepted_claim = self.command("manual-claim", accepted_entity["revision"], "review_extraction_candidate", {
+            "candidate_id": "claim-guards", "review_status": "accepted",
+            "subject_entity_id": accepted_entity["canonical_record_id"],
+            "epistemic_status": "known", "visibility": "public",
+        })
+        corrected = self.command("manual-correction", accepted_claim["revision"], "update_claim", {
+            "claim_id": accepted_claim["canonical_record_id"], "object_value": "the sealed archive",
+        })
+        reapproved = self.command("reapprove-correction", corrected["revision"], "review_claim", {
+            "claim_id": accepted_claim["canonical_record_id"], "review_status": "accepted",
+        })
+
+        quote = "Aria"
+        claim_quote = "Aria guards the archive."
+        rerun = self.command("rerun-extraction", reapproved["revision"], "record_extraction_batch", {
+            **self.stable_payload,
+            "batch_id": "batch-notes-2",
+            "candidates": [
+                {"candidate_id": "rerun-person-aria", "kind": "entity", "label": "Aria", "entity_type": "person",
+                 "quote": quote, "source_start": 0, "source_end": len(quote)},
+                {"candidate_id": "rerun-claim-guards", "kind": "claim", "subject_label": "Aria",
+                 "predicate": "guards", "object_value": "the archive", "quote": claim_quote,
+                 "source_start": self.source_text.index(claim_quote),
+                 "source_end": self.source_text.index(claim_quote) + len(claim_quote)},
+            ],
+        }, actor="ai:ollama")
+
+        saved_claim = self.gateway.list_claims("research")[0]
+        self.assertEqual(saved_claim["object_value"], "the sealed archive")
+        self.assertEqual(saved_claim["review_status"], "accepted")
+        rerun_batch = next(
+            batch for batch in self.gateway.list_extraction_batches("research")
+            if batch["batch_id"] == "batch-notes-2"
+        )
+        self.assertEqual([candidate["review_status"] for candidate in rerun_batch["candidates"]], ["proposed", "proposed"])
+        self.assertEqual(rerun["proposed_count"], 2)
+
     def test_rejection_and_branch_review_do_not_change_the_parent_batch(self):
         self.gateway.create_branch("research", "main", "alternate", self.revision, "branch-1")
         rejected = self.command("reject-in-branch", self.revision, "review_extraction_candidate", {

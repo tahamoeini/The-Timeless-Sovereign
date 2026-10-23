@@ -276,6 +276,296 @@
   overflow: hidden;
 }
 
+.knowledge-records {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.knowledge-record-panel:first-child {
+  grid-column: 1 / -1;
+}
+
+.knowledge-record-panel {
+  min-width: 0;
+}
+
+.knowledge-record-row {
+  min-width: 0;
+  margin-top: 9px;
+  border: 1px solid #2d3b36;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: #19211f;
+}
+
+.knowledge-record-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.knowledge-record-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.knowledge-record-heading strong {
+  color: #d3ded8;
+  font-size: 10px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-record-heading small {
+  color: #87968f;
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.record-properties {
+  margin-top: 8px;
+}
+
+.record-properties summary {
+  color: #a4c4b2;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.record-properties pre,
+.revision-detail pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 7px 0 0;
+  border: 1px solid #293a34;
+  border-radius: 7px;
+  padding: 9px;
+  background: #111917;
+  color: #b8c8c0;
+  font: 8px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.record-edit-form {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+  border-top: 1px solid #2c3a35;
+  padding-top: 10px;
+}
+
+.record-edit-form label {
+  display: grid;
+  gap: 5px;
+  color: #9daca5;
+  font-size: 9px;
+}
+
+.record-edit-form input,
+.record-edit-form select,
+.record-edit-form textarea {
+  width: 100%;
+  border: 1px solid #36443e;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #121918;
+  color: #d3ded8;
+  font: inherit;
+  font-size: 10px;
+}
+
+.record-edit-form textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  line-height: 1.5;
+}
+
+.record-edit-form input:focus,
+.record-edit-form select:focus,
+.record-edit-form textarea:focus {
+  outline: none;
+  border-color: #5d8b76;
+}
+
+.revision-detail {
+  margin-top: 7px;
+}
+
+.revision-detail summary {
+  color: #a4c4b2;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.external-exchange-panel {
+  margin-top: 16px;
+}
+
+.external-exchange-warning {
+  margin-top: 12px;
+  border: 1px solid #66513a;
+  border-radius: 7px;
+  padding: 9px 11px;
+  background: #241f18;
+  color: #d8bb8d;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.external-exchange-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.external-exchange-form .field-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.external-exchange-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.external-exchange {
+  min-width: 0;
+  border: 1px solid #2d3b36;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #19211f;
+}
+
+.external-exchange summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+  align-items: baseline;
+  cursor: pointer;
+}
+
+.external-exchange summary strong {
+  min-width: 0;
+  color: #d3ded8;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.external-exchange summary small {
+  grid-column: 1 / -1;
+  color: #87968f;
+  font-size: 8px;
+}
+
+.exchange-status {
+  color: #9ac8ad;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.exchange-status.stale {
+  color: #e0b76f;
+}
+
+.exchange-change-ids {
+  margin: 10px 0 0;
+  color: #c7b48f;
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.external-exchange-identity {
+  margin: 8px 0 0;
+  color: #91a198;
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.exchange-gap-warning {
+  margin: 9px 0 0;
+  border-left: 2px solid #d19d55;
+  padding: 7px 9px;
+  background: #292319;
+  color: #e3c58f;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.external-context-snapshot {
+  margin-top: 9px;
+  border-top: 1px solid #2c3a35;
+  padding-top: 8px;
+  color: #aebcb4;
+  font-size: 8px;
+}
+
+.external-context-snapshot summary {
+  cursor: pointer;
+  color: #a4c4b2;
+}
+
+.external-context-snapshot ul {
+  margin: 7px 0;
+  padding-left: 18px;
+}
+
+.external-context-snapshot li,
+.external-context-snapshot p {
+  margin: 5px 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.external-exchange-turn {
+  margin-top: 9px;
+  border-top: 1px solid #2c3a35;
+  padding-top: 9px;
+}
+
+.external-exchange-turn > strong {
+  color: #a4c4b2;
+  font-size: 8px;
+}
+
+.external-exchange-turn p {
+  margin: 7px 0 0;
+  color: #bcc9c2;
+  font-size: 9px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.external-exchange-turn p b {
+  color: #91bba5;
+  font-weight: 600;
+}
+
+@media (max-width: 950px) {
+  .knowledge-records {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-record-panel:first-child {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 700px) {
+  .external-exchange-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .matrix-scroll {
   max-height: 620px;
   overflow: auto;
@@ -498,6 +788,102 @@
 .branch-difference small {
   color: #87968f;
   font-size: 8px;
+}
+
+.branch-difference details,
+.branch-review-list details {
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.branch-difference summary,
+.branch-review-list summary {
+  color: #aac5b8;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.branch-difference pre,
+.branch-review-list pre {
+  max-height: 300px;
+  margin: 8px 0 0;
+  overflow: auto;
+  border: 1px solid #293a34;
+  border-radius: 7px;
+  padding: 10px;
+  background: #111917;
+  color: #b8c8c0;
+  font: 9px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.branch-review-panel {
+  margin-top: 16px;
+}
+
+.branch-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.branch-review-list {
+  display: grid;
+  gap: 8px;
+  max-height: 440px;
+  margin: 12px 0 0;
+  overflow: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.branch-review-list li {
+  border: 1px solid #2d3b36;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #19211f;
+}
+
+.branch-review-list summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 10px;
+  align-items: baseline;
+}
+
+.branch-review-list summary span {
+  color: #9ac8ad;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.branch-review-list summary strong {
+  color: #d2ddd7;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.branch-review-list summary small {
+  grid-column: 2;
+  color: #87968f;
+  font-size: 8px;
+}
+
+.branch-review-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 14px;
+  color: #b8c8c0;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.branch-review-check input {
+  margin-top: 1px;
+  accent-color: #86b79c;
 }
 
 .journal-notes {

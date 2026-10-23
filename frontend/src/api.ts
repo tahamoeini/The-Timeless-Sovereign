@@ -155,7 +155,7 @@ export type JournalEventVersion = {
 };
 export type JournalEvent = JournalEventVersion & { history: JournalEventVersion[] };
 export type Branch = { branch_id: string; parent_branch_id: string | null; parent_revision: number | null; base_revision: number; head_revision: number; created_at: string };
-export type Revision = { revision: number; parent_revision: number | null; actor: string; reason: string; created_at: string; payload: Record<string, unknown> };
+export type Revision = { revision: number; parent_revision: number | null; actor: string; reason: string; created_at: string; event_type: string | null; payload: Record<string, unknown>; result: Record<string, unknown> | null };
 export type SourceResult = { source_id: string; display_name: string; excerpt: string };
 export type StoryTurn = {
   turn_id: string;
@@ -182,6 +182,23 @@ export type ContextManifest = {
   included: { claim_id: string; subject: string; predicate: string; object: string; actor_stance: string; evidence_ids: string[] }[];
   excluded: { claim_id: string; reason: string }[];
   token_estimate: number;
+};
+export type ExternalExchange = {
+  exchange_id: string;
+  transcript_id: string;
+  context_manifest_id: string;
+  base_revision: number;
+  from_turn: number;
+  to_turn: number;
+  transcript_hash: string;
+  context_manifest: ContextManifest;
+  turns: { turn_number: number; messages: { role: string; content: string }[] }[];
+  proposed_change_ids: string[];
+  created_revision: number;
+  created_at: string;
+  stale_context: boolean;
+  missing_turns: { from_turn: number; to_turn: number }[];
+  current_revision: number;
 };
 export type StoryConversationSummary = {
   conversation_id: string;

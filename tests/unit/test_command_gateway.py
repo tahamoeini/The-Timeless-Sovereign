@@ -94,6 +94,112 @@ class CommandGatewayTests(unittest.TestCase):
         self.assertEqual(self.gateway.current_revision("story", "main"), 1)
         self.assertEqual(self.gateway.current_revision("story", "what-if"), 3)
 
+    def test_entity_corrections_are_audited_searchable_and_human_only(self):
+        self.create_entity("create-aria")
+        corrected = self.command("correct-aria", 1, "update_entity", {
+            "entity_id": "aria", "entity_type": "person", "label": "Aria Vale",
+            "properties": {"role": "archivist"},
+        })
+
+        self.assertEqual(corrected["revision"], 2)
+        self.assertEqual(corrected["before"], {
+            "entity_type": "character", "label": "Aria", "properties": {"role": "protagonist"},
+        })
+        self.assertEqual(corrected["after"], {
+            "entity_type": "person", "label": "Aria Vale", "properties": {"role": "archivist"},
+        })
+        saved = self.gateway.list_entities("story")[0]
+        self.assertEqual((saved["entity_type"], saved["label"], saved["properties"]),
+                         ("person", "Aria Vale", {"role": "archivist"}))
+        self.assertEqual(self.gateway.search_entities("story", "main", "Vale")[0]["entity_id"], "aria")
+        revision = next(item for item in self.gateway.revisions("story") if item["revision"] == 2)
+        self.assertEqual(revision["result"]["before"]["label"], "Aria")
+        self.assertEqual(revision["result"]["after"]["label"], "Aria Vale")
+
+        no_change = self.command("correct-aria-noop", 2, "update_entity", {
+            "entity_id": "aria", "entity_type": "person", "label": "Aria Vale",
+            "properties": {"role": "archivist"},
+        })
+        self.assertEqual(no_change["revision"], 2)
+        with self.assertRaises(ValidationError):
+            self.command("ai-correct-aria", 2, "update_entity", {
+                "entity_id": "aria", "label": "Changed by AI",
+            }, actor="ai:planner")
+        self.assertEqual(self.gateway.current_revision("story"), 2)
+
+    def test_relationship_correction_is_branch_local_and_requires_review_again(self):
+        self.create_entity("create-aria", entity_id="aria")
+        self.create_entity("create-kael", revision=1, entity_id="kael", label="Kael")
+        self.command("relation", 2, "add_relation", {
+            "relation_id": "knows", "source_entity_id": "aria", "target_entity_id": "kael",
+            "relation_type": "knows", "review_status": "accepted", "properties": {"basis": "old account"},
+        })
+        self.gateway.create_branch("story", "main", "what-if", 3, "branch-relation-edit")
+        self.command("alternate-person", 3, "create_entity", {
+            "entity_id": "lyra", "entity_type": "person", "label": "Lyra", "properties": {},
+        }, branch="what-if")
+        corrected = self.command("correct-link", 4, "update_relation", {
+            "relation_id": "knows", "target_entity_id": "lyra", "relation_type": "trusts",
+            "properties": {"basis": "corrected account"},
+        }, branch="what-if")
+
+        self.assertEqual(corrected["before"]["review_status"], "accepted")
+        self.assertEqual(corrected["after"]["review_status"], "proposed")
+        self.assertEqual(self.gateway.relations("story", "main")[0]["target_entity_id"], "kael")
+        branch_relation = self.gateway.relations("story", "what-if")[0]
+        self.assertEqual(branch_relation["target_entity_id"], "lyra")
+        self.assertEqual(branch_relation["review_status"], "proposed")
+        revision = next(item for item in self.gateway.revisions("story", "what-if") if item["revision"] == 5)
+        self.assertEqual(revision["result"]["before"]["target_entity_id"], "kael")
+        self.assertEqual(revision["result"]["after"]["target_entity_id"], "lyra")
+
+        accepted = self.command("review-corrected-link", 5, "review_relation", {
+            "relation_id": "knows", "review_status": "accepted",
+        }, branch="what-if")
+        self.assertEqual(accepted["before"], "proposed")
+        self.assertEqual(accepted["after"], "accepted")
+        with self.assertRaises(ValidationError):
+            self.command("ai-correct-link", 3, "update_relation", {
+                "relation_id": "knows", "relation_type": "manipulates",
+            }, actor="ai:planner")
+
+    def test_claim_correction_preserves_evidence_and_returns_accepted_claim_to_review(self):
+        self.create_entity("create-aria")
+        self.command("source", 1, "import_source", {
+            "source_id": "notes", "display_name": "Notes", "media_type": "text/plain",
+            "content": "Aria guards the brass archive key.",
+        })
+        evidence = self.command("evidence", 2, "add_evidence", {
+            "evidence_id": "guard-evidence", "source_id": "notes", "anchor": "sentence",
+            "quote": "Aria guards the brass archive key.",
+        })
+        claim = self.command("claim", 3, "add_claim", {
+            "claim_id": "guards", "subject_entity_id": "aria", "predicate": "guards",
+            "object_value": "the archive key", "epistemic_status": "known", "review_status": "proposed",
+            "evidence": [evidence["evidence_id"]],
+        })
+        self.command("accept-claim", claim["revision"], "review_claim", {
+            "claim_id": "guards", "review_status": "accepted",
+        })
+        corrected = self.command("correct-claim", 5, "update_claim", {
+            "claim_id": "guards", "object_value": "the brass archive key",
+        })
+
+        self.assertEqual(corrected["before"]["review_status"], "accepted")
+        self.assertEqual(corrected["after"]["review_status"], "proposed")
+        self.assertEqual(corrected["before"]["evidence"], ["guard-evidence"])
+        self.assertEqual(corrected["after"]["evidence"], ["guard-evidence"])
+        saved_claim = self.gateway.list_claims("story")[0]
+        self.assertEqual(saved_claim["object_value"], "the brass archive key")
+        self.assertEqual(saved_claim["review_status"], "proposed")
+        revision = next(item for item in self.gateway.revisions("story") if item["revision"] == 6)
+        self.assertEqual(revision["result"]["before"]["object_value"], "the archive key")
+        self.assertEqual(revision["result"]["after"]["object_value"], "the brass archive key")
+        with self.assertRaises(ValidationError):
+            self.command("ai-correct-claim", 6, "update_claim", {
+                "claim_id": "guards", "object_value": "a forged fact",
+            }, actor="ai:planner")
+
     def test_foreign_workspace_data_is_not_visible(self):
         self.gateway.create_workspace("Private workspace", "private")
         self.create_entity("create-aria")
