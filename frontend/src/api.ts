@@ -207,7 +207,7 @@ export type ContextManifest = {
       current_location: string;
     };
     recent_checks: { stat_name: string; die_roll: number; modifier: number; total: number; target: number; outcome: "success" | "failure" }[];
-    memories: Array<{ memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string; narrative_order: number; source_turn_id: string | null }>;
+    memories: Array<{ memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string; narrative_order: number; source_turn_id: string | null; created_revision: number; selection_score: number }>;
     excluded_memories: Array<{ memory_id: string; reason: string }>;
     open_threads: Array<{ thread_id: string; title: string; detail: string }>;
     public_npcs: Array<{ entity_id: string; name: string; aliases: string[]; profile: Record<string, unknown> }>;
@@ -345,7 +345,8 @@ export type StoryNpc = {
   review_status: "proposed" | "accepted" | "rejected"; created_revision: number; updated_revision: number;
 };
 export type StoryAsset = { asset_id: string; target_kind: "character" | "scene"; target_id: string; display_name: string; mime_type: string; provenance: Record<string, unknown>; size_bytes: number; created_revision: number; created_at: string };
-export type StoryStudioData = { memories: { memories: StoryMemory[]; history: Record<string, StoryMemory[]>; threads: StoryThread[]; conversation_id: string }; npcs: StoryNpc[]; assets: StoryAsset[] };
+export type StoryMapLocation = { location_id: string; name: string; status: "approved" | "rejected"; source_proposal_id: string | null; created_revision: number; reviewed_revision: number | null; created_at: string };
+export type StoryStudioData = { memories: { memories: StoryMemory[]; history: Record<string, StoryMemory[]>; threads: StoryThread[]; conversation_id: string }; npcs: StoryNpc[]; assets: StoryAsset[]; locations: StoryMapLocation[] };
 
 export type RuntimeConfig = { baseUrl: string; token: string };
 

@@ -1,0 +1,49 @@
+/* RPG authoring panels, continuity controls, and private reader */
+.story-detail-panel{padding:0;overflow:hidden}
+.story-detail-panel>summary{display:grid;gap:4px;padding:14px 16px;cursor:pointer;list-style:none}
+.story-detail-panel>summary::-webkit-details-marker{display:none}
+.story-detail-panel>summary:after{content:"Open";font-size:8px;color:#94aa9e;letter-spacing:.08em;text-transform:uppercase}
+.story-detail-panel[open]>summary:after{content:"Close"}
+.story-detail-panel>summary strong{font:600 13px Manrope,sans-serif;color:#dbe7e0}
+.story-detail-panel>summary small{font-size:9px;color:#86958e}
+.story-detail-content{display:grid;gap:12px;padding:0 14px 14px}
+.story-mini-form{display:grid;gap:8px;padding:11px;border:1px solid #2c3935;border-radius:9px;background:#151d1d}
+.story-mini-form>strong,.story-detail-heading>strong{font:600 10px Manrope,sans-serif;color:#cad8d0}
+.story-detail-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.story-mini-form textarea,.story-mini-form input,.story-mini-form select{width:100%;border:1px solid #303a3c;background:#111719;color:var(--text);border-radius:7px;padding:8px 9px;font-size:10px;line-height:1.5}
+.story-memory-list,.story-thread-list{display:grid;gap:8px}
+.story-memory-card,.story-thread-card,.story-npc-card{border:1px solid #2a3632;border-radius:9px;background:#141b1b;padding:10px}
+.story-memory-card.proposed{border-color:#514731}.story-memory-card.rejected{opacity:.7}
+.story-memory-meta{display:grid;gap:3px}.story-memory-meta strong,.story-thread-card strong,.story-npc-card strong{font-size:9px;color:#c8d7ce}
+.story-memory-meta small,.story-npc-card small,.story-thread-card small{font-size:8px;color:#84938c}
+.story-memory-card>p,.story-thread-card p,.story-npc-card p{font-size:9px;line-height:1.55;color:#aebdb5;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.story-memory-actions,.story-turn-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.story-memory-actions button,.story-turn-actions button{border:1px solid #34423c;border-radius:6px;background:#1a2422;color:#b5c7bd;padding:5px 8px;font-size:8px;cursor:pointer}
+.story-memory-actions .accept-button{color:#bfe0c9;border-color:#42614f}
+.story-memory-actions details{width:100%;font-size:8px;color:#87968f}.story-memory-actions details p{font-size:8px;color:#9caaa3;white-space:pre-wrap}
+.story-thread-card{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.story-thread-card p{margin:4px 0 0}
+.story-npc-card .private-note{display:block;border-top:1px solid #2c3733;padding-top:6px;margin-top:6px;color:#ad9e79}
+.story-map-locations{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:7px}
+.story-map-locations button{min-height:48px;border:1px solid #33443b;border-radius:8px;background:#17211e;color:#bdd3c5;padding:8px;font-size:9px;cursor:pointer}
+.story-map-locations button.selected{border-color:#6c9277;background:#21352a;color:#e0f0e4}
+.story-asset-row{display:flex;align-items:center;gap:9px;padding:7px;border-top:1px solid #293531;font-size:9px;color:#c3d0c8}
+.story-asset-row img{width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #34423c}
+.story-asset-row small{display:block;color:#819087;font-size:7px;margin-top:3px}
+.story-turn-art{display:block;max-width:min(100%,520px);max-height:360px;object-fit:contain;border-radius:10px;margin:10px auto;border:1px solid #34423c}
+.story-character-art{max-width:160px;max-height:210px;object-fit:cover;border-radius:10px}
+.story-turn-edit{display:grid;gap:8px}.story-turn.deleted,.story-turn.superseded{opacity:.55;border-style:dashed}
+.story-history-toggle{margin:8px 0;color:#92a198}
+.story-reader{display:none}.story-reader.is-open{display:block}.story-reader[dir="auto"]{unicode-bidi:plaintext}
+.reader-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid #35423b;padding-bottom:10px;color:#9baaa2;font-size:9px}
+.reader-metadata{color:#91a49a;font-size:10px}.reader-turn{border-bottom:1px solid #303b36;padding:18px 0;break-inside:avoid}
+.reader-turn h2{font:600 11px Manrope,sans-serif;color:#8fab9a}.reader-turn p{font-size:12px;line-height:1.9;color:#dee8e2;white-space:pre-wrap;overflow-wrap:anywhere}
+.reader-character-art,.reader-scene-art{display:block;max-width:min(100%,620px);max-height:520px;object-fit:contain;margin:12px auto;border-radius:8px}
+@media print{
+  body *{visibility:hidden!important}
+  .story-reader,.story-reader *{visibility:visible!important}
+  .story-reader{display:block!important;position:absolute;inset:0;width:100%;padding:12mm 16mm;background:#fff!important;color:#111!important;font-family:Georgia,"Times New Roman",serif}
+  .story-reader h1{font-size:24pt;color:#111}.story-reader h2{font-size:12pt;color:#333}.story-reader p,.reader-metadata{font-size:11pt!important;line-height:1.65!important;color:#111!important}
+  .reader-toolbar,.story-reader>small{display:none!important}.reader-turn{border-color:#ccc}
+  .reader-character-art,.reader-scene-art{max-width:100%;max-height:180mm;page-break-inside:avoid}
+}
+@media(max-width:700px){.story-detail-content{padding-inline:10px}.story-mini-form{padding:9px}.story-turn-actions{gap:4px}.story-turn-actions button{font-size:7px;padding:5px 6px}}

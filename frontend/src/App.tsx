@@ -1970,6 +1970,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
 
   const selectedNpcProfile = studioData?.npcs.find((npc) => npc.npc_entity_id === npcId) || null;
+  const pinnedLocations = Array.isArray(activeWorldContent?.locations)
+    ? activeWorldContent.locations.filter((place): place is string => typeof place === "string") : [];
+  const adventureLocations = studioData?.locations.filter((location) => location.status === "approved").map((location) => location.name) || [];
+  const approvedMapLocations = [...new Map([...pinnedLocations, ...adventureLocations].map((place) => [place.toLocaleLowerCase(), place])).values()];
 
   return <>
     <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Continue a saved story with a local model, while keeping character knowledge and world facts under your control." />
@@ -2033,7 +2037,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {conversation && <button className="secondary-button" type="button" onClick={() => setReaderOpen((open) => !open)}>{readerOpen ? "Close reader" : "Reader / print"}</button>}
         </div>
         {conversation && <label className="control-choice story-history-toggle"><input type="checkbox" checked={showTurnHistory} onChange={(event) => setShowTurnHistory(event.target.checked)} /><span>Show edited, hidden, and superseded turn history</span></label>}
-        {conversation && readerOpen && <section className="story-reader" dir="auto">
+        {conversation && readerOpen && <section className="story-reader is-open" dir="auto">
           <div className="reader-toolbar"><span>Private local reader</span><button className="secondary-button" type="button" onClick={() => window.print()}>Print / save PDF</button></div>
           <h1>{conversation.title}</h1>
           <p className="reader-metadata">{activeAdventure ? `${activeAdventure.world_name} · ${activeAdventure.name} · ${activeAdventure.actor_label}` : `${conversation.actor_label} · Legacy story`}</p>
@@ -2084,7 +2088,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                     <small>{fact.actor_stance} · {fact.evidence_ids.length} linked sources</small>
                   </div>)}
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
-                  {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length} recent checks</small></div>}
+                  {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length} recent checks</small>
+                    {turn.context_manifest.story.memories.map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
+                    {turn.context_manifest.story.excluded_memories.map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}
+                    {turn.context_manifest.story.open_threads.map((thread) => <small key={thread.thread_id}>Open thread · {thread.title}: {thread.detail}</small>)}
+                    {turn.context_manifest.story.public_npcs.map((npc) => <small key={npc.entity_id}>Approved NPC · {npc.name} · {JSON.stringify(npc.profile)}</small>)}
+                  </div>}
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
                 </details>}
               </>}
@@ -2208,8 +2217,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         <summary><strong>Map & travel</strong><small>{rpgState.sheet.current_location || "Location not set"} · pinned world version {activeAdventure.world_version}</small></summary>
         <div className="story-detail-content">
           <p className="field-note">Travel changes the current location only when you choose an approved map point. Model-suggested locations remain proposals.</p>
-          {Array.isArray(activeWorldContent?.locations) && activeWorldContent.locations.filter((place): place is string => typeof place === "string").length
-            ? <div className="story-map-locations">{activeWorldContent.locations.filter((place): place is string => typeof place === "string").map((place) => <button type="button" key={place} className={place === rpgState.sheet?.current_location ? "selected" : ""} disabled={busy || place === rpgState.sheet?.current_location} onClick={() => void travelToLocation(place)}>{place}{place === rpgState.sheet?.current_location ? " · Here" : " · Travel"}</button>)}</div>
+          {approvedMapLocations.length
+            ? <div className="story-map-locations">{approvedMapLocations.map((place) => <button type="button" key={place} className={place === rpgState.sheet?.current_location ? "selected" : ""} disabled={busy || place === rpgState.sheet?.current_location} onClick={() => void travelToLocation(place)}>{place}{place === rpgState.sheet?.current_location ? " · Here" : " · Travel"}</button>)}</div>
             : <p className="empty-hint">This adventure’s pinned world has no approved map locations yet. Add them in the world editor, then start a new adventure from that version.</p>}
           {rpgState.proposals.filter((proposal) => proposal.review_status === "proposed" && proposal.changes.some((change) => change.operation === "set_location")).map((proposal) => <p className="field-note" key={proposal.proposal_id}>Suggested location: {proposal.changes.filter((change) => change.operation === "set_location").map((change) => change.operation === "set_location" ? change.location : "").join(", ")} · review it in Character & game state.</p>)}
         </div>

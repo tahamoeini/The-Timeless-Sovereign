@@ -15,7 +15,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             database.connection.execute(f"DROP TABLE {table}")
 
     def _drop_story_extensions(self, database):
-        for table in ("story_assets", "story_npc_profiles", "story_threads", "story_memories", "story_turn_edits"):
+        for table in ("story_map_locations", "story_assets", "story_npc_profiles", "story_threads", "story_memories", "story_turn_edits"):
             database.connection.execute(f"DROP TABLE IF EXISTS {table}")
         database.connection.execute("ALTER TABLE story_adventures DROP COLUMN npc_simulation_enabled")
         database.connection.execute("ALTER TABLE story_adventures DROP COLUMN completed_turns")
@@ -66,7 +66,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgraded.close()
 
         self.assertEqual(version, SCHEMA_VERSION)
-        self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence", "external_exchanges", "story_worlds", "story_world_versions", "story_adventures", "rpg_sheets", "rpg_checks", "rpg_state_proposals"} <= tables)
+        self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence", "external_exchanges", "story_worlds", "story_world_versions", "story_adventures", "rpg_sheets", "rpg_checks", "rpg_state_proposals", "story_turn_edits", "story_memories", "story_threads", "story_npc_profiles", "story_assets", "story_map_locations"} <= tables)
 
     def test_v2_database_upgrades_to_journal_and_rule_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

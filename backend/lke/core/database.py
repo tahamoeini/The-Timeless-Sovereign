@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class Database:
@@ -79,6 +79,9 @@ class Database:
                 current = 10
             if current < 11:
                 self._apply_migration(11, _SCHEMA_V11)
+                current = 11
+            if current < 12:
+                self._apply_migration(12, _SCHEMA_V12)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -940,4 +943,26 @@ CREATE TRIGGER story_assets_no_update BEFORE UPDATE ON story_assets
 BEGIN SELECT RAISE(ABORT, 'story assets are immutable'); END;
 CREATE TRIGGER story_assets_no_delete BEFORE DELETE ON story_assets
 BEGIN SELECT RAISE(ABORT, 'story assets are immutable'); END;
+"""
+
+
+_SCHEMA_V12 = """
+CREATE TABLE story_map_locations (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 200),
+    status TEXT NOT NULL CHECK(status IN ('approved','rejected')),
+    source_proposal_id TEXT,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    reviewed_revision INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,adventure_id,location_id),
+    UNIQUE(workspace_id,branch_id,adventure_id,name COLLATE NOCASE),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX story_map_locations_adventure_idx
+    ON story_map_locations(workspace_id,branch_id,adventure_id,status,name COLLATE NOCASE);
 """

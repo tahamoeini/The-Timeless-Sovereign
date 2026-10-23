@@ -355,6 +355,7 @@ def _promote_branch_snapshot(
         ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at", "adventure_id,thread_id", ("title", "detail", "status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,thread_id"),
         ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at", "adventure_id,npc_entity_id", ("aliases_json", "public_profile_json", "private_profile_json", "review_status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,npc_entity_id"),
         ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at", None, (), ("created_revision",), "adventure_id,asset_id"),
+        ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at", "adventure_id,location_id", ("name", "status", "source_proposal_id", "reviewed_revision"), ("created_revision", "reviewed_revision"), "adventure_id,location_id"),
         ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at", None, (), ("created_revision",), "check_id"),
         ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at", "proposal_id", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "proposal_id"),
         ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
@@ -534,6 +535,7 @@ class CommandGateway:
                     ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at"),
                     ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at"),
                     ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at"),
+                    ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at"),
                     ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at"),
                     ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at"),
                     ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
@@ -1915,6 +1917,22 @@ class CommandGateway:
                         tracker["value"] = value
                     elif change["operation"] == "set_location":
                         location = change["location"]
+                        map_location = connection.execute(
+                            "SELECT location_id FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND name=? COLLATE NOCASE",
+                            (workspace_id, branch_id, proposal["adventure_id"], location),
+                        ).fetchone()
+                        if map_location:
+                            connection.execute(
+                                "UPDATE story_map_locations SET status='approved',source_proposal_id=?,reviewed_revision=? "
+                                "WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND location_id=?",
+                                (proposal_id, revision, workspace_id, branch_id, proposal["adventure_id"], map_location["location_id"]),
+                            )
+                        else:
+                            connection.execute(
+                                "INSERT INTO story_map_locations(workspace_id,branch_id,adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at) "
+                                "VALUES(?,?,?,?,?,'approved',?,?,?,?)",
+                                (workspace_id, branch_id, proposal["adventure_id"], str(uuid4()), location, proposal_id, revision, revision, _now()),
+                            )
                     elif change["operation"] == "npc_profile":
                         profile = connection.execute(
                             "SELECT public_profile_json,review_status,updated_revision FROM story_npc_profiles "
@@ -2216,7 +2234,11 @@ class CommandGateway:
                 (workspace_id, adventure["world_id"], adventure["world_version"]),
             ).fetchone()
             locations = json.loads(world["content_json"]).get("locations", []) if world else []
-            if not isinstance(locations, list) or location not in locations:
+            custom = connection.execute(
+                "SELECT 1 FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND name=? COLLATE NOCASE AND status='approved'",
+                (workspace_id, branch_id, adventure_id, location),
+            ).fetchone()
+            if (not isinstance(locations, list) or not any(isinstance(value, str) and value.casefold() == location.casefold() for value in locations)) and not custom:
                 raise ValidationError("Travel is limited to locations in the pinned world version")
             connection.execute(
                 "UPDATE rpg_sheets SET current_location=?,updated_revision=? WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
@@ -3013,6 +3035,15 @@ class CommandGateway:
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
         return [{**dict(row), "provenance": json.loads(row["provenance_json"])} for row in rows]
+
+    def list_story_locations(self, workspace_id: str, branch_id: str, adventure_id: str) -> list[dict[str, Any]]:
+        with self.db.lock:
+            rows = self.db.connection.execute(
+                "SELECT location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at "
+                "FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY name COLLATE NOCASE",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_story_asset(self, workspace_id: str, branch_id: str, adventure_id: str, asset_id: str) -> dict[str, Any]:
         with self.db.lock:
