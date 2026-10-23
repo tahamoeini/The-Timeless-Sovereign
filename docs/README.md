@@ -2,6 +2,7 @@
 
 - [Story Studio enhancement plan](STORY_STUDIO_ENHANCEMENT_PLAN.md): dated competitor review, local gaps, priorities and acceptance criteria (proposed, documentation only).
 - [Agent workflow index](../skills.md) and [repository guidance](../AGENTS.md): research, specification, validation and handoff instructions.
+- [Competitor research log](agents/COMPETITOR_RESEARCH_LOG.md): dated observations, fit, limits and current project evidence.
 
 The v1.1 product and architecture baseline is recorded in the repository root and the contracts folder. Implementation status is tracked explicitly in each document and the acceptance matrix.
 

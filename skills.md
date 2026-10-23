@@ -2,7 +2,7 @@
 
 These are repository guidance documents, not installed executable skills or an agent runtime.
 
-Read AGENTS.md, PRODUCT.md, ARCHITECTURE.md and docs/STORY_STUDIO_ENHANCEMENT_PLAN.md first.
+Read AGENTS.md, PRODUCT.md, ARCHITECTURE.md and docs/STORY_STUDIO_ENHANCEMENT_PLAN.md first. For competitor comparisons, read docs/agents/COMPETITOR_RESEARCH_LOG.md before repeating research.
 
 | Workflow | Input | Required output | Guide |
 |---|---|---|---|

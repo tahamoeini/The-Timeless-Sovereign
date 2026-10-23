@@ -10,7 +10,7 @@ This enhancement initiative is analysis and documentation only until Taha reques
 
 ## Architecture constraints
 
-Read PRODUCT.md, ARCHITECTURE.md, DECISIONS.md, docs/contracts and docs/ACCEPTANCE_MATRIX.md before design changes. SQLite is canonical; projections are rebuildable. All canonical writes use the validated command gateway. Preserve workspace and branch isolation, actor awareness, temporal constraints, immutable source provenance, revision history, review and recovery. Generated narrative and inferred memory do not automatically become canon. Cloud transfer remains off by default and needs scoped user consent.
+Read PRODUCT.md, ARCHITECTURE.md, DECISIONS.md, docs/contracts and docs/ACCEPTANCE_MATRIX.md before design changes. For competitor-derived work, also read docs/agents/COMPETITOR_RESEARCH_LOG.md and verify dated evidence. SQLite is canonical; projections are rebuildable. All canonical writes use the validated command gateway. Preserve workspace and branch isolation, actor awareness, temporal constraints, immutable source provenance, revision history, review and recovery. Generated narrative and inferred memory do not automatically become canon. Cloud transfer remains off by default and needs scoped user consent.
 
 ## Evidence and reporting
 
