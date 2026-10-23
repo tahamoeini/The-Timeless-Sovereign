@@ -1036,6 +1036,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [generating, setGenerating] = useState(false);
   const [exportIncludesContext, setExportIncludesContext] = useState(false);
   const storySelectionRequest = useRef(0);
+  const storyMounted = useRef(true);
+  useEffect(() => {
+    storyMounted.current = true;
+    return () => { storyMounted.current = false; };
+  }, []);
   const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
 
   async function loadConversations(preferredId?: string) {
@@ -1222,12 +1227,15 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           }),
         },
       );
+      if (!storyMounted.current) return;
       setConversation(generated.conversation);
       setPrompt("");
       onRevisionChange(generated.revision);
       await onRefresh();
+      if (!storyMounted.current) return;
       await loadConversations(generated.conversation_id);
     } catch (generationError) {
+      if (!storyMounted.current) return;
       setStoryError(generationError instanceof Error ? generationError.message : "The local model could not continue this story.");
     } finally {
       setGenerating(false);
@@ -1258,7 +1266,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       <section className="panel story-canvas">
         <div className="scene-topline"><span className="scene-indicator">WORLD</span><span>Branch: {branchId === "main" ? "Main story" : branchId}</span></div>
         <div className="story-session-bar">
-          <label className="field-label">Saved story<select aria-label="Select saved story" value={conversationId} onChange={(event) => void selectConversation(event.target.value)}>
+          <label className="field-label">Saved story<select aria-label="Select saved story" disabled={generating} value={conversationId} onChange={(event) => void selectConversation(event.target.value)}>
             <option value="">Choose a story</option>
             {conversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title} · {item.actor_label}</option>)}
           </select></label>
