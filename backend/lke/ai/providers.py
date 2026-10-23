@@ -14,7 +14,7 @@ import threading
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from .ollama import OllamaClient, OllamaError
 
@@ -72,6 +72,7 @@ def _request_json(
     payload: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float = 300,
+    follow_redirects: bool = True,
 ) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     request_headers = {"Accept": "application/json", **(headers or {})}
@@ -79,13 +80,22 @@ def _request_json(
         request_headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=request_headers, method=method)
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        if follow_redirects:
+            response_context = urlopen(request, timeout=timeout_seconds)
+        else:
+            response_context = build_opener(_NoRedirectHandler).open(request, timeout=timeout_seconds)
+        with response_context as response:
             return _read_json_response(response)
     except HTTPError as error:
         # Provider bodies can echo prompts or request details. Keep them out of errors and logs.
         raise StoryProviderError(f"The selected provider returned HTTP {error.code}.") from error
     except (URLError, TimeoutError, OSError) as error:
         raise StoryProviderError("The selected provider is not responding.") from error
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request: Request, response: Any, code: int, message: str, headers: Any, new_url: str) -> None:
+        return None
 
 
 def _text_from_openai_compatible(value: dict[str, Any]) -> str:
@@ -100,7 +110,7 @@ def _text_from_openai_compatible(value: dict[str, Any]) -> str:
 
 def _chat_completion(
     *, base_url: str, model: str, messages: list[dict[str, str]], api_key: str | None,
-    timeout_seconds: float = 300,
+    timeout_seconds: float = 300, follow_redirects: bool = True,
 ) -> str:
     checked = _validated_messages(messages)
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -109,6 +119,7 @@ def _chat_completion(
         payload={"model": _validated_model(model), "messages": checked, "stream": False, "max_tokens": 1200},
         headers=headers,
         timeout_seconds=timeout_seconds,
+        follow_redirects=follow_redirects,
     )
     return _text_from_openai_compatible(value)
 
@@ -167,7 +178,7 @@ def _local_hf_base_url(env: dict[str, str]) -> str:
         loopback = parsed.hostname == "localhost"
     if (
         parsed.scheme != "http" or not loopback or parsed.username or parsed.password
-        or parsed.query or parsed.fragment or not parsed.path.startswith("/v1")
+        or parsed.query or parsed.fragment or parsed.path.rstrip("/") != "/v1"
     ):
         raise StoryProviderError("The Hugging Face local endpoint must be an HTTP loopback /v1 URL.")
     return base_url
@@ -275,7 +286,7 @@ class _CodexAppServer:
                     "ephemeral": True, "baseInstructions": instructions,
                     "runtimeWorkspaceRoots": [],
                 }
-                if model.strip():
+                if model.strip() and model.strip().lower() != "auto":
                     params["model"] = _validated_model(model)
                 thread = receive_after_send(send, receive, deadline, "thread/start", 2, params)
                 thread_id = thread.get("thread", {}).get("id") if isinstance(thread.get("thread"), dict) else None
@@ -379,10 +390,10 @@ class StoryProviderRegistry:
              "available": bool(self.env.get("HF_TOKEN")), "models": [],
              "default_model": self.env.get("LKE_HF_MODEL", ""),
              "setup": "Set HF_TOKEN in the environment and enter a supported model repository ID."},
-            {"id": "codex", "label": "Codex app-server", "local": True,
+            {"id": "codex", "label": "Codex app-server (signed-in account)", "local": False,
              "available": bool(self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")),
-             "models": [], "default_model": self.env.get("LKE_CODEX_MODEL", ""),
-             "setup": "Sign in to Codex and make the Codex CLI available on PATH."},
+             "models": [], "default_model": self.env.get("LKE_CODEX_MODEL", "auto"),
+             "setup": "Sign in to Codex and make the Codex CLI available on PATH. Story context is processed by the selected Codex model."},
         ]
 
     def generate(self, provider: str, model: str, messages: list[dict[str, str]]) -> str:
@@ -412,7 +423,7 @@ class StoryProviderRegistry:
         if provider == "huggingface_local":
             base_url = _local_hf_base_url(self.env)
             return _chat_completion(base_url=base_url, model=model, messages=messages,
-                                    api_key=self.env.get("LKE_HF_LOCAL_API_KEY"))
+                                    api_key=self.env.get("LKE_HF_LOCAL_API_KEY"), follow_redirects=False)
         return self.codex.generate(model, messages)
 
     def generate_json(self, provider: str, model: str, messages: list[dict[str, str]]) -> dict[str, Any]:

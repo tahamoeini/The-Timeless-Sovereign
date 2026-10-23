@@ -128,6 +128,29 @@ class StoryContinuityTests(unittest.TestCase):
         self.assertEqual(threads[0]["thread_id"], "missing-sailor")
         self.assertGreater(thread["revision"], note["revision"])
 
+    def test_actor_scoped_memory_revisions_preserve_importance_and_knowledge_holders(self):
+        created = self.command("scoped-memory", self.revision, "create_story_memory", {
+            "adventure_id": "adventure", "memory_id": "hero-secret", "kind": "event",
+            "content": "Mira alone saw the silver key beneath the ferry bell.",
+            "importance": 5, "knowledge_scope": "actors", "known_by": ["hero"],
+            "context_enabled": True, "review_status": "accepted",
+        }, branch="adventure")
+        revised = self.command("disable-scoped-memory", created["revision"], "revise_story_memory", {
+            "adventure_id": "adventure", "memory_id": "hero-secret", "expected_version": 1,
+            "kind": "event", "content": "Mira alone saw the silver key beneath the ferry bell.",
+            "context_enabled": False, "review_status": "accepted",
+        }, branch="adventure")
+        latest = next(
+            item for item in self.gateway.get_story_memories(self.workspace_id, "adventure", "adventure")["memories"]
+            if item["memory_id"] == "hero-secret"
+        )
+        self.assertEqual(latest["version"], 2)
+        self.assertFalse(latest["context_enabled"])
+        self.assertEqual(latest["importance"], 5)
+        self.assertEqual(latest["knowledge_scope"], "actors")
+        self.assertEqual(latest["known_by"], ["hero"])
+        self.assertGreater(revised["revision"], created["revision"])
+
     def test_npc_simulation_changes_wait_for_review_and_create_event_memory(self):
         npc = self.command("npc-entity", self.revision, "create_entity", {
             "entity_id": "ferryman", "entity_type": "character", "label": "The Ferryman", "properties": {},

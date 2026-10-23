@@ -1111,8 +1111,15 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [conversationId, setConversationId] = useState("");
   const [conversation, setConversation] = useState<StoryConversation | null>(null);
   const [storyProviders, setStoryProviders] = useState<StoryProvider[]>([]);
-  const [providerId, setProviderId] = useState<StoryProvider["id"]>("ollama");
-  const [model, setModel] = useState("");
+  const [providerId, setProviderId] = useState<StoryProvider["id"]>(() => {
+    try {
+      const saved = window.localStorage.getItem("lke.story.provider");
+      return saved === "openai" || saved === "claude" || saved === "codex" || saved === "huggingface" || saved === "huggingface_local" ? saved : "ollama";
+    } catch { return "ollama"; }
+  });
+  const [model, setModel] = useState(() => {
+    try { return window.localStorage.getItem("lke.story.model") || ""; } catch { return ""; }
+  });
   const [title, setTitle] = useState("");
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -1150,6 +1157,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [activeWorldContent, setActiveWorldContent] = useState<Record<string, unknown> | null>(null);
   const [memoryNote, setMemoryNote] = useState("");
   const [memoryContextEnabled, setMemoryContextEnabled] = useState(true);
+  const [memoryKnowledgeScope, setMemoryKnowledgeScope] = useState<StoryMemory["knowledge_scope"]>("shared");
+  const [memoryImportance, setMemoryImportance] = useState(3);
+  const [memoryKnownBy, setMemoryKnownBy] = useState<string[]>([]);
   const [situationDraft, setSituationDraft] = useState("");
   const [threadTitle, setThreadTitle] = useState("");
   const [threadDetail, setThreadDetail] = useState("");
@@ -1169,10 +1179,22 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
   const storyProviderAvailable = selectedStoryProvider?.available ?? false;
   const models = selectedStoryProvider?.models ?? [];
+  function changeStoryProvider(nextId: StoryProvider["id"]) {
+    const next = storyProviders.find((provider) => provider.id === nextId);
+    setProviderId(nextId);
+    setModel(next?.default_model || next?.models[0] || (nextId === "codex" ? "auto" : ""));
+    setStoryError("");
+  }
   useEffect(() => {
     storyMounted.current = true;
     return () => { storyMounted.current = false; };
   }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("lke.story.provider", providerId);
+      window.localStorage.setItem("lke.story.model", model);
+    } catch { /* Preferences are optional; canonical story data stays in SQLite. */ }
+  }, [providerId, model]);
   useEffect(() => {
     let active = true;
     Promise.all([
@@ -1368,6 +1390,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             actor_entity_id: selectedActor,
             expected_revision: revision,
             as_of_narrative_order: order,
+            provider: providerId,
             model: model || null,
             question: memoryQuestion.trim(),
           }),
@@ -1789,12 +1812,16 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   async function saveMemoryNote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeAdventure || !memoryNote.trim()) return;
+    const allowedKnowledgeHolders = memoryKnownBy.filter((entityId) => characters.some((item) => item.entity_id === entityId));
     try {
       await onCommit("create_story_memory", {
         adventure_id: activeAdventure.adventure_id, memory_id: newId("memory"), kind: "note",
         content: memoryNote.trim(), context_enabled: memoryContextEnabled, review_status: "accepted",
+        importance: memoryImportance, knowledge_scope: memoryKnowledgeScope,
+        known_by: memoryKnowledgeScope === "actors" ? (allowedKnowledgeHolders.length ? allowedKnowledgeHolders : [activeAdventure.actor_entity_id]) : [],
       }, "Save a player-authored adventure note");
       setMemoryNote("");
+      setMemoryKnownBy([]);
       await reloadStudioData();
     } catch (memoryError) {
       setRpgError(memoryError instanceof Error ? memoryError.message : "The note could not be saved.");
@@ -1807,6 +1834,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       await onCommit("create_story_memory", {
         adventure_id: activeAdventure.adventure_id, memory_id: newId("memory"), kind: "event",
         content: turn.content.slice(0, 1000), context_enabled: true, review_status: "proposed", source_turn_id: turn.turn_id,
+        importance: 3, knowledge_scope: "actors", known_by: [activeAdventure.actor_entity_id],
       }, "Propose a sourced event memory for player review");
       await reloadStudioData();
     } catch (memoryError) {
@@ -1832,7 +1860,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       await onCommit("revise_story_memory", {
         adventure_id: activeAdventure.adventure_id, memory_id: memory.memory_id, expected_version: memory.version,
         kind: memory.kind, content: memory.content, context_enabled, review_status: memory.review_status === "rejected" ? "proposed" : memory.review_status,
-        source_turn_id: memory.source_turn_id, narrative_order: memory.narrative_order,
+        source_turn_id: memory.source_turn_id, narrative_order: memory.narrative_order, importance: memory.importance,
+        knowledge_scope: memory.knowledge_scope, known_by: memory.known_by,
       }, "Change whether a story memory is available to local generation");
       await reloadStudioData();
     } catch (memoryError) {
@@ -1860,7 +1889,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       await onCommit(current ? "revise_story_memory" : "create_story_memory", {
         adventure_id: activeAdventure.adventure_id, memory_id: current?.memory_id || newId("situation"),
         ...(current ? { expected_version: current.version } : {}), kind: "situation", content: situationDraft.trim(),
-        context_enabled: true, review_status: "proposed", source_turn_id: null,
+        context_enabled: true, review_status: "proposed", source_turn_id: null, importance: 5,
+        knowledge_scope: "actors", known_by: [activeAdventure.actor_entity_id],
       }, "Save a rebuildable situation summary for review");
       await reloadStudioData();
     } catch (memoryError) {
@@ -2079,7 +2109,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </form> : <p dir="auto">{turn.content}</p>}
               {turn.status === "active" && <div className="story-turn-actions">
                 <button type="button" disabled={busy || generating} onClick={() => { setEditingTurnId(turn.turn_id); setEditedTurnText(turn.content); }}>Edit</button>
-                {turn.role === "assistant" && <button type="button" disabled={busy || generating || !model || !ollamaAvailable} onClick={() => void retryStoryTurn(turn)}>Retry</button>}
+                {turn.role === "assistant" && <button type="button" disabled={busy || generating || !model.trim() || !storyProviderAvailable} onClick={() => void retryStoryTurn(turn)}>Retry</button>}
                 <button type="button" disabled={busy || generating} onClick={() => void deleteStoryTurn(turn)}>Hide</button>
                 {turn.role === "assistant" && activeAdventure && <button type="button" disabled={busy || generating} onClick={() => void saveEventMemory(turn)}>Remember event</button>}
               </div>}
@@ -2095,24 +2125,33 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
                   {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length} recent checks</small>
                     {turn.context_manifest.story.memories.map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
+                    {turn.context_manifest.story.author_notes.map((memory) => <small key={memory.memory_id}>Narrator-only guidance · importance {memory.importance}: {memory.content}</small>)}
                     {turn.context_manifest.story.excluded_memories.map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}
+                    {turn.context_manifest.story.retrieved_episodes.map((episode) => <details key={episode.turn_id}><summary>Past turn {episode.narrative_order} · {episode.role} · relevance {episode.selection_score}</summary><p dir="auto">{episode.content}</p></details>)}
+                    {turn.context_manifest.story.excluded_episode_count > 0 && <small className="story-context-exclusions">{turn.context_manifest.story.excluded_episode_count} older turns excluded or outside this context window.</small>}
                     {turn.context_manifest.story.open_threads.map((thread) => <small key={thread.thread_id}>Open thread · {thread.title}: {thread.detail}</small>)}
                     {turn.context_manifest.story.public_npcs.map((npc) => <small key={npc.entity_id}>Approved NPC · {npc.name} · {JSON.stringify(npc.profile)}</small>)}
                   </div>}
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
                 </details>}
               </>}
-            </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Choose a local model and describe what should happen next.</p></div>}
+            </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Choose a model and describe what should happen next.</p></div>}
           </div>
           <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
-            <label className="field-label">Local model<select aria-label="Local model" value={model} onChange={(event) => setModel(event.target.value)} disabled={!models.length || memoryQuerying}>
-              {models.length ? models.map((name) => <option key={name} value={name}>{name}</option>) : <option value="">No local models found</option>}
-            </select></label>
+            <div className="story-provider-fields">
+              <label className="field-label">AI provider<select aria-label="AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
+                {storyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}{provider.local ? " · local" : " · online"}</option>)}
+                {!storyProviders.length && <option value="ollama">Ollama · local</option>}
+              </select></label>
+              <label className="field-label">Model<input aria-label="Model" list="story-provider-models" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} disabled={generating || memoryQuerying} placeholder={providerId === "codex" ? "auto or a Codex model" : "Model name"} /></label>
+              <datalist id="story-provider-models">{models.map((name) => <option key={name} value={name} />)}</datalist>
+            </div>
             <label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label>
             <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
-            {!ollamaAvailable && <p className="provider-note">Ollama is not running. Start Ollama on this device to continue privately with a local model.</p>}
-            {ollamaAvailable && !models.length && <p className="provider-note">No local model is installed yet. Add a model in Ollama, then refresh this workspace.</p>}
-            <button className="primary-button full-button" disabled={generating || busy || !ollamaAvailable || !model || !prompt.trim()}>{generating ? "Writing locally…" : "Continue story locally"} <span>✳</span></button>
+            {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "This provider is configured for local inference." : "The prompt, recent story, and authorized context are sent to this provider. API and account charges or data terms may apply."}</p>}
+            {selectedStoryProvider && !storyProviderAvailable && <p className="provider-note">This provider is not available yet. Check its setup above, then reload the workspace.</p>}
+            {storyProviderAvailable && !model.trim() && <p className="provider-note">Enter a model name to continue. Installed local models appear as suggestions.</p>}
+            <button className="primary-button full-button" disabled={generating || busy || !storyProviderAvailable || !model.trim() || !prompt.trim()}>{generating ? "Writing story…" : `Continue story${selectedStoryProvider ? ` with ${selectedStoryProvider.label}` : ""}`} <span>✳</span></button>
             {generating && <button className="secondary-button full-button stop-generation" type="button" onClick={stopStoryGeneration}>Stop generation</button>}
           </form>
         </>}
@@ -2168,12 +2207,32 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         <div className="story-detail-content">
           <form className="story-mini-form" onSubmit={(event) => void saveMemoryNote(event)}>
             <label className="field-label">Player note<textarea value={memoryNote} onChange={(event) => setMemoryNote(event.target.value)} rows={2} maxLength={4000} placeholder="A detail you want to keep for this adventure" /></label>
-            <label className="control-choice"><input type="checkbox" checked={memoryContextEnabled} onChange={(event) => setMemoryContextEnabled(event.target.checked)} /><span>Allow this note in local story context</span></label>
+            <label className="field-label">Memory use<select value={memoryKnowledgeScope} onChange={(event) => {
+              const next = event.target.value as StoryMemory["knowledge_scope"];
+              setMemoryKnowledgeScope(next);
+              if (next === "actors" && !memoryKnownBy.length && activeAdventure) setMemoryKnownBy([activeAdventure.actor_entity_id]);
+            }}>
+              <option value="shared">Shared story memory</option><option value="actors">Only selected characters know</option>
+              <option value="author">Author guidance for the narrator</option><option value="private">Private · never send to a model</option>
+            </select></label>
+            {memoryKnowledgeScope === "actors" && <fieldset className="memory-known-by"><legend>Who knows this?</legend>
+              {characters.map((character) => <label key={character.entity_id}><input type="checkbox"
+                checked={memoryKnownBy.includes(character.entity_id) || (!memoryKnownBy.length && character.entity_id === activeAdventure.actor_entity_id)}
+                onChange={(event) => setMemoryKnownBy((current) => event.target.checked
+                  ? [...new Set([...current, character.entity_id])]
+                  : current.filter((entityId) => entityId !== character.entity_id))} />
+                <span>{character.label}{character.entity_id === activeAdventure.actor_entity_id ? " · Hero" : ""}</span>
+              </label>)}
+            </fieldset>}
+            <label className="field-label">Importance<select value={memoryImportance} onChange={(event) => setMemoryImportance(Number(event.target.value))}>
+              <option value={1}>Minor detail</option><option value={3}>Useful detail</option><option value={5}>Major event</option>
+            </select></label>
+            <label className="control-choice"><input type="checkbox" checked={memoryContextEnabled} onChange={(event) => setMemoryContextEnabled(event.target.checked)} /><span>Allow this note in story context when its scope permits</span></label>
             <button className="secondary-button full-button" disabled={busy || !memoryNote.trim()}>Save note</button>
           </form>
           <div className="story-memory-list">
             {studioData.memories.memories.map((memory) => <article className={`story-memory-card ${memory.review_status}`} key={memory.memory_id}>
-              <div className="story-memory-meta"><strong>{memory.kind === "event" ? "Event" : memory.kind === "situation" ? "Situation" : "Note"} · {memory.review_status}</strong><small>v{memory.version} · story order {memory.narrative_order}{memory.source_turn_id ? " · sourced to a story turn" : ""}</small></div>
+              <div className="story-memory-meta"><strong>{memory.kind === "event" ? "Event" : memory.kind === "situation" ? "Situation" : "Note"} · {memory.review_status} · {memory.importance === 5 ? "major" : memory.importance === 1 ? "minor" : "useful"}</strong><small>v{memory.version} · story order {memory.narrative_order} · {memory.knowledge_scope === "actors" ? `Known by ${memory.known_by.map((id) => characters.find((item) => item.entity_id === id)?.label || id).join(", ")}` : memory.knowledge_scope === "author" ? "Narrator guidance" : memory.knowledge_scope === "private" ? "Private · excluded from AI" : "Shared story memory"}{memory.source_turn_id ? " · sourced to a story turn" : ""}</small></div>
               <p dir="auto">{memory.content}</p>
               <div className="story-memory-actions">
                 {memory.review_status === "proposed" && <><button type="button" disabled={busy} onClick={() => void reviewMemory(memory, "rejected")}>Reject</button><button type="button" className="accept-button" disabled={busy} onClick={() => void reviewMemory(memory, "accepted")}>Accept into memory</button></>}

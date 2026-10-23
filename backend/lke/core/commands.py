@@ -291,12 +291,27 @@ def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
             clean.append({"operation": operation, "npc_entity_id": npc_entity_id, "updates": clean_updates})
         elif operation == "add_event_memory":
             context_enabled = change.get("context_enabled", True)
+            importance = change.get("importance", 3)
+            knowledge_scope = change.get("knowledge_scope", "shared")
+            known_by = change.get("known_by", [])
             if not isinstance(context_enabled, bool):
                 raise ValidationError("event memory context_enabled must be a boolean")
+            if type(importance) is not int or not 1 <= importance <= 5:
+                raise ValidationError("event memory importance must be from 1 to 5")
+            if knowledge_scope not in {"shared", "actors"}:
+                raise ValidationError("proposed event memories must be shared or actor-scoped")
+            if not isinstance(known_by, list) or any(not isinstance(item, str) or not item.strip() for item in known_by):
+                raise ValidationError("event memory known_by must be an array of character IDs")
+            known_by = list(dict.fromkeys(item.strip() for item in known_by))
+            if (knowledge_scope == "actors") != bool(known_by):
+                raise ValidationError("actor-scoped event memories must name their characters")
             clean.append({
                 "operation": operation,
                 "content": _required_text(change.get("content"), "event memory", 1000),
                 "context_enabled": context_enabled,
+                "importance": importance,
+                "knowledge_scope": knowledge_scope,
+                "known_by": known_by,
             })
         else:
             raise ValidationError("unsupported RPG state change")
@@ -354,7 +369,7 @@ def _promote_branch_snapshot(
         ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled", "adventure_id", ("world_id", "world_version", "conversation_id", "name", "actor_entity_id", "status", "updated_revision", "updated_at", "completed_turns", "npc_simulation_enabled"), ("created_revision", "updated_revision"), "adventure_id"),
         ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision", "adventure_id", ("conversation_id", "stats_json", "trackers_json", "current_location", "updated_revision"), ("created_revision", "updated_revision"), "adventure_id"),
         ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id,version"),
-        ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at", "adventure_id,memory_id,version", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "adventure_id,memory_id,version"),
+        ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at", "adventure_id,memory_id,version", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "adventure_id,memory_id,version"),
         ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at", "adventure_id,thread_id", ("title", "detail", "status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,thread_id"),
         ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at", "adventure_id,npc_entity_id", ("aliases_json", "public_profile_json", "private_profile_json", "review_status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,npc_entity_id"),
         ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at", None, (), ("created_revision",), "adventure_id,asset_id"),
@@ -534,7 +549,7 @@ class CommandGateway:
                     ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled"),
                     ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision"),
                     ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
-                    ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at"),
+                    ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at"),
                     ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at"),
                     ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at"),
                     ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at"),
@@ -1858,6 +1873,14 @@ class CommandGateway:
             if not adventure:
                 raise NotFoundError("Adventure does not exist in this branch")
             changes = _validated_rpg_changes(payload.get("changes"))
+            for change in changes:
+                if change["operation"] == "add_event_memory":
+                    for known_actor_id in change["known_by"]:
+                        if not connection.execute(
+                            "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                            (workspace_id, branch_id, known_actor_id),
+                        ).fetchone():
+                            raise ValidationError("event memory known_by must reference characters in this branch")
             source_turn_id = payload.get("source_turn_id")
             if source_turn_id is not None:
                 source_turn_id = _required_text(source_turn_id, "source_turn_id", 100)
@@ -1966,10 +1989,11 @@ class CommandGateway:
                                 raise ConflictError("Event memory proposal refers to a turn that is no longer active")
                             narrative_order = source_turn["narrative_order"]
                         connection.execute(
-                            "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at) "
-                            "VALUES(?,?,?,?,1,'event',?,?, 'accepted',?,?,NULL,?,?,?)",
+                            "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at) "
+                            "VALUES(?,?,?,?,1,'event',?,?, 'accepted',?,?,NULL,?,?,?,?,?,?)",
                             (workspace_id, branch_id, proposal["adventure_id"], str(uuid4()), change["content"],
-                             int(change["context_enabled"]), source_turn_id, narrative_order, revision, revision, _now()),
+                             int(change["context_enabled"]), source_turn_id, narrative_order, change["importance"],
+                             change["knowledge_scope"], _json(change["known_by"]), revision, revision, _now()),
                         )
                 if sheet is not None:
                     connection.execute(
@@ -2104,36 +2128,60 @@ class CommandGateway:
                 narrative_order = payload.get("narrative_order", 0)
             if type(narrative_order) is not int or narrative_order < 0:
                 raise ValidationError("narrative_order must be a non-negative integer")
+            previous = None
+            memory_id = _required_text(payload.get("memory_id") or str(uuid4()), "memory_id", 100)
+            if command_type == "create_story_memory":
+                version, supersedes = 1, None
+            else:
+                expected_version = payload.get("expected_version")
+                if type(expected_version) is not int or expected_version < 1:
+                    raise ValidationError("expected_version must be a positive integer")
+                previous = connection.execute(
+                    "SELECT version,importance,knowledge_scope,known_by_json FROM story_memories "
+                    "WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND memory_id=? ORDER BY version DESC LIMIT 1",
+                    (workspace_id, branch_id, adventure_id, memory_id),
+                ).fetchone()
+                if not previous:
+                    raise NotFoundError("Story memory does not exist in this adventure")
+                if previous["version"] != expected_version:
+                    raise ConflictError(f"Expected memory version {expected_version}; current version is {previous['version']}")
+                version, supersedes = expected_version + 1, expected_version
+            importance = payload.get("importance", previous["importance"] if previous else 3)
+            knowledge_scope = payload.get("knowledge_scope", previous["knowledge_scope"] if previous else "shared")
+            known_by = payload.get("known_by", json.loads(previous["known_by_json"]) if previous else [])
             review_status = payload.get("review_status", "accepted" if kind == "note" else "proposed")
             if review_status not in {"proposed", "accepted"}:
                 raise ValidationError("new memories must be proposed or accepted")
             if actor.startswith("ai:") and review_status == "accepted":
                 raise ValidationError("AI actors may only propose memories")
+            if type(importance) is not int or not 1 <= importance <= 5:
+                raise ValidationError("importance must be an integer from 1 to 5")
+            if knowledge_scope not in {"shared", "actors", "author", "private"}:
+                raise ValidationError("knowledge_scope is invalid")
+            if not isinstance(known_by, list) or any(not isinstance(item, str) or not item.strip() for item in known_by):
+                raise ValidationError("known_by must be an array of character IDs")
+            known_by = list(dict.fromkeys(item.strip() for item in known_by))
+            if (knowledge_scope == "actors") != bool(known_by):
+                raise ValidationError("actor-scoped memories must name their characters")
+            if knowledge_scope in {"author", "private"} and actor.startswith("ai:") and review_status == "accepted":
+                raise ValidationError("AI actors cannot create accepted author-only or private memories")
+            for known_actor_id in known_by:
+                known_actor = connection.execute(
+                    "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                    (workspace_id, branch_id, known_actor_id),
+                ).fetchone()
+                if not known_actor:
+                    raise ValidationError("known_by must reference characters in this branch")
             now = _now()
-            if command_type == "create_story_memory":
-                memory_id = _required_text(payload.get("memory_id") or str(uuid4()), "memory_id", 100)
-                version, supersedes = 1, None
-            else:
-                memory_id = _required_text(payload.get("memory_id"), "memory_id", 100)
-                expected_version = payload.get("expected_version")
-                if type(expected_version) is not int or expected_version < 1:
-                    raise ValidationError("expected_version must be a positive integer")
-                latest = connection.execute(
-                    "SELECT MAX(version) FROM story_memories WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND memory_id=?",
-                    (workspace_id, branch_id, adventure_id, memory_id),
-                ).fetchone()[0]
-                if latest is None:
-                    raise NotFoundError("Story memory does not exist in this adventure")
-                if latest != expected_version:
-                    raise ConflictError(f"Expected memory version {expected_version}; current version is {latest}")
-                version, supersedes = expected_version + 1, expected_version
             connection.execute(
-                "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)",
+                "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,NULL,?)",
                 (workspace_id, branch_id, adventure_id, memory_id, version, kind, content, int(enabled), review_status,
-                 source_turn_id, narrative_order, supersedes, revision, now),
+                 source_turn_id, narrative_order, supersedes, importance, knowledge_scope, _json(known_by), revision, now),
             )
-            return {"adventure_id": adventure_id, "memory_id": memory_id, "version": version, "kind": kind, "review_status": review_status}, "story.memory_created" if version == 1 else "story.memory_revised", True
+            return {"adventure_id": adventure_id, "memory_id": memory_id, "version": version, "kind": kind,
+                    "importance": importance, "knowledge_scope": knowledge_scope, "known_by": known_by,
+                    "review_status": review_status}, "story.memory_created" if version == 1 else "story.memory_revised", True
 
         if command_type == "review_story_memory":
             if actor.startswith("ai:"):
@@ -2994,7 +3042,7 @@ class CommandGateway:
             if not adventure:
                 raise NotFoundError("Adventure does not exist in this branch")
             rows = self.db.connection.execute(
-                "SELECT memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,created_revision,reviewed_revision,created_at "
+                "SELECT memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at "
                 "FROM story_memories WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY memory_id,version",
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
@@ -3005,7 +3053,11 @@ class CommandGateway:
             ).fetchall()
         by_id: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            by_id.setdefault(row["memory_id"], []).append({**dict(row), "context_enabled": bool(row["context_enabled"])})
+            by_id.setdefault(row["memory_id"], []).append({
+                **dict(row),
+                "context_enabled": bool(row["context_enabled"]),
+                "known_by": json.loads(row["known_by_json"]),
+            })
         latest = [versions[-1] for versions in by_id.values()]
         return {
             "memories": sorted(latest, key=lambda item: (item["created_revision"], item["memory_id"]), reverse=True),

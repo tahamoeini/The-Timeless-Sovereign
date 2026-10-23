@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class Database:
@@ -82,6 +82,9 @@ class Database:
                 current = 11
             if current < 12:
                 self._apply_migration(12, _SCHEMA_V12)
+                current = 12
+            if current < 13:
+                self._apply_migration(13, _SCHEMA_V13)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -965,4 +968,23 @@ CREATE TABLE story_map_locations (
 );
 CREATE INDEX story_map_locations_adventure_idx
     ON story_map_locations(workspace_id,branch_id,adventure_id,status,name COLLATE NOCASE);
+"""
+
+
+_SCHEMA_V13 = """
+ALTER TABLE story_memories ADD COLUMN importance INTEGER NOT NULL DEFAULT 3
+    CHECK(importance BETWEEN 1 AND 5);
+ALTER TABLE story_memories ADD COLUMN knowledge_scope TEXT NOT NULL DEFAULT 'shared'
+    CHECK(knowledge_scope IN ('shared','actors','author','private'));
+ALTER TABLE story_memories ADD COLUMN known_by_json TEXT NOT NULL DEFAULT '[]'
+    CHECK(json_valid(known_by_json));
+DROP TRIGGER story_memories_content_immutable;
+CREATE TRIGGER story_memories_content_immutable BEFORE UPDATE ON story_memories
+WHEN OLD.kind IS NOT NEW.kind OR OLD.content IS NOT NEW.content OR
+     OLD.context_enabled IS NOT NEW.context_enabled OR OLD.source_turn_id IS NOT NEW.source_turn_id OR
+     OLD.narrative_order IS NOT NEW.narrative_order OR OLD.supersedes_version IS NOT NEW.supersedes_version OR
+     OLD.importance IS NOT NEW.importance OR OLD.knowledge_scope IS NOT NEW.knowledge_scope OR
+     OLD.known_by_json IS NOT NEW.known_by_json OR
+     OLD.created_revision IS NOT NEW.created_revision OR OLD.created_at IS NOT NEW.created_at
+BEGIN SELECT RAISE(ABORT, 'story memory versions are immutable'); END;
 """

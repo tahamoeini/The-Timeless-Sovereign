@@ -207,8 +207,12 @@ export type ContextManifest = {
       current_location: string;
     };
     recent_checks: { stat_name: string; die_roll: number; modifier: number; total: number; target: number; outcome: "success" | "failure" }[];
-    memories: Array<{ memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string; narrative_order: number; source_turn_id: string | null; created_revision: number; selection_score: number }>;
-    excluded_memories: Array<{ memory_id: string; reason: string }>;
+    memories: Array<{ memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string; narrative_order: number; source_turn_id: string | null; created_revision: number; selection_score: number; importance: number; knowledge_scope: "shared" | "actors"; known_by: string[] }>;
+    author_notes: Array<{ memory_id: string; version: number; content: string; narrative_order: number; source_turn_id: string | null; selection_score: number; importance: number }>;
+    excluded_memories: Array<{ memory_id: string; reason: string; selection_score?: number }>;
+    retrieved_episodes: Array<{ turn_id: string; role: "user" | "assistant"; narrative_order: number; content: string; selection_score: number }>;
+    excluded_episodes: Array<{ turn_id: string | null; reason: string; selection_score?: number }>;
+    excluded_episode_count: number;
     open_threads: Array<{ thread_id: string; title: string; detail: string }>;
     public_npcs: Array<{ entity_id: string; name: string; aliases: string[]; profile: Record<string, unknown> }>;
     approved_locations: string[];
@@ -295,7 +299,7 @@ export type RpgStateChange =
   | { operation: "tracker_delta"; tracker_id: string; delta: number }
   | { operation: "set_location"; location: string }
   | { operation: "npc_profile"; npc_entity_id: string; updates: Record<string, string> }
-  | { operation: "add_event_memory"; content: string; context_enabled: boolean };
+  | { operation: "add_event_memory"; content: string; context_enabled: boolean; importance?: number; knowledge_scope?: "shared" | "actors"; known_by?: string[] };
 export type RpgStateProposal = {
   proposal_id: string;
   conversation_id: string;
@@ -340,7 +344,9 @@ export type StoryGenerationResult = {
 export type StoryMemory = {
   memory_id: string; version: number; kind: "note" | "event" | "situation"; content: string;
   context_enabled: boolean; review_status: "proposed" | "accepted" | "rejected"; source_turn_id: string | null;
-  narrative_order: number; supersedes_version: number | null; created_revision: number; reviewed_revision: number | null; created_at: string;
+  narrative_order: number; supersedes_version: number | null; importance: number;
+  knowledge_scope: "shared" | "actors" | "author" | "private"; known_by_json: string; known_by: string[];
+  created_revision: number; reviewed_revision: number | null; created_at: string;
 };
 export type StoryThread = { thread_id: string; title: string; detail: string; status: "open" | "closed"; created_revision: number; updated_revision: number; created_at: string; updated_at: string };
 export type StoryNpc = {
