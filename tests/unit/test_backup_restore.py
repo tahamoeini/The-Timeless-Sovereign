@@ -9,10 +9,38 @@ import zipfile
 from pathlib import Path
 
 from lke.core import CommandGateway, Database
-from lke.ops.backup import BackupError, create_backup, restore_backup
+from lke.ops.backup import BackupError, create_backup, restore_backup, restore_backup_into_database
 
 
 class BackupRestoreTests(unittest.TestCase):
+    def test_restore_replaces_the_active_database_after_full_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            active = Database(root / "active.sqlite3")
+            active_gateway = CommandGateway(active)
+            active_gateway.create_workspace("Old workspace", "old-workspace")
+
+            source = Database(root / "source.sqlite3")
+            source_gateway = CommandGateway(source)
+            source_gateway.create_workspace("Restored workspace", "restored-workspace")
+            source_gateway.execute(
+                workspace_id="restored-workspace", idempotency_key="restored-entity", expected_revision=0,
+                command_type="create_entity",
+                payload={"entity_id": "aria", "entity_type": "person", "label": "Aria"},
+                reason="Create restored fixture",
+            )
+            backup_path = root / "restore.lkebackup"
+            create_backup(source, backup_path)
+            source.close()
+
+            manifest = restore_backup_into_database(active, backup_path)
+
+            self.assertEqual(manifest["schema_version"], 6)
+            self.assertEqual([item["workspace_id"] for item in active_gateway.list_workspaces()], ["restored-workspace"])
+            self.assertEqual(active_gateway.list_entities("restored-workspace")[0]["label"], "Aria")
+            self.assertEqual(active_gateway.current_revision("restored-workspace"), 1)
+            active.close()
+
     def test_restore_preserves_sources_revisions_and_search(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -18,6 +18,14 @@ class FakeOllama:
     def __init__(self, failure: bool = False) -> None:
         self.failure = failure
         self.calls: list[tuple[str, list[dict[str, str]]]] = []
+        self.structured_calls: list[tuple[str, list[dict[str, str]]]] = []
+        self.structured_response = {
+            "entities": [{"label": "Aria", "entity_type": "person", "quote": "Aria"}],
+            "claims": [{
+                "subject_label": "Aria", "predicate": "guards", "object_value": "the archive",
+                "quote": "Aria guards the archive.",
+            }],
+        }
 
     def list_models(self) -> list[str]:
         return ["test-model"]
@@ -27,6 +35,12 @@ class FakeOllama:
         if self.failure:
             raise OllamaError("Ollama is not responding on this device.")
         return "Aria waits for the user's next choice."
+
+    def generate_json(self, model: str, messages: list[dict[str, str]]) -> dict[str, object]:
+        self.structured_calls.append((model, messages))
+        if self.failure:
+            raise OllamaError("Ollama is not responding on this device.")
+        return self.structured_response
 
 
 class ApiBoundaryTests(unittest.TestCase):
@@ -226,6 +240,42 @@ class ApiBoundaryTests(unittest.TestCase):
             "GET", "/api/v1/workspaces/api-workspace/rules/evaluations?branch_id=main", headers=self.headers,
         )
         self.assertEqual(evaluations.json()[0]["evaluation"]["status"], "satisfied")
+        scenario = self.request(
+            "POST", "/api/v1/workspaces/api-workspace/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 6, "idempotency_key": "create-api-scenario",
+                "command_type": "create_scenario", "reason": "Compare two funding options",
+                "payload": {
+                    "scenario_id": "api-funding-choice", "title": "Funding choice",
+                    "problem": "Decide whether to proceed.", "constraints": ["Keep the approved budget."],
+                    "options": [{"option_id": "continue", "label": "Continue"},
+                                {"option_id": "pause", "label": "Pause"}],
+                    "evidence_claim_ids": ["api-city"], "evidence_source_ids": ["api-source"],
+                },
+            },
+        )
+        self.assertEqual(scenario.status_code, 200, scenario.text)
+        assumption = self.request(
+            "POST", "/api/v1/workspaces/api-workspace/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 7, "idempotency_key": "assume-london",
+                "command_type": "set_scenario_assumption", "reason": "Test the alternative outcome",
+                "payload": {
+                    "scenario_id": "api-funding-choice", "option_id": "pause",
+                    "assumption_id": "city-changes", "subject_entity_id": "api-entity",
+                    "predicate": "current city", "object_value": "London",
+                    "assumption_action": "replace", "predicate_cardinality": "single",
+                },
+            },
+        )
+        self.assertEqual(assumption.status_code, 200, assumption.text)
+        scenarios = self.request(
+            "GET", "/api/v1/workspaces/api-workspace/scenarios?branch_id=main", headers=self.headers,
+        )
+        self.assertEqual(scenarios.status_code, 200, scenarios.text)
+        pause = next(option for option in scenarios.json()[0]["options"] if option["option_id"] == "pause")
+        self.assertEqual(pause["rule_evaluations"][0]["evaluation"]["status"], "violated")
+        self.assertTrue(pause["rule_evaluations"][0]["evaluation"]["conditional"])
 
     def create_story_conversation(self) -> int:
         workspace = self.request(
@@ -312,6 +362,159 @@ class ApiBoundaryTests(unittest.TestCase):
         response = self.request("GET", "/api/v1/providers/ollama/models", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"available": True, "models": ["test-model"]})
+
+    def test_extraction_is_idempotent_and_requires_review_for_canonical_writes(self) -> None:
+        workspace = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "extraction-api", "name": "Extraction API"},
+        )
+        self.assertEqual(workspace.status_code, 201)
+        source = self.request(
+            "POST", "/api/v1/workspaces/extraction-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 0, "idempotency_key": "import-extraction-source",
+                "command_type": "import_source", "reason": "Add a local source",
+                "payload": {
+                    "source_id": "archive-notes", "display_name": "Archive notes",
+                    "media_type": "text/plain", "content": "Aria guards the archive.",
+                },
+            },
+        )
+        self.assertEqual(source.status_code, 200, source.text)
+        body = {
+            "branch_id": "main", "expected_revision": 1, "idempotency_key": "extract-archive-notes",
+            "model": "test-model",
+        }
+        extracted = self.request(
+            "POST", "/api/v1/workspaces/extraction-api/sources/archive-notes/extract",
+            headers=self.headers, json=body,
+        )
+        replay = self.request(
+            "POST", "/api/v1/workspaces/extraction-api/sources/archive-notes/extract",
+            headers=self.headers, json=body,
+        )
+        self.assertEqual(extracted.status_code, 200, extracted.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertFalse(extracted.json()["idempotent_replay"])
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(len(self.ollama.structured_calls), 1)
+        self.assertEqual(self.ollama.structured_calls[0][0], "test-model")
+        batch = extracted.json()["batch"]
+        entity_candidate = next(item for item in batch["candidates"] if item["kind"] == "entity")
+        claim_candidate = next(item for item in batch["candidates"] if item["kind"] == "claim")
+        self.assertEqual(entity_candidate["payload"]["quote"], "Aria")
+        self.assertEqual(claim_candidate["payload"]["quote"], "Aria guards the archive.")
+        self.assertEqual(self.request(
+            "GET", "/api/v1/workspaces/extraction-api/entities?branch_id=main", headers=self.headers,
+        ).json(), [])
+        self.assertEqual(self.request(
+            "GET", "/api/v1/workspaces/extraction-api/claims?branch_id=main", headers=self.headers,
+        ).json(), [])
+
+        accepted_entity = self.request(
+            "POST", "/api/v1/workspaces/extraction-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": extracted.json()["revision"],
+                "idempotency_key": "accept-extracted-entity", "command_type": "review_extraction_candidate",
+                "reason": "Review the extracted person",
+                "payload": {"candidate_id": entity_candidate["candidate_id"], "review_status": "accepted"},
+            },
+        )
+        self.assertEqual(accepted_entity.status_code, 200, accepted_entity.text)
+        accepted_claim = self.request(
+            "POST", "/api/v1/workspaces/extraction-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": accepted_entity.json()["revision"],
+                "idempotency_key": "accept-extracted-claim", "command_type": "review_extraction_candidate",
+                "reason": "Review the source-grounded claim",
+                "payload": {
+                    "candidate_id": claim_candidate["candidate_id"], "review_status": "accepted",
+                    "subject_entity_id": accepted_entity.json()["canonical_record_id"],
+                    "epistemic_status": "unknown", "visibility": "public",
+                },
+            },
+        )
+        self.assertEqual(accepted_claim.status_code, 200, accepted_claim.text)
+        claims = self.request(
+            "GET", "/api/v1/workspaces/extraction-api/claims?branch_id=main", headers=self.headers,
+        ).json()
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["review_status"], "accepted")
+        self.assertEqual(claims[0]["epistemic_status"], "unknown")
+        self.assertEqual(len(claims[0]["evidence"]), 1)
+
+    def test_failed_extraction_provider_does_not_advance_revision(self) -> None:
+        self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "failed-extraction-api", "name": "Failed Extraction"},
+        )
+        source = self.request(
+            "POST", "/api/v1/workspaces/failed-extraction-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 0, "idempotency_key": "import-before-failure",
+                "command_type": "import_source", "reason": "Add a local source",
+                "payload": {
+                    "source_id": "failed-source", "display_name": "Notes",
+                    "media_type": "text/plain", "content": "Aria guards the archive.",
+                },
+            },
+        )
+        self.assertEqual(source.status_code, 200, source.text)
+        self.ollama.failure = True
+        response = self.request(
+            "POST", "/api/v1/workspaces/failed-extraction-api/sources/failed-source/extract",
+            headers=self.headers,
+            json={"branch_id": "main", "expected_revision": 1, "idempotency_key": "failed-extract", "model": "test-model"},
+        )
+        revision = self.request(
+            "GET", "/api/v1/workspaces/failed-extraction-api/revision?branch_id=main", headers=self.headers,
+        )
+        extractions = self.request(
+            "GET", "/api/v1/workspaces/failed-extraction-api/extractions?branch_id=main", headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(revision.json()["revision"], 1)
+        self.assertEqual(extractions.json(), [])
+
+    def test_backup_download_and_restore_replace_the_live_database(self) -> None:
+        created = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "before-backup", "name": "Before backup"},
+        )
+        self.assertEqual(created.status_code, 201)
+        backup = self.request("GET", "/api/v1/backup", headers=self.headers)
+        self.assertEqual(backup.status_code, 200, backup.text)
+        self.assertEqual(backup.headers["content-type"], "application/zip")
+        self.assertTrue(backup.headers["content-disposition"].endswith(".lkebackup\""))
+
+        changed = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "after-backup", "name": "After backup"},
+        )
+        self.assertEqual(changed.status_code, 201)
+        restored = self.request(
+            "POST", "/api/v1/backup/restore", headers={**self.headers, "Content-Type": "application/octet-stream"},
+            content=backup.content,
+        )
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertTrue(restored.json()["restored"])
+        self.assertEqual([item["workspace_id"] for item in restored.json()["workspaces"]], ["before-backup"])
+        listed = self.request("GET", "/api/v1/workspaces", headers=self.headers)
+        self.assertEqual([item["workspace_id"] for item in listed.json()], ["before-backup"])
+
+    def test_invalid_backup_does_not_replace_live_database(self) -> None:
+        created = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "preserved", "name": "Preserved data"},
+        )
+        self.assertEqual(created.status_code, 201)
+        response = self.request(
+            "POST", "/api/v1/backup/restore", headers={**self.headers, "Content-Type": "application/zip"},
+            content=b"not a zip archive",
+        )
+        listed = self.request("GET", "/api/v1/workspaces", headers=self.headers)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual([item["workspace_id"] for item in listed.json()], ["preserved"])
 
 
 if __name__ == "__main__":

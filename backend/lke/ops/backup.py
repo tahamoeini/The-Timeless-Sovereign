@@ -21,6 +21,7 @@ _DATABASE_NAME = "knowledge.sqlite3"
 _MANIFEST_NAME = "manifest.json"
 _MAX_DATABASE_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 32 * 1024
+MAX_BACKUP_ARCHIVE_BYTES = _MAX_DATABASE_BYTES + _MAX_MANIFEST_BYTES + 64 * 1024 * 1024
 _REQUIRED_TABLES = {"schema_migrations", "workspaces", "branches", "revisions", "audit_events"}
 
 
@@ -155,6 +156,25 @@ def restore_backup(
             partial_path.unlink(missing_ok=True)
 
 
+def restore_backup_into_database(database: Database, backup_path: str | Path) -> dict[str, Any]:
+    """Validate a backup, then replace the open database through SQLite's backup API."""
+    with database.lock:
+        with tempfile.TemporaryDirectory(prefix="lke-active-restore-") as temporary:
+            restored_path = Path(temporary) / _DATABASE_NAME
+            manifest = restore_backup(backup_path, restored_path)
+            restored = Database(restored_path)
+            try:
+                restored.connection.backup(database.connection)
+                integrity = database.connection.execute("PRAGMA integrity_check").fetchone()[0]
+                if integrity != "ok":
+                    raise BackupError(f"Restored database integrity check failed: {integrity}")
+                if database.connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise BackupError("Restored database contains invalid foreign-key references")
+            finally:
+                restored.close()
+    return manifest
+
+
 def _validate_manifest(manifest: Any, archive_database_size: int) -> None:
     if not isinstance(manifest, dict):
         raise BackupError("Backup manifest must be an object")
@@ -183,6 +203,8 @@ def _validate_sqlite(path: Path, manifest_schema_version: int) -> None:
             result = connection.execute("PRAGMA integrity_check").fetchone()[0]
             if result != "ok":
                 raise BackupError(f"Restored database integrity check failed: {result}")
+            if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise BackupError("Restored database contains invalid foreign-key references")
             tables = {
                 row[0]
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

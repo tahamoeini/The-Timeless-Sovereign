@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class Database:
@@ -61,6 +61,9 @@ class Database:
                 current = 4
             if current < 5:
                 self._apply_migration(5, _SCHEMA_V5)
+                current = 5
+            if current < 6:
+                self._apply_migration(6, _SCHEMA_V6)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -465,4 +468,74 @@ CREATE TRIGGER scenario_assumptions_no_update BEFORE UPDATE ON scenario_assumpti
 BEGIN SELECT RAISE(ABORT, 'scenario assumption versions are append-only'); END;
 CREATE TRIGGER scenario_assumptions_no_delete BEFORE DELETE ON scenario_assumptions
 BEGIN SELECT RAISE(ABORT, 'scenario assumption versions are append-only'); END;
+"""
+
+
+_SCHEMA_V6 = """
+CREATE TABLE entity_evidence (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    PRIMARY KEY(workspace_id,branch_id,entity_id,evidence_id),
+    FOREIGN KEY(workspace_id,branch_id,entity_id)
+        REFERENCES entities(workspace_id,branch_id,entity_id),
+    FOREIGN KEY(workspace_id,branch_id,evidence_id)
+        REFERENCES evidence(workspace_id,branch_id,evidence_id)
+);
+CREATE TABLE extraction_batches (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    batch_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    model TEXT NOT NULL,
+    extractor_version TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    output_schema_version INTEGER NOT NULL CHECK(output_schema_version >= 1),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,batch_id),
+    FOREIGN KEY(workspace_id,branch_id)
+        REFERENCES branches(workspace_id,branch_id) ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id,source_id)
+        REFERENCES sources(workspace_id,source_id)
+);
+CREATE INDEX extraction_batches_source_idx
+    ON extraction_batches(workspace_id,branch_id,source_id,created_revision);
+CREATE TABLE extraction_candidates (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    batch_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('entity','claim')),
+    payload_json TEXT NOT NULL,
+    review_status TEXT NOT NULL CHECK(review_status IN ('proposed','accepted','rejected')),
+    canonical_record_type TEXT CHECK(canonical_record_type IN ('entity','claim')),
+    canonical_record_id TEXT,
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    reviewed_revision INTEGER,
+    PRIMARY KEY(workspace_id,branch_id,candidate_id),
+    CHECK((review_status='accepted' AND canonical_record_type IS NOT NULL AND canonical_record_id IS NOT NULL) OR
+          (review_status!='accepted' AND canonical_record_type IS NULL AND canonical_record_id IS NULL)),
+    FOREIGN KEY(workspace_id,branch_id,batch_id)
+        REFERENCES extraction_batches(workspace_id,branch_id,batch_id) ON DELETE CASCADE
+);
+CREATE INDEX extraction_candidates_review_idx
+    ON extraction_candidates(workspace_id,branch_id,batch_id,review_status,kind);
+CREATE TRIGGER extraction_batches_no_update BEFORE UPDATE ON extraction_batches
+BEGIN SELECT RAISE(ABORT, 'extraction batches are immutable'); END;
+CREATE TRIGGER extraction_batches_no_delete BEFORE DELETE ON extraction_batches
+BEGIN SELECT RAISE(ABORT, 'extraction batches are immutable'); END;
+CREATE TRIGGER extraction_candidates_payload_immutable BEFORE UPDATE ON extraction_candidates
+WHEN OLD.batch_id IS NOT NEW.batch_id OR OLD.kind IS NOT NEW.kind OR OLD.payload_json IS NOT NEW.payload_json OR
+     OLD.created_revision IS NOT NEW.created_revision
+BEGIN SELECT RAISE(ABORT, 'extraction candidate content is immutable'); END;
+CREATE TRIGGER extraction_candidates_no_delete BEFORE DELETE ON extraction_candidates
+BEGIN SELECT RAISE(ABORT, 'extraction candidates are immutable'); END;
+CREATE TRIGGER entity_evidence_no_update BEFORE UPDATE ON entity_evidence
+BEGIN SELECT RAISE(ABORT, 'entity evidence links are immutable'); END;
+CREATE TRIGGER entity_evidence_no_delete BEFORE DELETE ON entity_evidence
+BEGIN SELECT RAISE(ABORT, 'entity evidence links are immutable'); END;
 """

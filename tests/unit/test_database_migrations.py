@@ -8,6 +8,10 @@ from lke.core import Database
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def _drop_extractions(self, database):
+        for table in ("extraction_candidates", "extraction_batches", "entity_evidence"):
+            database.connection.execute(f"DROP TABLE {table}")
+
     def _drop_scenarios(self, database):
         for table in (
             "scenario_assumptions", "scenario_source_evidence", "scenario_claim_evidence",
@@ -19,6 +23,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "knowledge.sqlite3"
             database = Database(database_path)
+            self._drop_extractions(database)
             self._drop_scenarios(database)
             database.connection.execute("DROP TABLE rules")
             database.connection.execute("DROP TABLE journal_events")
@@ -39,13 +44,14 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 5)
-        self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions"} <= tables)
+        self.assertEqual(version, 6)
+        self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence"} <= tables)
 
     def test_v2_database_upgrades_to_journal_and_rule_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "knowledge.sqlite3"
             database = Database(database_path)
+            self._drop_extractions(database)
             self._drop_scenarios(database)
             database.connection.execute("DROP TABLE rules")
             database.connection.execute("DROP TABLE journal_events")
@@ -64,7 +70,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertIsNotNone(table)
         self.assertIsNotNone(rules)
 
@@ -72,6 +78,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "knowledge.sqlite3"
             database = Database(database_path)
+            self._drop_extractions(database)
             self._drop_scenarios(database)
             database.connection.execute("DROP TABLE rules")
             database.connection.execute("DELETE FROM schema_migrations WHERE version>3")
@@ -86,15 +93,16 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertIsNotNone(table)
 
     def test_v4_database_upgrades_to_scenario_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "knowledge.sqlite3"
             database = Database(database_path)
+            self._drop_extractions(database)
             self._drop_scenarios(database)
-            database.connection.execute("DELETE FROM schema_migrations WHERE version=5")
+            database.connection.execute("DELETE FROM schema_migrations WHERE version>4")
             database.close()
 
             upgraded = Database(database_path)
@@ -109,8 +117,31 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertTrue({"scenarios", "scenario_options", "scenario_assumptions", "scenario_claim_evidence", "scenario_source_evidence"} <= tables)
+
+    def test_v5_database_upgrades_to_source_extraction_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "knowledge.sqlite3"
+            database = Database(database_path)
+            self._drop_extractions(database)
+            database.connection.execute("DELETE FROM schema_migrations WHERE version=6")
+            database.close()
+
+            upgraded = Database(database_path)
+            version = upgraded.connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
+            tables = {
+                row[0]
+                for row in upgraded.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            upgraded.close()
+
+        self.assertEqual(version, 6)
+        self.assertTrue({"extraction_batches", "extraction_candidates", "entity_evidence"} <= tables)
 
 
 if __name__ == "__main__":

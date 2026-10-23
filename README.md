@@ -6,7 +6,7 @@ The canonical store is versioned SQLite. Every official change passes through a 
 
 ## Current state
 
-This repository has been reset to the LKE baseline. The Python core supports workspaces, isolated snapshot branches, entities, relations, claims, actor beliefs, UTF-8 text/Markdown sources, evidence, full-text search, relative-order actor context, persistent story conversations, revisions, audit records, and an outbox. Knowledge Explorer includes a concept map, a branch-scoped relationship matrix, source search, claim review, and revision history. Scenario Lab shows deterministic record differences between a scenario branch and its current parent. Story Studio can save and reload turns, export a revision-bound context package, and request a continuation from a local Ollama model; generated prose is retained as conversation text and cannot write accepted world facts. The adapter and UI are implemented, but live generation has not been verified because no Ollama service/model was running during validation. LKE is still not the complete installable v0.1 product. See [the acceptance matrix](docs/ACCEPTANCE_MATRIX.md) for implementation and verification status.
+The Python core supports isolated workspaces and snapshot branches, entities, relations, claims, actor beliefs, UTF-8 text/Markdown sources, evidence, full-text search, actor-aware context, persistent story conversations, a sourced journal timeline, deterministic rules, scenario options and assumptions, extraction proposals, revisions, audit records, and an outbox. Knowledge Explorer includes a concept map, relationship matrix, source search, human review, and an exact-quote extraction workflow for entity and claim candidates from local Ollama. Journal and Scenario Lab use the same canonical store and branch history. Story Studio saves and reloads turns and can request a continuation from a local Ollama model; generated prose remains conversation text and cannot write accepted world facts. The app also exposes full-database backup and validated restore controls. Core tests and the frontend build pass, but API/browser checks for recent workflows, live-model quality, clean-machine recovery, and the Windows installer remain unverified. LKE is still not the complete installable v0.1 product. See [the acceptance matrix](docs/ACCEPTANCE_MATRIX.md) for status.
 
 ## Development
 
@@ -25,7 +25,7 @@ Run the canonical-core tests with the bundled or installed Python:
 python -m unittest discover -s tests\unit -v
 ```
 
-The offline backup/restore command and its integrity checks are implemented. Persistent story-turn storage and the local Ollama adapter are implemented, but the full Story Studio workflow, PDF/Office extraction, journal timeline, scenario evaluation, exchange import/export, live-model acceptance, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
+The backup utility supports both the desktop's full-database backup/restore flow and offline CLI operation. Persistent story-turn storage and the local Ollama adapter are implemented. PDF/Office and incremental extraction, relation/event extraction, transcript import, live-model acceptance, browser/API verification for recent changes, and packaged Windows installation remain incomplete. Their contracts and validation criteria are documented beside the implementation.
 
 ## Product and technical contracts
 

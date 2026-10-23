@@ -104,6 +104,38 @@ export type Scenario = {
 
 export type Source = { source_id: string; display_name: string; media_type: string; created_at: string };
 export type SourceDetails = Source & { content: string };
+export type ExtractionCandidate = {
+  candidate_id: string;
+  kind: "entity" | "claim";
+  payload: {
+    label?: string;
+    entity_type?: string;
+    subject_label?: string;
+    predicate?: string;
+    object_value?: string;
+    quote: string;
+    source_start: number;
+    source_end: number;
+  };
+  review_status: "proposed" | "accepted" | "rejected";
+  canonical_record_type: "entity" | "claim" | null;
+  canonical_record_id: string | null;
+  created_revision: number;
+  reviewed_revision: number | null;
+};
+export type ExtractionBatch = {
+  batch_id: string;
+  source_id: string;
+  source_name: string;
+  source_sha256: string;
+  model: string;
+  extractor_version: string;
+  prompt_version: string;
+  output_schema_version: number;
+  created_revision: number;
+  created_at: string;
+  candidates: ExtractionCandidate[];
+};
 export type JournalEventVersion = {
   event_id: string;
   version: number;
@@ -221,6 +253,18 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     throw new Error(body?.detail || `Request failed (${response.status})`);
   }
   return response.json() as Promise<T>;
+}
+
+export async function downloadBackup(): Promise<Blob> {
+  const config = await resolveRuntime();
+  const response = await fetch(`${config.baseUrl}/api/v1/backup`, {
+    headers: { Authorization: `Bearer ${config.token}` },
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `Backup download failed (${response.status})`);
+  }
+  return response.blob();
 }
 
 export function newId(prefix: string): string {

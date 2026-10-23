@@ -32,6 +32,26 @@ class OllamaClient:
         return names
 
     def generate(self, model: str, messages: list[dict[str, str]]) -> str:
+        return self._generate(model, messages, num_predict=1200)
+
+    def generate_json(self, model: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+        content = self._generate(model, messages, output_format="json", num_predict=4000)
+        try:
+            value = json.loads(content)
+        except json.JSONDecodeError as error:
+            raise OllamaError("Ollama did not return valid JSON.") from error
+        if not isinstance(value, dict):
+            raise OllamaError("Ollama returned an invalid structured response.")
+        return value
+
+    def _generate(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        output_format: str | None = None,
+        num_predict: int,
+    ) -> str:
         normalized_model = model.strip() if isinstance(model, str) else ""
         if (
             not _MODEL_NAME.fullmatch(normalized_model)
@@ -44,15 +64,20 @@ class OllamaClient:
             or not isinstance(message.get("content"), str)
             for message in messages
         ):
-            raise OllamaError("The story context is invalid.")
-        response = self._request(
-            "/api/chat",
-            {"model": normalized_model, "messages": messages, "stream": False, "options": {"num_predict": 1200}},
-        )
+            raise OllamaError("The model request is invalid.")
+        payload: dict[str, Any] = {
+            "model": normalized_model,
+            "messages": messages,
+            "stream": False,
+            "options": {"num_predict": num_predict},
+        }
+        if output_format:
+            payload["format"] = output_format
+        response = self._request("/api/chat", payload)
         message = response.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
-            raise OllamaError("Ollama returned an empty story continuation.")
+            raise OllamaError("Ollama returned an empty response.")
         return content.strip()
 
     def _request(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:

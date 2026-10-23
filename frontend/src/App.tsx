@@ -1,5 +1,5 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Branch, Claim, ContextManifest, Entity, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
+import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -20,6 +20,8 @@ export default function App() {
   const [branchId, setBranchId] = useState("main");
   const [revision, setRevision] = useState(0);
   const revisionRef = useRef(0);
+  const [dataEpoch, setDataEpoch] = useState(0);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [relations, setRelations] = useState<Relation[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -201,6 +203,110 @@ export default function App() {
     });
   }
 
+  async function extractSource(sourceId: string, model: string) {
+    if (busy) throw new Error("Another workspace change is already in progress.");
+    if (!workspaceId) throw new Error("Create or select a workspace first.");
+    setBusy(true);
+    try {
+      const result = await request<{ revision: number; idempotent_replay: boolean }>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}/extract`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            branch_id: branchId,
+            expected_revision: revisionRef.current,
+            idempotency_key: newId("extract"),
+            model,
+          }),
+        },
+      );
+      if (typeof result.revision === "number") {
+        revisionRef.current = result.revision;
+        setRevision(result.revision);
+      }
+      await refresh(workspaceId, branchId);
+      setNotice({ tone: "success", text: result.idempotent_replay ? "Loaded the saved extraction batch." : "Source candidates are ready for review." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Source extraction failed." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveBackup() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const blob = await downloadBackup();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `lke-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.lkebackup`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+      setNotice({ tone: "success", text: "Full local backup downloaded. Store the .lkebackup file somewhere safe." });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Backup could not be created." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restoreBackup(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!/\.lkebackup$/i.test(file.name)) {
+      setNotice({ tone: "error", text: "Choose an LKE .lkebackup file." });
+      input.value = "";
+      return;
+    }
+    const confirmed = window.confirm(
+      "Restoring replaces every workspace in this LKE installation with the selected backup. This cannot be undone from LKE. Download a backup of the current data first if you want to keep it. Continue?",
+    );
+    if (!confirmed) {
+      input.value = "";
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    try {
+      const restored = await request<{ manifest: { created_at: string }; workspaces: Workspace[] }>("/api/v1/backup/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      const selected = restored.workspaces.find((workspace) => workspace.workspace_id === workspaceId)?.workspace_id
+        || restored.workspaces[0]?.workspace_id
+        || "";
+      setWorkspaces(restored.workspaces);
+      setWorkspaceId(selected);
+      setBranchId("main");
+      setPage("story");
+      setDataEpoch((value) => value + 1);
+      if (selected) {
+        await refresh(selected, "main");
+      } else {
+        setBranches([]);
+        setEntities([]);
+        setRelations([]);
+        setClaims([]);
+        setSources([]);
+        setRevision(0);
+        revisionRef.current = 0;
+      }
+      setNotice({ tone: "success", text: `Restored backup from ${new Date(restored.manifest.created_at).toLocaleString()}.` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Backup could not be restored." });
+    } finally {
+      setBusy(false);
+      input.value = "";
+    }
+  }
+
   async function review(kind: "claim" | "relation", id: string, status: "accepted" | "rejected") {
     setBusy(true);
     try {
@@ -248,6 +354,33 @@ export default function App() {
     finally { setBusy(false); }
   }
 
+  async function promoteScenarioBranch(sourceBranchId: string, sourceRevision: number, targetBranchId: string, targetRevision: number) {
+    if (!workspaceId) throw new Error("Create or select a workspace first.");
+    if (busy) throw new Error("Another workspace change is already in progress.");
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/commands`, {
+        method: "POST",
+        body: JSON.stringify({
+          branch_id: targetBranchId,
+          expected_revision: targetRevision,
+          idempotency_key: newId("promote"),
+          command_type: "promote_branch",
+          payload: { source_branch_id: sourceBranchId, source_revision: sourceRevision },
+          reason: `Promote reviewed branch ${sourceBranchId}`,
+        }),
+      });
+      setBranchId(targetBranchId);
+      await refresh(workspaceId, targetBranchId);
+      setNotice({ tone: "success", text: `Promoted ${sourceBranchId} into ${targetBranchId}.` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The branch could not be promoted." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const visibleClaims = claims.filter((claim) => !query || `${claim.predicate} ${claim.object_value}`.toLowerCase().includes(query.toLowerCase()));
 
   return (
@@ -255,7 +388,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">L</div><div><strong>Living Knowledge</strong><span>ENGINE</span></div></div>
         <div className="workspace-label">WORKSPACE</div>
-        <select className="workspace-select" value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); setBranchId("main"); }} aria-label="Select workspace">
+        <select className="workspace-select" value={workspaceId} disabled={busy} onChange={(event) => { setWorkspaceId(event.target.value); setBranchId("main"); }} aria-label="Select workspace">
           <option value="">Choose a workspace</option>
           {workspaces.map((workspace) => <option key={workspace.workspace_id} value={workspace.workspace_id}>{workspace.name}</option>)}
         </select>
@@ -269,8 +402,8 @@ export default function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your knowledge space"}</span><span className="crumb-sep">/</span><select className="branch-select" aria-label="Select branch" value={branchId} onChange={(event) => setBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.branch_id} value={branch.branch_id}>{branch.branch_id === "main" ? "Main" : branch.branch_id}</option>)}</select></div>
-          <div className="top-actions"><span className="revision-chip">Revision {revision}</span><button className="quiet-button" onClick={() => void load()}>Refresh</button></div>
+          <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your knowledge space"}</span><span className="crumb-sep">/</span><select className="branch-select" aria-label="Select branch" value={branchId} disabled={busy} onChange={(event) => setBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.branch_id} value={branch.branch_id}>{branch.branch_id === "main" ? "Main" : branch.branch_id}</option>)}</select></div>
+          <div className="top-actions"><span className="revision-chip">Revision {revision}</span><button className="quiet-button" disabled={busy || !workspaceId} onClick={() => void saveBackup()}>Back up</button><button className="quiet-button" disabled={busy} onClick={() => restoreInputRef.current?.click()}>Restore</button><input ref={restoreInputRef} type="file" accept=".lkebackup,application/zip" hidden onChange={(event) => void restoreBackup(event)} /><button className="quiet-button" disabled={busy} onClick={() => void load()}>Refresh</button></div>
         </header>
         <div className="page-content">
           {notice && <div className={`notice ${notice.tone}`} role="status"><span>{notice.tone === "error" ? "!" : notice.tone === "success" ? "✓" : "·"}</span>{notice.text}<button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
@@ -285,13 +418,13 @@ export default function App() {
             </form>
             <div className="welcome-points"><span>◉ Evidence stays linked</span><span>◈ Explore safely in branches</span><span>⌁ Your data stays yours</span></div>
           </section> : <>
-            {page === "knowledge" && <KnowledgePage
-              workspaceId={workspaceId} branchId={branchId} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
-              addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review}
+            {page === "knowledge" && <KnowledgePage key={dataEpoch}
+              workspaceId={workspaceId} branchId={branchId} revision={revision} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
+              addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review} onExtract={extractSource} onCommit={commitDomainCommand}
             />}
-            {page === "story" && <StoryPage entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
-            {page === "journal" && <JournalPage workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
-            {page === "scenario" && <ScenarioPage workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
+            {page === "story" && <StoryPage key={dataEpoch} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onCommit={commitStoryCommand} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
+            {page === "journal" && <JournalPage key={dataEpoch} workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
+            {page === "scenario" && <ScenarioPage key={dataEpoch} workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onPromote={promoteScenarioBranch} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
           </>}
         </div>
       </main>
@@ -304,24 +437,226 @@ function PageHeader({ kicker, title, summary, action }: { kicker: string; title:
 }
 
 function KnowledgePage(props: {
-  workspaceId: string; branchId: string; entities: Entity[]; relations: Relation[]; claims: Claim[]; sources: Source[]; busy: boolean; query: string; setQuery: (query: string) => void;
+  workspaceId: string; branchId: string; revision: number; entities: Entity[]; relations: Relation[]; claims: Claim[]; sources: Source[]; busy: boolean; query: string; setQuery: (query: string) => void;
   addEntity: (event: FormEvent<HTMLFormElement>) => Promise<void>; addRelation: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   addClaim: (event: FormEvent<HTMLFormElement>) => Promise<void>; importText: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   review: (kind: "claim" | "relation", id: string, status: "accepted" | "rejected") => Promise<void>;
+  onExtract: (sourceId: string, model: string) => Promise<void>;
+  onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
 }) {
-  const [tab, setTab] = useState<"map" | "matrix" | "history" | "evidence" | "review">("map");
+  const [tab, setTab] = useState<"map" | "matrix" | "history" | "evidence" | "extraction" | "review">("map");
   return <>
     <PageHeader kicker="Your knowledge space" title="Knowledge Explorer" summary="Build a source-backed map of people, ideas, events, and their relationships." />
     <div className="metric-row"><Metric value={props.entities.length} label="Concepts" icon="◉" /><Metric value={props.relations.length} label="Relationships" icon="⟷" /><Metric value={props.claims.length} label="Claims" icon="≋" /><Metric value={props.claims.filter((item) => item.review_status === "proposed").length + props.relations.filter((item) => item.review_status === "proposed").length} label="Needs review" icon="◷" accent /></div>
-    <div className="toolbar"><div className="tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "matrix" ? "selected" : ""} onClick={() => setTab("matrix")}>Relationship matrix</button><button className={tab === "history" ? "selected" : ""} onClick={() => setTab("history")}>History</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
+    <div className="toolbar knowledge-toolbar"><div className="tabs knowledge-tabs"><button className={tab === "map" ? "selected" : ""} onClick={() => setTab("map")}>Knowledge map</button><button className={tab === "matrix" ? "selected" : ""} onClick={() => setTab("matrix")}>Relationship matrix</button><button className={tab === "history" ? "selected" : ""} onClick={() => setTab("history")}>History</button><button className={tab === "evidence" ? "selected" : ""} onClick={() => setTab("evidence")}>Sources</button><button className={tab === "extraction" ? "selected" : ""} onClick={() => setTab("extraction")}>AI extraction</button><button className={tab === "review" ? "selected" : ""} onClick={() => setTab("review")}>Review</button></div><label className="search-box"><span>⌕</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="Search this workspace" aria-label="Search workspace" /></label></div>
     {tab === "map" && <div className="knowledge-grid"><section className="panel graph-panel"><div className="panel-heading"><div><h2>Concept map</h2><p>Accepted links and proposals share one editable source.</p></div><span className="panel-count">{props.entities.length} nodes</span></div><Graph entities={props.entities} relations={props.relations} /><div className="graph-legend"><span><i className="legend-node" />Concept</span><span><i className="legend-line" />Accepted relationship</span><span><i className="legend-line proposed" />Needs review</span></div></section>
       <div className="stacked-panels"><EntityForm busy={props.busy} onSubmit={props.addEntity} /><RelationForm entities={props.entities} busy={props.busy} onSubmit={props.addRelation} /></div></div>}
     {tab === "matrix" && <RelationMatrix entities={props.entities} relations={props.relations} />}
     {tab === "history" && <RevisionHistory workspaceId={props.workspaceId} branchId={props.branchId} />}
     {tab === "evidence" && <div className="knowledge-grid"><SourceForm busy={props.busy} onSubmit={props.importText} /><SourceResults workspaceId={props.workspaceId} query={props.query} /> </div>}
+    {tab === "extraction" && <ExtractionReviewPanel workspaceId={props.workspaceId} branchId={props.branchId} revision={props.revision} entities={props.entities} sources={props.sources} busy={props.busy} onExtract={props.onExtract} onCommit={props.onCommit} />}
     {tab === "review" && <div className="review-list"><ReviewList claims={props.claims} relations={props.relations} review={props.review} busy={props.busy} /></div>}
     <section className="panel claims-panel"><div className="panel-heading"><div><h2>Claims</h2><p>Epistemic confidence and review status are kept distinct.</p></div></div><ClaimForm entities={props.entities} sources={props.sources} busy={props.busy} onSubmit={props.addClaim} /><div className="claim-list">{props.claims.length ? props.claims.map((claim) => <div className="claim-row" key={claim.claim_id}><span className={`status-dot ${claim.review_status}`} /><div><strong>{props.entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id} <span className="claim-predicate">{claim.predicate}</span> {claim.object_value}</strong><small>{claim.epistemic_status} · {claim.review_status} · {claim.visibility} · {claim.evidence.length} evidence</small></div>{claim.review_status === "proposed" && <button className="link-button" onClick={() => void props.review("claim", claim.claim_id, "accepted")} disabled={props.busy}>Review</button>}</div>) : <p className="empty-hint">No claims yet. Add a claim and review it before it becomes accepted knowledge.</p>}</div></section>
   </>;
+}
+
+function ExtractionReviewPanel({ workspaceId, branchId, revision, entities, sources, busy, onExtract, onCommit }: {
+  workspaceId: string;
+  branchId: string;
+  revision: number;
+  entities: Entity[];
+  sources: Source[];
+  busy: boolean;
+  onExtract: (sourceId: string, model: string) => Promise<void>;
+  onCommit: (commandType: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
+}) {
+  const [batches, setBatches] = useState<ExtractionBatch[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [model, setModel] = useState("");
+  const [selectedSourceId, setSelectedSourceId] = useState(sources[0]?.source_id || "");
+  const [providerAvailable, setProviderAvailable] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [extracting, setExtracting] = useState(false);
+
+  useEffect(() => {
+    if (!sources.some((source) => source.source_id === selectedSourceId)) {
+      setSelectedSourceId(sources[0]?.source_id || "");
+    }
+  }, [sources, selectedSourceId]);
+
+  useEffect(() => {
+    let active = true;
+    request<OllamaModelStatus>("/api/v1/providers/ollama/models")
+      .then((status) => {
+        if (!active) return;
+        setProviderAvailable(status.available);
+        setModels(status.models);
+        setModel((current) => status.models.includes(current) ? current : status.models[0] || "");
+      })
+      .catch(() => {
+        if (active) {
+          setProviderAvailable(false);
+          setModels([]);
+        }
+      });
+    return () => { active = false; };
+  }, [workspaceId]);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    request<ExtractionBatch[]>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/extractions?branch_id=${encodeURIComponent(branchId)}`,
+    ).then((rows) => {
+      if (active) setBatches(rows);
+    }).catch((reason) => {
+      if (active) setError(reason instanceof Error ? reason.message : "Extraction history could not be loaded.");
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [workspaceId, branchId, revision]);
+
+  async function runExtraction() {
+    if (!selectedSourceId || !model || extracting || busy) return;
+    setExtracting(true);
+    setError("");
+    try {
+      await onExtract(selectedSourceId, model);
+    } catch {
+      // The shared workspace notice reports provider and command errors.
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  async function reviewCandidate(candidate: ExtractionCandidate, payload: Record<string, unknown>, status: "accepted" | "rejected") {
+    await onCommit(
+      "review_extraction_candidate",
+      payload,
+      `User ${status} extracted ${candidate.kind}`,
+      `Extraction ${candidate.kind} ${status}.`,
+    );
+  }
+
+  const pendingCount = batches.reduce(
+    (count, batch) => count + batch.candidates.filter((candidate) => candidate.review_status === "proposed").length,
+    0,
+  );
+
+  return <div className="extraction-workspace">
+    <section className="panel extraction-controls">
+      <div className="panel-heading"><div><h2>Extract source candidates</h2><p>Local Ollama proposes source-grounded entities and claims. Nothing is accepted automatically.</p></div><span className="panel-count">{pendingCount} awaiting review</span></div>
+      <div className="extraction-control-row">
+        <label className="field-label">Source
+          <select value={selectedSourceId} onChange={(event) => setSelectedSourceId(event.target.value)} disabled={!sources.length || busy || extracting}>
+            <option value="">Choose a saved source</option>
+            {sources.map((source) => <option key={source.source_id} value={source.source_id}>{source.display_name}</option>)}
+          </select>
+        </label>
+        <label className="field-label">Local model
+          <select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models.length || busy || extracting}>
+            <option value="">Choose an installed model</option>
+            {models.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </label>
+        <button className="primary-button extraction-run" onClick={() => void runExtraction()} disabled={!providerAvailable || !selectedSourceId || !model || busy || extracting}>
+          {extracting ? "Extracting…" : "Extract for review"} <span>↗</span>
+        </button>
+      </div>
+      {!sources.length && <p className="empty-hint">Import a text or Markdown source before running extraction.</p>}
+      {sources.length > 0 && !providerAvailable && <p className="inline-error">Ollama is not available on this device. Start the local Ollama service to extract candidates.</p>}
+      {sources.length > 0 && providerAvailable && !models.length && <p className="empty-hint">Ollama is running, but no local model is installed yet.</p>}
+      <small className="field-note">This pass supports text sources up to 24,000 characters. Each candidate must quote an exact span from its source.</small>
+    </section>
+
+    <section className="panel extraction-batches">
+      <div className="panel-heading"><div><h2>Candidate review</h2><p>Review each item against its original quote. Accepting a claim also requires your entity, confidence, and visibility choices.</p></div><span className="panel-count">{batches.length} batches · {branchId}</span></div>
+      {error && <p className="inline-error">{error}</p>}
+      {loading ? <p className="empty-hint">Loading extraction history…</p>
+        : batches.length ? batches.map((batch) => <article className="extraction-batch" key={batch.batch_id}>
+          <div className="extraction-batch-heading"><div><strong>{batch.source_name}</strong><small>{batch.model} · revision {batch.created_revision} · {new Date(batch.created_at).toLocaleString()}</small></div><span>{batch.candidates.length} candidates</span></div>
+          {batch.candidates.map((candidate) => <ExtractionCandidateCard key={candidate.candidate_id} candidate={candidate} entities={entities} busy={busy || extracting} onReview={reviewCandidate} />)}
+          {!batch.candidates.length && <p className="empty-hint">The model found no grounded candidates in this source.</p>}
+        </article>)
+        : !error && <p className="empty-hint">No extraction batches on this branch. Choose a saved source above to create reviewable proposals.</p>}
+    </section>
+  </div>;
+}
+
+function ExtractionCandidateCard({ candidate, entities, busy, onReview }: {
+  candidate: ExtractionCandidate;
+  entities: Entity[];
+  busy: boolean;
+  onReview: (candidate: ExtractionCandidate, payload: Record<string, unknown>, status: "accepted" | "rejected") => Promise<void>;
+}) {
+  const matchingEntity = candidate.payload.subject_label
+    ? entities.find((entity) => entity.label.trim().toLocaleLowerCase() === candidate.payload.subject_label?.trim().toLocaleLowerCase())
+    : undefined;
+  const [subjectEntityId, setSubjectEntityId] = useState(matchingEntity?.entity_id || "");
+  const [epistemicStatus, setEpistemicStatus] = useState("unknown");
+  const [visibility, setVisibility] = useState("public");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!entities.some((entity) => entity.entity_id === subjectEntityId)) {
+      setSubjectEntityId(matchingEntity?.entity_id || "");
+    }
+  }, [entities, matchingEntity, subjectEntityId]);
+
+  async function decide(status: "accepted" | "rejected") {
+    setError("");
+    const payload: Record<string, unknown> = { candidate_id: candidate.candidate_id, review_status: status };
+    if (status === "accepted" && candidate.kind === "claim") {
+      if (!subjectEntityId) {
+        setError("Choose the entity this claim is about. Create or accept an entity candidate first if needed.");
+        return;
+      }
+      payload.subject_entity_id = subjectEntityId;
+      payload.epistemic_status = epistemicStatus;
+      payload.visibility = visibility;
+    }
+    try {
+      await onReview(candidate, payload, status);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Candidate review failed.");
+    }
+  }
+
+  const isPending = candidate.review_status === "proposed";
+  return <article className="extraction-candidate">
+    <div className="extraction-candidate-title">
+      <div><span className={`status-dot ${candidate.review_status}`} /><strong>{candidate.kind === "entity" ? candidate.payload.label : `${candidate.payload.subject_label} · ${candidate.payload.predicate} · ${candidate.payload.object_value}`}</strong></div>
+      <span className={`extraction-status ${candidate.review_status}`}>{candidate.review_status}</span>
+    </div>
+    <small className="extraction-candidate-meta">{candidate.kind === "entity" ? candidate.payload.entity_type : "Claim proposal"} · source characters {candidate.payload.source_start}–{candidate.payload.source_end}</small>
+    <blockquote>{candidate.payload.quote}</blockquote>
+    {isPending && candidate.kind === "claim" && <div className="extraction-review-fields">
+      <label className="field-label">Claim subject
+        <select value={subjectEntityId} onChange={(event) => setSubjectEntityId(event.target.value)} disabled={busy}>
+          <option value="">Choose an entity</option>
+          {entities.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{entity.label} · {entity.entity_type}</option>)}
+        </select>
+      </label>
+      <label className="field-label">Confidence
+        <select value={epistemicStatus} onChange={(event) => setEpistemicStatus(event.target.value)} disabled={busy}>
+          <option value="unknown">Unknown</option><option value="believed">Believed</option><option value="known">Known</option><option value="contested">Contested</option>
+        </select>
+      </label>
+      <label className="field-label">Visibility
+        <select value={visibility} onChange={(event) => setVisibility(event.target.value)} disabled={busy}>
+          <option value="public">Public</option><option value="actor_scoped">Actor scoped</option><option value="author_only">Author only</option>
+        </select>
+      </label>
+    </div>}
+    {error && <p className="inline-error">{error}</p>}
+    {isPending ? <div className="review-actions extraction-review-actions">
+      <button onClick={() => void decide("rejected")} disabled={busy}>Reject</button>
+      <button className="accept-button" onClick={() => void decide("accepted")} disabled={busy}>Accept reviewed item</button>
+    </div> : candidate.canonical_record_id && <small className="extraction-canonical">Saved as {candidate.canonical_record_type} · {candidate.canonical_record_id}</small>}
+  </article>;
 }
 
 function RevisionHistory({ workspaceId, branchId }: { workspaceId: string; branchId: string }) {
@@ -920,7 +1255,7 @@ function formatJournalTime(event: Pick<JournalEventVersion, "temporal_kind" | "o
   return event.time_note ? `Date not known · ${event.time_note}` : "Date not known";
 }
 
-function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, sources, busy, onBranch, onCommit, onReviewRule, onReviewAssumption }: {
+function ScenarioPage({ workspaceId, branchId, branches, revision, entities, relations, claims, sources, busy, onBranch, onPromote, onCommit, onReviewRule, onReviewAssumption }: {
   workspaceId: string;
   branchId: string;
   branches: Branch[];
@@ -931,6 +1266,7 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   sources: Source[];
   busy: boolean;
   onBranch: () => void;
+  onPromote: (sourceBranchId: string, sourceRevision: number, targetBranchId: string, targetRevision: number) => Promise<void>;
   onCommit: (command: string, payload: Record<string, unknown>, reason: string, successText: string) => Promise<void>;
   onReviewRule: (id: string, status: "accepted" | "rejected") => Promise<void>;
   onReviewAssumption: (scenarioId: string, optionId: string, assumptionId: string, version: number, status: "accepted" | "rejected") => Promise<void>;
@@ -938,9 +1274,13 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
   const branch = branches.find((item) => item.branch_id === branchId);
   const parentBranchId = branch?.parent_branch_id || "";
   const parentBranch = branches.find((item) => item.branch_id === parentBranchId);
-  const parentHasAdvanced = Boolean(parentBranch && branch?.parent_revision !== null && branch?.parent_revision !== undefined && parentBranch.head_revision > branch.parent_revision);
+  const parentSnapshotCurrent = Boolean(parentBranch && branch?.parent_revision !== null && branch?.parent_revision !== undefined && parentBranch.head_revision === branch.parent_revision);
+  const parentHasAdvanced = Boolean(parentBranch && !parentSnapshotCurrent);
   const [baseline, setBaseline] = useState<{ entities: Entity[]; relations: Relation[]; claims: Claim[] } | null>(null);
   const [baselineError, setBaselineError] = useState("");
+  const [branchRevisions, setBranchRevisions] = useState<Revision[]>([]);
+  const [branchRevisionsLoading, setBranchRevisionsLoading] = useState(false);
+  const [branchRevisionsError, setBranchRevisionsError] = useState("");
   const [ruleEvaluations, setRuleEvaluations] = useState<RuleEvaluation[]>([]);
   const [ruleError, setRuleError] = useState("");
   const [rulesLoading, setRulesLoading] = useState(true);
@@ -1004,19 +1344,42 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
     return () => { active = false; };
   }, [workspaceId, parentBranchId]);
 
+  useEffect(() => {
+    let active = true;
+    if (!workspaceId || !parentBranchId) {
+      setBranchRevisions([]);
+      setBranchRevisionsError("");
+      setBranchRevisionsLoading(false);
+      return () => { active = false; };
+    }
+    setBranchRevisions([]);
+    setBranchRevisionsLoading(true);
+    setBranchRevisionsError("");
+    request<Revision[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/revisions?branch_id=${encodeURIComponent(branchId)}`)
+      .then((rows) => { if (active) setBranchRevisions(rows); })
+      .catch((reason) => { if (active) setBranchRevisionsError(reason instanceof Error ? reason.message : "Branch history could not be loaded."); })
+      .finally(() => { if (active) setBranchRevisionsLoading(false); });
+    return () => { active = false; };
+  }, [workspaceId, branchId, parentBranchId, revision]);
+
   const entityIds = new Set((baseline?.entities || []).map((item) => item.entity_id));
+  const entityById = new Map((baseline?.entities || []).map((item) => [item.entity_id, item]));
   const relationById = new Map((baseline?.relations || []).map((item) => [item.relation_id, item]));
   const claimById = new Map((baseline?.claims || []).map((item) => [item.claim_id, item]));
   const addedEntities = baseline ? entities.filter((item) => !entityIds.has(item.entity_id)) : [];
+  const changedEntities = baseline ? entities.filter((item) => {
+    const previous = entityById.get(item.entity_id);
+    return previous && JSON.stringify([previous.entity_type, previous.label, previous.properties]) !== JSON.stringify([item.entity_type, item.label, item.properties]);
+  }) : [];
   const addedRelations = baseline ? relations.filter((item) => !relationById.has(item.relation_id)) : [];
   const changedRelations = baseline ? relations.filter((item) => {
     const previous = relationById.get(item.relation_id);
-    return previous && previous.review_status !== item.review_status;
+    return previous && JSON.stringify([previous.source_entity_id, previous.target_entity_id, previous.relation_type, previous.properties, previous.review_status]) !== JSON.stringify([item.source_entity_id, item.target_entity_id, item.relation_type, item.properties, item.review_status]);
   }) : [];
   const addedClaims = baseline ? claims.filter((item) => !claimById.has(item.claim_id)) : [];
   const changedClaims = baseline ? claims.filter((item) => {
     const previous = claimById.get(item.claim_id);
-    return previous && previous.review_status !== item.review_status;
+    return previous && JSON.stringify([previous.subject_entity_id, previous.predicate, previous.object_value, previous.epistemic_status, previous.review_status, previous.visibility, previous.narrative_order, previous.evidence]) !== JSON.stringify([item.subject_entity_id, item.predicate, item.object_value, item.epistemic_status, item.review_status, item.visibility, item.narrative_order, item.evidence]);
   }) : [];
   const relationLabel = (relation: Relation) => {
     const source = entities.find((item) => item.entity_id === relation.source_entity_id)?.label || relation.source_entity_id;
@@ -1027,7 +1390,25 @@ function ScenarioPage({ workspaceId, branchId, branches, revision, entities, rel
     const subject = entities.find((item) => item.entity_id === claim.subject_entity_id)?.label || claim.subject_entity_id;
     return `${subject} · ${claim.predicate} · ${claim.object_value}`;
   };
-  const differenceCount = addedEntities.length + addedRelations.length + changedRelations.length + addedClaims.length + changedClaims.length;
+  const differenceCount = addedEntities.length + changedEntities.length + addedRelations.length + changedRelations.length + addedClaims.length + changedClaims.length;
+  const branchChanges = branchRevisions.filter((item) => item.revision > (branch?.base_revision ?? 0));
+  const canPromote = Boolean(
+    branch && parentBranch && parentSnapshotCurrent && revision > branch.base_revision &&
+    !branchRevisionsLoading && !branchRevisionsError && !busy,
+  );
+
+  async function confirmPromotion() {
+    if (!branch || !parentBranch || !canPromote) return;
+    const confirmed = window.confirm(
+      `Promote revisions ${branch.base_revision + 1}–${revision} from ${branch.branch_id} into ${parentBranch.branch_id}? This writes one audited revision on the parent. The scenario assumptions remain assumptions.`
+    );
+    if (!confirmed) return;
+    try {
+      await onPromote(branch.branch_id, revision, parentBranch.branch_id, parentBranch.head_revision);
+    } catch {
+      // The parent view reports command errors through the workspace notice.
+    }
+  }
 
   return <>
     <PageHeader kicker="Alternate futures" title="Decision & Scenario Lab" summary="Explore changes on a branch that keeps its starting point and never silently alters the main world." action={<button className="primary-button" onClick={() => void onBranch()}>Create scenario branch <span>↗</span></button>} />

@@ -16,7 +16,9 @@ The direct API default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3`; `LKE
 
 The current source importer accepts only UTF-8 `.txt`, `.md`, and `.markdown` files or pasted text, up to 10 MiB. The API stores text content and a display name; it does not accept filesystem paths or unpack archives. The command gateway independently enforces the size limit, permits only `text/plain` and `text/markdown`, and rejects empty text and NUL bytes. PDF, Office, and archive ingestion are unavailable. Duplicate content is identified by SHA-256 and does not create a second source or revision.
 
-Backups use SQLite's online backup API, so a consistent snapshot includes committed data without copying open WAL files. Each `.lkebackup` archive contains one database snapshot and a manifest with format/schema versions, byte size, timestamp, and SHA-256 digest. Restore validates archive entries, digest, SQLite integrity, required tables, and schema version before installing the target database.
+Backups use SQLite's online backup API, so a consistent snapshot includes committed data without copying open WAL files. Each `.lkebackup` archive contains the full local database (all workspaces and branches) and a manifest with format/schema versions, byte size, timestamp, and SHA-256 digest. Restore validates archive entries, digest, SQLite integrity, foreign-key references, required tables, and schema version before replacing any database content. The desktop's authenticated restore endpoint streams the archive to a temporary file, validates it, then replaces the open database through SQLite's backup API; the workspace and branch views reload afterward.
+
+In the desktop app, use **Back up** in the top bar to download a complete `.lkebackup` file. Use **Restore** to choose one. Restore replaces every workspace in the installation, so the app asks for confirmation first; download a current backup before restoring if you may need the existing data. Invalid archives are rejected before the active database is changed. The API accepts backup files with a database payload up to 2 GiB.
 
 Create a backup while LKE is running:
 
@@ -24,13 +26,13 @@ Create a backup while LKE is running:
 lke-backup create "$env:LOCALAPPDATA\LKE\knowledge.sqlite3" "D:\Backups\workspace-2026-10-17.lkebackup"
 ```
 
-Restore to a new database path:
+Restore to a new database path with the offline CLI:
 
 ```powershell
 lke-backup restore "D:\Backups\workspace-2026-10-17.lkebackup" "D:\LKE-Restore\knowledge.sqlite3"
 ```
 
-Close LKE before restoring over its active database. Restore refuses an existing destination unless `--overwrite` is explicitly supplied. Keep backups on a separate device or protected location; a backup beside the database does not protect against device loss. Migration rollback and a clean-machine recovery drill remain release checks.
+For the offline CLI, close LKE before replacing its active database. Restore refuses an existing destination unless `--overwrite` is explicitly supplied. Keep backups on a separate device or protected location; a backup beside the database does not protect against device loss. Migration rollback and a clean-machine recovery drill remain release checks.
 
 ## Troubleshooting and recovery
 

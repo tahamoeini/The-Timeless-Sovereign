@@ -41,6 +41,22 @@ class OllamaClientTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["model"], "llama3.2")
 
+    def test_structured_generation_requests_json_and_parses_the_response(self) -> None:
+        response = FakeResponse({"message": {"content": '{"entities":[],"claims":[]}'}})
+        with patch("lke.ai.ollama.urlopen", return_value=response) as open_url:
+            value = OllamaClient().generate_json("llama3.2", [{"role": "user", "content": "Extract."}])
+
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertEqual(value, {"entities": [], "claims": []})
+        self.assertEqual(payload["format"], "json")
+        self.assertEqual(payload["options"]["num_predict"], 4000)
+
+    def test_structured_generation_rejects_invalid_json(self) -> None:
+        response = FakeResponse({"message": {"content": "not json"}})
+        with patch("lke.ai.ollama.urlopen", return_value=response):
+            with self.assertRaises(OllamaError):
+                OllamaClient().generate_json("llama3.2", [{"role": "user", "content": "Extract."}])
+
     def test_model_name_cannot_redirect_provider_to_another_host(self) -> None:
         with patch("lke.ai.ollama.urlopen") as open_url:
             with self.assertRaises(OllamaError):

@@ -20,7 +20,8 @@ _ALLOWED_COMMANDS = {
     "review_claim", "add_belief", "import_source", "add_evidence",
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
     "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
-    "review_scenario_assumption",
+    "review_scenario_assumption", "record_extraction_batch", "review_extraction_candidate",
+    "promote_branch",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -68,7 +69,114 @@ def _command_request_hash(request: dict[str, Any]) -> str:
         stable_payload.pop("context_manifest_id", None)
         stable_payload.pop("context_manifest", None)
         stable_request["payload"] = stable_payload
+    if stable_request["command_type"] == "record_extraction_batch":
+        stable_payload = dict(stable_request["payload"])
+        stable_payload.pop("candidates", None)
+        stable_request["payload"] = stable_payload
     return hashlib.sha256(_json(stable_request).encode("utf-8")).hexdigest()
+
+
+def _validated_extraction_candidate(candidate: Any, source_content: str) -> tuple[str, str, dict[str, Any]]:
+    if not isinstance(candidate, dict):
+        raise ValidationError("Each extraction candidate must be an object")
+    kind = candidate.get("kind")
+    if not isinstance(kind, str) or kind not in {"entity", "claim"}:
+        raise ValidationError("Extraction candidate kind must be entity or claim")
+    quote = _required_text(candidate.get("quote"), "quote", 10000)
+    start = candidate.get("source_start")
+    end = candidate.get("source_end")
+    if type(start) is not int or type(end) is not int or start < 0 or end <= start:
+        raise ValidationError("Extraction candidate needs a valid source span")
+    if source_content[start:end] != quote:
+        raise ValidationError("Extraction candidate quote must match its exact source span")
+    if kind == "entity":
+        data = {
+            "label": _required_text(candidate.get("label"), "label", 200),
+            "entity_type": _required_text(candidate.get("entity_type"), "entity_type", 100),
+        }
+    else:
+        data = {
+            "subject_label": _required_text(candidate.get("subject_label"), "subject_label", 200),
+            "predicate": _required_text(candidate.get("predicate"), "predicate", 200),
+            "object_value": _required_text(candidate.get("object_value"), "object_value", 4000),
+        }
+    data.update({"quote": quote, "source_start": start, "source_end": end})
+    candidate_id = _required_text(candidate.get("candidate_id") or str(uuid4()), "candidate_id", 100)
+    return candidate_id, kind, data
+
+
+def _promote_branch_snapshot(
+    connection: sqlite3.Connection,
+    workspace_id: str,
+    target_branch_id: str,
+    source_branch_id: str,
+    source_base_revision: int,
+    target_revision: int,
+) -> dict[str, int]:
+    """Fast-forward branch-scoped state into an unchanged parent branch."""
+    table_specs = (
+        ("entities", "entity_id,entity_type,label,properties_json,created_revision,updated_revision", "entity_id", ("entity_type", "label", "properties_json", "updated_revision"), ("created_revision", "updated_revision"), "entity_id"),
+        ("relations", "relation_id,source_entity_id,target_entity_id,relation_type,properties_json,review_status,created_revision", "relation_id", ("source_entity_id", "target_entity_id", "relation_type", "properties_json", "review_status"), ("created_revision",), "relation_id"),
+        ("claims", "claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility,narrative_order,evidence_json,created_revision", "claim_id", ("subject_entity_id", "predicate", "object_value", "epistemic_status", "review_status", "visibility", "narrative_order", "evidence_json"), ("created_revision",), "claim_id"),
+        ("rules", "rule_id,name,description,rule_mode,severity,subject_entity_id,predicate,object_value,predicate_cardinality,review_status,created_revision", "rule_id", ("name", "description", "rule_mode", "severity", "subject_entity_id", "predicate", "object_value", "predicate_cardinality", "review_status"), ("created_revision",), "rule_id"),
+        ("evidence", "evidence_id,source_id,anchor,quote,context_fingerprint,created_revision", None, (), ("created_revision",), "evidence_id"),
+        ("entity_evidence", "entity_id,evidence_id,created_revision", None, (), ("created_revision",), "entity_id,evidence_id"),
+        ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision", None, (), ("created_revision",), "belief_id"),
+        ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at", "conversation_id", ("actor_entity_id", "title", "actor_is_user_controlled", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "conversation_id"),
+        ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id"),
+        ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at", None, (), ("created_revision",), "event_id,version"),
+        ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at", None, (), ("created_revision",), "scenario_id"),
+        ("scenario_options", "scenario_id,option_id,label,description,position,created_revision", None, (), ("created_revision",), "scenario_id,option_id"),
+        ("scenario_claim_evidence", "scenario_id,claim_id,created_revision", None, (), ("created_revision",), "scenario_id,claim_id"),
+        ("scenario_source_evidence", "scenario_id,source_id,created_revision", None, (), ("created_revision",), "scenario_id,source_id"),
+        ("scenario_assumptions", "scenario_id,option_id,assumption_id,version,subject_entity_id,predicate,object_value,assumption_action,predicate_cardinality,review_status,supersedes_version,created_revision,created_at", None, (), ("created_revision",), "scenario_id,option_id,assumption_id,version"),
+        ("extraction_batches", "batch_id,source_id,source_sha256,model,extractor_version,prompt_version,output_schema_version,created_revision,created_at", None, (), ("created_revision",), "batch_id"),
+        ("extraction_candidates", "candidate_id,batch_id,kind,payload_json,review_status,canonical_record_type,canonical_record_id,created_revision,reviewed_revision", "candidate_id", ("review_status", "canonical_record_type", "canonical_record_id", "reviewed_revision"), ("created_revision", "reviewed_revision"), "candidate_id"),
+    )
+    row_counts: dict[str, int] = {}
+    for table, column_list, _, update_columns, revision_columns, primary_key in table_specs:
+        columns = column_list.split(",")
+        select_expressions = []
+        revision_parameters: list[int] = []
+        for column in columns:
+            if column in revision_columns:
+                select_expressions.append(f"CASE WHEN {column}>? THEN ? ELSE {column} END")
+                revision_parameters.extend((source_base_revision, target_revision))
+            else:
+                select_expressions.append(column)
+        insert_mode = "INSERT OR IGNORE" if not update_columns else "INSERT"
+        sql = (
+            f"{insert_mode} INTO {table}(workspace_id,branch_id,{column_list}) "
+            f"SELECT workspace_id,?,{','.join(select_expressions)} FROM {table} "
+            "WHERE workspace_id=? AND branch_id=?"
+        )
+        if table == "journal_events":
+            sql += " ORDER BY event_id,version"
+        elif table == "scenario_assumptions":
+            sql += " ORDER BY scenario_id,option_id,assumption_id,version"
+        if update_columns:
+            updates = ",".join(f"{column}=excluded.{column}" for column in update_columns)
+            sql += f" ON CONFLICT(workspace_id,branch_id,{primary_key}) DO UPDATE SET {updates}"
+        before = connection.total_changes
+        connection.execute(
+            sql,
+            (target_branch_id, *revision_parameters, workspace_id, source_branch_id),
+        )
+        row_counts[table] = connection.total_changes - before
+
+    connection.execute(
+        "DELETE FROM entity_search WHERE workspace_id=? AND branch_id=?",
+        (workspace_id, target_branch_id),
+    )
+    before = connection.total_changes
+    connection.execute(
+        "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) "
+        "SELECT workspace_id,?,entity_id,label,properties FROM entity_search "
+        "WHERE workspace_id=? AND branch_id=?",
+        (target_branch_id, workspace_id, source_branch_id),
+    )
+    row_counts["entity_search"] = connection.total_changes - before
+    return row_counts
 
 
 class CommandGateway:
@@ -183,9 +291,16 @@ class CommandGateway:
                     ("scenario_claim_evidence", "scenario_id,claim_id,created_revision"),
                     ("scenario_source_evidence", "scenario_id,source_id,created_revision"),
                     ("scenario_assumptions", "scenario_id,option_id,assumption_id,version,subject_entity_id,predicate,object_value,assumption_action,predicate_cardinality,review_status,supersedes_version,created_revision,created_at"),
+                    ("extraction_batches", "batch_id,source_id,source_sha256,model,extractor_version,prompt_version,output_schema_version,created_revision,created_at"),
+                    ("extraction_candidates", "candidate_id,batch_id,kind,payload_json,review_status,canonical_record_type,canonical_record_id,created_revision,reviewed_revision"),
                     ("evidence", "evidence_id,source_id,anchor,quote,context_fingerprint,created_revision"),
+                    ("entity_evidence", "entity_id,evidence_id,created_revision"),
                 ):
-                    ordering = " ORDER BY event_id,version" if table == "journal_events" else ""
+                    ordering = {
+                        "journal_events": " ORDER BY event_id,version",
+                        "scenario_assumptions": " ORDER BY scenario_id,option_id,assumption_id,version",
+                        "extraction_candidates": " ORDER BY candidate_id",
+                    }.get(table, "")
                     connection.execute(
                         f"INSERT INTO {table}(workspace_id,branch_id,{columns}) "
                         f"SELECT workspace_id,?,{columns} FROM {table} WHERE workspace_id=? AND branch_id=?{ordering}",
@@ -449,6 +564,59 @@ class CommandGateway:
         payload: dict[str, Any],
         actor: str,
     ) -> tuple[dict[str, Any], str, bool]:
+        if command_type == "promote_branch":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot promote branches")
+            source_branch_id = _required_text(payload.get("source_branch_id"), "source_branch_id", 100)
+            if source_branch_id == branch_id:
+                raise ValidationError("A branch cannot be promoted into itself")
+            source_revision = payload.get("source_revision")
+            if type(source_revision) is not int or source_revision < 0:
+                raise ValidationError("source_revision must be a non-negative integer")
+            source_branch = connection.execute(
+                "SELECT parent_branch_id,parent_revision,base_revision,head_revision "
+                "FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, source_branch_id),
+            ).fetchone()
+            if not source_branch:
+                raise NotFoundError("Source branch does not exist in this workspace")
+            if source_branch["parent_branch_id"] != branch_id:
+                raise ValidationError("Only a direct child branch can be promoted into its parent")
+            parent_revision = source_branch["parent_revision"]
+            if parent_revision is None or source_branch["base_revision"] != parent_revision:
+                raise ConflictError("The source branch does not have a consistent parent snapshot")
+            target_branch = connection.execute(
+                "SELECT head_revision FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if target_branch is None:
+                raise NotFoundError("Target branch does not exist in this workspace")
+            if target_branch["head_revision"] != parent_revision:
+                raise ConflictError("The parent branch advanced after this scenario was created")
+            if source_branch["head_revision"] != source_revision:
+                raise ConflictError(
+                    f"Expected source revision {source_revision}; current revision is {source_branch['head_revision']}"
+                )
+            if source_revision <= source_branch["base_revision"]:
+                raise ValidationError("The source branch has no changes to promote")
+
+            copied_rows = _promote_branch_snapshot(
+                connection,
+                workspace_id,
+                branch_id,
+                source_branch_id,
+                source_branch["base_revision"],
+                revision,
+            )
+            return {
+                "target_branch_id": branch_id,
+                "source_branch_id": source_branch_id,
+                "source_base_revision": source_branch["base_revision"],
+                "source_revision": source_revision,
+                "source_revision_range": [source_branch["base_revision"] + 1, source_revision],
+                "copied_rows": copied_rows,
+            }, "branch.promoted", True
+
         if command_type == "create_entity":
             entity_id = _required_text(payload.get("entity_id") or str(uuid4()), "entity_id", 100)
             entity_type = _required_text(payload.get("entity_type"), "entity_type", 100)
@@ -723,10 +891,12 @@ class CommandGateway:
             object_value = _required_text(payload.get("object_value"), "object_value", 4000)
             assumption_action = payload.get("assumption_action")
             cardinality = payload.get("predicate_cardinality")
+            if not isinstance(assumption_action, str) or not isinstance(cardinality, str):
+                raise ValidationError("assumption_action and predicate_cardinality must be text values")
             if (assumption_action, cardinality) not in {("add", "multiple"), ("replace", "single")}:
                 raise ValidationError("Use add for a multiple-valued property or replace for a single-valued property")
             status = payload.get("review_status", "proposed" if actor.startswith("ai:") else "accepted")
-            if status not in {"proposed", "accepted"}:
+            if not isinstance(status, str) or status not in {"proposed", "accepted"}:
                 raise ValidationError("review_status must be proposed or accepted when setting an assumption")
             if actor.startswith("ai:") and status != "proposed":
                 raise ValidationError("AI actors may propose assumptions but cannot accept them")
@@ -737,7 +907,7 @@ class CommandGateway:
                 (workspace_id, branch_id, scenario_id, option_id, assumption_id),
             ).fetchone()
             if latest:
-                if not isinstance(expected_version, int) or expected_version != latest["version"]:
+                if isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version != latest["version"]:
                     raise ConflictError(f"Expected assumption version {expected_version}; current version is {latest['version']}")
                 version = latest["version"] + 1
                 supersedes_version = latest["version"]
@@ -776,7 +946,7 @@ class CommandGateway:
             assumption_id = _required_text(payload.get("assumption_id"), "assumption_id", 100)
             expected_version = payload.get("expected_version")
             status = payload.get("review_status")
-            if status not in {"accepted", "rejected"}:
+            if not isinstance(status, str) or status not in {"accepted", "rejected"}:
                 raise ValidationError("review_status must be accepted or rejected")
             if actor.startswith("ai:"):
                 raise ValidationError("AI actors cannot review assumptions")
@@ -787,7 +957,7 @@ class CommandGateway:
             ).fetchone()
             if not latest:
                 raise NotFoundError("Scenario assumption does not exist in this branch")
-            if not isinstance(expected_version, int) or expected_version != latest["version"]:
+            if isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version != latest["version"]:
                 raise ConflictError(f"Expected assumption version {expected_version}; current version is {latest['version']}")
             if latest["review_status"] == status:
                 return {
@@ -882,7 +1052,160 @@ class CommandGateway:
                 "VALUES(?,?,?,?,?,?,?,?)",
                 (workspace_id, branch_id, evidence_id, source_id, anchor, quote, fingerprint, revision),
             )
+            entity_id = payload.get("entity_id")
+            if entity_id is not None:
+                entity_id = _required_text(entity_id, "entity_id", 100)
+                entity = connection.execute(
+                    "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                    (workspace_id, branch_id, entity_id),
+                ).fetchone()
+                if not entity:
+                    raise NotFoundError("Evidence entity does not exist in this branch")
+                connection.execute(
+                    "INSERT INTO entity_evidence(workspace_id,branch_id,entity_id,evidence_id,created_revision) VALUES(?,?,?,?,?)",
+                    (workspace_id, branch_id, entity_id, evidence_id, revision),
+                )
             return {"evidence_id": evidence_id, "source_id": source_id}, "evidence.created", True
+
+        if command_type == "record_extraction_batch":
+            batch_id = _required_text(payload.get("batch_id"), "batch_id", 100)
+            source_id = _required_text(payload.get("source_id"), "source_id", 100)
+            source_sha256 = _required_text(payload.get("source_sha256"), "source_sha256", 64)
+            model = _required_text(payload.get("model"), "model", 200)
+            extractor_version = _required_text(payload.get("extractor_version"), "extractor_version", 100)
+            prompt_version = _required_text(payload.get("prompt_version"), "prompt_version", 100)
+            schema_version = payload.get("output_schema_version")
+            if type(schema_version) is not int or schema_version < 1:
+                raise ValidationError("output_schema_version must be a positive integer")
+            source = connection.execute(
+                "SELECT content,content_sha256 FROM sources WHERE workspace_id=? AND source_id=?",
+                (workspace_id, source_id),
+            ).fetchone()
+            if not source:
+                raise NotFoundError("Extraction source does not exist in this workspace")
+            if source["content_sha256"] != source_sha256:
+                raise ConflictError("The source content changed after extraction started")
+            candidates = payload.get("candidates")
+            if not isinstance(candidates, list) or len(candidates) > 80:
+                raise ValidationError("candidates must be a list of at most 80 proposals")
+            normalized_candidates = [
+                _validated_extraction_candidate(candidate, source["content"])
+                for candidate in candidates
+            ]
+            candidate_ids = [candidate[0] for candidate in normalized_candidates]
+            if len(candidate_ids) != len(set(candidate_ids)):
+                raise ValidationError("Extraction candidate ids must be unique")
+            now = _now()
+            connection.execute(
+                "INSERT INTO extraction_batches(workspace_id,branch_id,batch_id,source_id,source_sha256,model,"
+                "extractor_version,prompt_version,output_schema_version,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, batch_id, source_id, source_sha256, model,
+                 extractor_version, prompt_version, schema_version, revision, now),
+            )
+            connection.executemany(
+                "INSERT INTO extraction_candidates(workspace_id,branch_id,candidate_id,batch_id,kind,payload_json,"
+                "review_status,created_revision) VALUES(?,?,?,?,?,?,'proposed',?)",
+                [(workspace_id, branch_id, candidate_id, batch_id, kind, _json(data), revision)
+                 for candidate_id, kind, data in normalized_candidates],
+            )
+            return {
+                "batch_id": batch_id,
+                "source_id": source_id,
+                "candidate_count": len(normalized_candidates),
+                "proposed_count": len(normalized_candidates),
+            }, "extraction.batch_recorded", True
+
+        if command_type == "review_extraction_candidate":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot review extraction candidates")
+            candidate_id = _required_text(payload.get("candidate_id"), "candidate_id", 100)
+            decision = payload.get("review_status")
+            if not isinstance(decision, str) or decision not in {"accepted", "rejected"}:
+                raise ValidationError("review_status must be accepted or rejected")
+            candidate_row = connection.execute(
+                "SELECT c.batch_id,c.kind,c.payload_json,c.review_status,b.source_id,b.source_sha256 "
+                "FROM extraction_candidates c JOIN extraction_batches b ON b.workspace_id=c.workspace_id "
+                "AND b.branch_id=c.branch_id AND b.batch_id=c.batch_id "
+                "WHERE c.workspace_id=? AND c.branch_id=? AND c.candidate_id=?",
+                (workspace_id, branch_id, candidate_id),
+            ).fetchone()
+            if not candidate_row:
+                raise NotFoundError("Extraction candidate does not exist in this branch")
+            if candidate_row["review_status"] != "proposed":
+                raise ConflictError("Extraction candidate has already been reviewed")
+
+            canonical_type = None
+            canonical_id = None
+            if decision == "accepted":
+                candidate_data = json.loads(candidate_row["payload_json"])
+                source = connection.execute(
+                    "SELECT content,content_sha256 FROM sources WHERE workspace_id=? AND source_id=?",
+                    (workspace_id, candidate_row["source_id"]),
+                ).fetchone()
+                if not source or source["content_sha256"] != candidate_row["source_sha256"]:
+                    raise ConflictError("The source version linked to this candidate is unavailable")
+                quote = candidate_data["quote"]
+                start, end = candidate_data["source_start"], candidate_data["source_end"]
+                if source["content"][start:end] != quote:
+                    raise ConflictError("The source quote no longer matches its stored version")
+                corrections = payload.get("corrections", {})
+                if not isinstance(corrections, dict):
+                    raise ValidationError("corrections must be an object")
+                if candidate_row["kind"] == "entity":
+                    label = _required_text(corrections.get("label", candidate_data["label"]), "label", 200)
+                    entity_type = _required_text(corrections.get("entity_type", candidate_data["entity_type"]), "entity_type", 100)
+                    labels = connection.execute(
+                        "SELECT label FROM entities WHERE workspace_id=? AND branch_id=?",
+                        (workspace_id, branch_id),
+                    ).fetchall()
+                    if any(row["label"].casefold() == label.casefold() for row in labels):
+                        raise ConflictError("An entity with this label already exists on the branch")
+                    entity_result, _, _ = self._apply(
+                        connection, workspace_id, branch_id, revision, "create_entity",
+                        {"entity_type": entity_type, "label": label, "properties": {}}, actor,
+                    )
+                    canonical_type = "entity"
+                    canonical_id = entity_result["entity_id"]
+                    self._apply(
+                        connection, workspace_id, branch_id, revision, "add_evidence",
+                        {"source_id": candidate_row["source_id"], "anchor": f"chars:{start}:{end}",
+                         "quote": quote, "entity_id": canonical_id}, actor,
+                    )
+                else:
+                    subject_id = _required_text(payload.get("subject_entity_id"), "subject_entity_id", 100)
+                    predicate = _required_text(corrections.get("predicate", candidate_data["predicate"]), "predicate", 200)
+                    object_value = _required_text(corrections.get("object_value", candidate_data["object_value"]), "object_value", 4000)
+                    epistemic = payload.get("epistemic_status", "unknown")
+                    visibility = payload.get("visibility", "public")
+                    if not isinstance(epistemic, str) or epistemic not in {"unknown", "believed", "known", "contested"}:
+                        raise ValidationError("epistemic_status must be unknown, believed, known, or contested")
+                    if not isinstance(visibility, str) or visibility not in {"public", "actor_scoped", "author_only"}:
+                        raise ValidationError("visibility must be public, actor_scoped, or author_only")
+                    evidence_result, _, _ = self._apply(
+                        connection, workspace_id, branch_id, revision, "add_evidence",
+                        {"source_id": candidate_row["source_id"], "anchor": f"chars:{start}:{end}", "quote": quote}, actor,
+                    )
+                    claim_result, _, _ = self._apply(
+                        connection, workspace_id, branch_id, revision, "add_claim",
+                        {"subject_entity_id": subject_id, "predicate": predicate, "object_value": object_value,
+                         "epistemic_status": epistemic, "visibility": visibility, "review_status": "accepted",
+                         "evidence": [evidence_result["evidence_id"]]}, actor,
+                    )
+                    canonical_type = "claim"
+                    canonical_id = claim_result["claim_id"]
+
+            connection.execute(
+                "UPDATE extraction_candidates SET review_status=?,canonical_record_type=?,canonical_record_id=?,reviewed_revision=? "
+                "WHERE workspace_id=? AND branch_id=? AND candidate_id=?",
+                (decision, canonical_type, canonical_id, revision, workspace_id, branch_id, candidate_id),
+            )
+            return {
+                "candidate_id": candidate_id,
+                "review_status": decision,
+                "canonical_record_type": canonical_type,
+                "canonical_record_id": canonical_id,
+            }, f"extraction.candidate_{decision}", True
 
         if command_type in {"create_journal_event", "revise_journal_event"}:
             if actor.startswith("ai:"):
@@ -1094,6 +1417,39 @@ class CommandGateway:
             raise NotFoundError("Workspace does not exist")
         return [dict(row) for row in rows]
 
+    def list_extraction_batches(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
+        with self.db.lock:
+            branch = self.db.connection.execute(
+                "SELECT 1 FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not branch:
+                raise NotFoundError("Branch does not exist in this workspace")
+            batch_rows = self.db.connection.execute(
+                "SELECT b.batch_id,b.source_id,s.display_name AS source_name,b.source_sha256,b.model,"
+                "b.extractor_version,b.prompt_version,b.output_schema_version,b.created_revision,b.created_at "
+                "FROM extraction_batches b JOIN sources s ON s.workspace_id=b.workspace_id AND s.source_id=b.source_id "
+                "WHERE b.workspace_id=? AND b.branch_id=? ORDER BY b.created_revision DESC,b.batch_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+            candidate_rows = self.db.connection.execute(
+                "SELECT candidate_id,batch_id,kind,payload_json,review_status,canonical_record_type,"
+                "canonical_record_id,created_revision,reviewed_revision FROM extraction_candidates "
+                "WHERE workspace_id=? AND branch_id=? ORDER BY created_revision,candidate_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+        candidates_by_batch: dict[str, list[dict[str, Any]]] = {}
+        for row in candidate_rows:
+            candidate = dict(row)
+            candidate["payload"] = json.loads(candidate.pop("payload_json"))
+            candidates_by_batch.setdefault(candidate.pop("batch_id"), []).append(candidate)
+        batches = []
+        for row in batch_rows:
+            batch = dict(row)
+            batch["candidates"] = candidates_by_batch.get(batch["batch_id"], [])
+            batches.append(batch)
+        return batches
+
     def evaluate_rules(self, workspace_id: str, branch_id: str = "main") -> list[dict[str, Any]]:
         with self.db.lock:
             branch = self.db.connection.execute(
@@ -1275,7 +1631,7 @@ class CommandGateway:
     def get_source(self, workspace_id: str, source_id: str) -> dict[str, Any]:
         with self.db.lock:
             row = self.db.connection.execute(
-                "SELECT source_id,display_name,media_type,content,created_at "
+                "SELECT source_id,display_name,media_type,content,content_sha256,created_at "
                 "FROM sources WHERE workspace_id=? AND source_id=?",
                 (workspace_id, source_id),
             ).fetchone()

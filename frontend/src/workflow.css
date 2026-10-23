@@ -610,3 +610,167 @@
   width: 100%;
   margin-top: 8px;
 }
+
+.knowledge-toolbar {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.knowledge-tabs {
+  flex-wrap: wrap;
+}
+
+.knowledge-toolbar .search-box {
+  margin-left: auto;
+}
+
+.extraction-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.extraction-control-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.extraction-control-row .field-label,
+.extraction-review-fields .field-label {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  color: #aab6b2;
+  font-size: 9px;
+}
+
+.extraction-control-row select,
+.extraction-review-fields select {
+  min-width: 0;
+  height: 36px;
+  padding: 0 9px;
+  color: #e0e8e5;
+  background: #1a2224;
+  border: 1px solid #303a3b;
+  border-radius: 7px;
+  font-size: 10px;
+}
+
+.extraction-run {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.extraction-batch {
+  border-top: 1px solid #293234;
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.extraction-batch-heading,
+.extraction-candidate-title,
+.extraction-candidate-title > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.extraction-batch-heading strong {
+  display: block;
+  color: #dce5e1;
+  font-size: 10px;
+}
+
+.extraction-batch-heading small,
+.extraction-batch-heading > span,
+.extraction-candidate-meta,
+.extraction-canonical {
+  display: block;
+  margin-top: 4px;
+  color: #82908c;
+  font-size: 9px;
+}
+
+.extraction-candidate {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #2a3435;
+  border-radius: 9px;
+  background: #151b1d;
+}
+
+.extraction-candidate-title > div {
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.extraction-candidate-title strong {
+  min-width: 0;
+  color: #d5dfdb;
+  font-size: 10px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.extraction-status {
+  flex: 0 0 auto;
+  color: #d8bd7f;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.extraction-status.accepted,
+.extraction-canonical {
+  color: #a5d6ba;
+}
+
+.extraction-status.rejected {
+  color: #d99790;
+}
+
+.extraction-candidate-meta {
+  margin: 6px 0;
+}
+
+.extraction-candidate blockquote {
+  margin: 8px 0 10px;
+  padding: 9px 11px;
+  border-left: 2px solid #648b76;
+  border-radius: 0 6px 6px 0;
+  background: #1b2421;
+  color: #c2d1ca;
+  font-size: 10px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.extraction-review-fields {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.5fr) minmax(120px, .8fr) minmax(120px, .8fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.extraction-review-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 1050px) {
+  .extraction-control-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .extraction-run {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .extraction-review-fields {
+    grid-template-columns: 1fr;
+  }
+}

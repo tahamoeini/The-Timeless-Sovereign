@@ -118,7 +118,7 @@ class ScenarioEngineTests(unittest.TestCase):
         self.assertEqual(main_pause["rule_evaluations"][0]["evaluation"]["status"], "violated")
         self.assertEqual(branch_pause["rule_evaluations"][0]["evaluation"]["status"], "satisfied")
 
-    def test_unreviewed_ai_assumption_is_visible_but_not_applied(self):
+    def test_ai_assumptions_require_human_review_before_affecting_outcomes(self):
         result = self.command("ai-assumption", self.revision, "set_scenario_assumption", {
             "scenario_id": "funding-choice", "option_id": "pause", "assumption_id": "ai-funding",
             "subject_entity_id": "project", "predicate": "funding", "object_value": "suspended",
@@ -131,6 +131,19 @@ class ScenarioEngineTests(unittest.TestCase):
         self.assertEqual(pause["assumptions"][0]["review_status"], "proposed")
         self.assertEqual(evaluation["status"], "satisfied")
         self.assertEqual(evaluation["unreviewed_assumption_ids"], ["ai-funding"])
+        with self.assertRaises(ValidationError):
+            self.command("ai-review-assumption", self.revision, "review_scenario_assumption", {
+                "scenario_id": "funding-choice", "option_id": "pause", "assumption_id": "ai-funding",
+                "expected_version": 1, "review_status": "accepted",
+            }, actor="ai:planner")
+        accepted = self.command("user-review-assumption", self.revision, "review_scenario_assumption", {
+            "scenario_id": "funding-choice", "option_id": "pause", "assumption_id": "ai-funding",
+            "expected_version": 1, "review_status": "accepted",
+        })
+        self.revision = accepted["revision"]
+        pause = next(option for option in self.scenario()["options"] if option["label"] == "Pause")
+        self.assertEqual(pause["assumptions"][0]["version"], 2)
+        self.assertEqual(pause["rule_evaluations"][0]["evaluation"]["status"], "violated")
 
     def test_stale_assumption_version_and_invalid_property_action_are_rejected(self):
         self.assumption()
@@ -163,7 +176,6 @@ class ScenarioEngineTests(unittest.TestCase):
             self.database.connection.execute(
                 "DELETE FROM scenario_assumptions WHERE assumption_id='funding-state'"
             )
-
 
 if __name__ == "__main__":
     unittest.main()
