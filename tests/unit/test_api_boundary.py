@@ -423,6 +423,16 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(self.ollama.structured_calls, [])
         self.assertEqual(current.json()["revision"], revision)
 
+    def test_temporal_query_requires_a_model_only_when_eligible_memory_exists(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "past", "the bronze key")
+        revision = self.add_temporal_belief(revision, "past")
+
+        response = self.query_temporal_memory(revision, model=None)
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.ollama.structured_calls, [])
+
     def test_temporal_query_rejects_stale_revision_before_provider_call(self) -> None:
         revision = self.create_story_conversation()
 
