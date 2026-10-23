@@ -1,6 +1,7 @@
 # LKE Documentation
 
-- [Story Studio enhancement plan](STORY_STUDIO_ENHANCEMENT_PLAN.md): dated competitor review, local gaps, priorities and acceptance criteria (proposed, documentation only).
+- [Story Studio enhancement plan](STORY_STUDIO_ENHANCEMENT_PLAN.md): user-approved, dated competitor review, implementation priorities and acceptance criteria (implementation in progress).
+- [RPG implementation guide](agents/RPG_IMPLEMENTATION_GUIDE.md): current implementation boundary, canonical write rules, work sequence and evidence gates for coding agents.
 - [Agent workflow index](../skills.md) and [repository guidance](../AGENTS.md): research, specification, validation and handoff instructions.
 - [Competitor research log](agents/COMPETITOR_RESEARCH_LOG.md): dated observations, fit, limits and current project evidence.
 

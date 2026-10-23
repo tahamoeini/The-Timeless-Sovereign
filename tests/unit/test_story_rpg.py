@@ -3,6 +3,7 @@
 import unittest
 
 from lke.core import CommandGateway, ConflictError, Database, ValidationError
+from lke.api.app import _story_adventure_context, _story_messages
 
 
 class StoryRpgTests(unittest.TestCase):
@@ -18,6 +19,8 @@ class StoryRpgTests(unittest.TestCase):
             "world_id": "world", "name": "The Harbor", "description": "A small coastal fantasy setting.",
             "template_key": "fantasy", "content": {
                 "starting_location": "Old Harbor",
+                "public_lore": "A foggy fishing town faces a cold sea.",
+                "author_notes": "The harbor master is secretly a ghost.",
                 "stats": {"might": 2, "agility": 1},
                 "trackers": {"health": {"value": 8, "max": 10}},
             },
@@ -56,7 +59,7 @@ class StoryRpgTests(unittest.TestCase):
 
     def test_world_revision_is_pinned_and_adventures_are_isolated(self):
         revised = self.command("revise-world", self.main_revision, "revise_story_world", {
-            "world_id": "world", "expected_world_version": 1, "name": "The Harbor",
+            "world_id": "world", "expected_world_version": 1, "name": "Harbor After Winter",
             "description": "A revised setting.", "template_key": "fantasy",
             "content": {"starting_location": "Cliff Road", "stats": {"might": 3}},
         })
@@ -69,6 +72,12 @@ class StoryRpgTests(unittest.TestCase):
         self.assertEqual(second_state["adventure"]["world_version"], 2)
         self.assertEqual(first_state["sheet"]["current_location"], "Old Harbor")
         self.assertEqual(second_state["sheet"]["current_location"], "Cliff Road")
+        adventure_names = {
+            row["adventure_id"]: row["world_name"]
+            for row in self.gateway.list_story_adventures(self.workspace_id)
+        }
+        self.assertEqual(adventure_names["adventure-a"], "The Harbor")
+        self.assertEqual(adventure_names["adventure-b"], "Harbor After Winter")
 
         self.command("first-location", self.adventure_revision, "update_rpg_sheet", {
             "adventure_id": "adventure-a", "current_location": "Under the bridge",
@@ -132,6 +141,71 @@ class StoryRpgTests(unittest.TestCase):
         state = self.gateway.get_rpg_state(self.workspace_id, "adventure-a", "adventure-a")
         self.assertEqual(state["sheet"]["trackers"]["health"]["value"], 8)
         self.assertEqual(state["proposals"][0]["review_status"], "rejected")
+
+    def test_proposal_cannot_overwrite_a_sheet_changed_after_proposal(self):
+        proposal = self.command("proposal-before-sheet-change", self.adventure_revision, "propose_rpg_state", {
+            "adventure_id": "adventure-a",
+            "changes": [{"operation": "tracker_delta", "tracker_id": "health", "delta": -2}],
+        }, branch="adventure-a", actor="ai:local")
+        changed = self.command("sheet-change-after-proposal", proposal["revision"], "update_rpg_sheet", {
+            "adventure_id": "adventure-a", "trackers": {"health": {"value": 6, "max": 10}},
+        }, branch="adventure-a")
+
+        with self.assertRaisesRegex(ConflictError, "proposal is stale"):
+            self.command("accept-stale-proposal", changed["revision"], "review_rpg_state_proposal", {
+                "proposal_id": proposal["proposal_id"], "review_status": "accepted",
+            }, branch="adventure-a")
+
+        state = self.gateway.get_rpg_state(self.workspace_id, "adventure-a", "adventure-a")
+        self.assertEqual(state["sheet"]["trackers"]["health"]["value"], 6)
+        self.assertEqual(state["proposals"][0]["review_status"], "proposed")
+        self.assertEqual(self.gateway.current_revision(self.workspace_id, "adventure-a"), changed["revision"])
+
+    def test_rpg_state_branches_and_promotes_with_revision_checks(self):
+        self.gateway.create_branch(
+            self.workspace_id, "adventure-a", "rpg-alternate", self.adventure_revision, "branch-rpg-alternate"
+        )
+        self.command("alternate-location", self.adventure_revision, "update_rpg_sheet", {
+            "adventure_id": "adventure-a", "current_location": "The northern road",
+        }, branch="rpg-alternate")
+        self.assertEqual(
+            self.gateway.get_rpg_state(self.workspace_id, "adventure-a", "adventure-a")["sheet"]["current_location"],
+            "Old Harbor",
+        )
+        alternate_revision = self.gateway.current_revision(self.workspace_id, "rpg-alternate")
+        self.command("promote-rpg", self.adventure_revision, "promote_branch", {
+            "source_branch_id": "rpg-alternate", "source_revision": alternate_revision,
+        }, branch="adventure-a")
+        self.assertEqual(
+            self.gateway.get_rpg_state(self.workspace_id, "adventure-a", "adventure-a")["sheet"]["current_location"],
+            "The northern road",
+        )
+
+    def test_story_context_uses_only_public_world_data_and_approved_rpg_state(self):
+        self.command("pending-context", self.adventure_revision, "propose_rpg_state", {
+            "adventure_id": "adventure-a",
+            "changes": [{"operation": "set_location", "location": "An unreviewed hidden chamber"}],
+        }, branch="adventure-a", actor="ai:local")
+        story_context = _story_adventure_context(
+            self.gateway, self.workspace_id, "adventure-a", "conversation-adventure-a"
+        )
+        self.assertEqual(story_context["public_lore"], "A foggy fishing town faces a cold sea.")
+        self.assertNotIn("author_notes", story_context)
+        self.assertNotIn("secretly a ghost", str(story_context))
+        self.assertNotIn("unreviewed hidden chamber", str(story_context))
+
+        conversation = self.gateway.get_conversation(
+            self.workspace_id, "adventure-a", "conversation-adventure-a"
+        )
+        context = {
+            "actor": {"entity_id": "hero", "label": "Mira", "entity_type": "character"},
+            "as_of_narrative_order": 0,
+            "included": [], "excluded": [], "manifest_id": "context-test", "base_revision": self.adventure_revision,
+            "story": story_context,
+        }
+        messages = _story_messages(conversation, context, "Look around.")
+        self.assertIn("A foggy fishing town", messages[0]["content"])
+        self.assertNotIn("secretly a ghost", messages[0]["content"])
 
 
 if __name__ == "__main__":

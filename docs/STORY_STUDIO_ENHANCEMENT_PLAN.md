@@ -1,10 +1,14 @@
 # Story Studio enhancement plan
 
-Date: 2026-10-23. Status: proposed; documentation only. No implementation authorization is implied.
+Date: 2026-10-23. Status: approved for implementation by the user; implementation in progress.
 
 ## Recommendation
 
-Build a coherent authoring and play experience on the existing LKE core: improve continuity first, then add reusable worlds and guided sessions, then illustrated publishing. Do not replace canonical storage with a memory vendor or make video generation a release dependency. Finish existing integrity and desktop acceptance gates alongside this work.
+Build an RPG-first authoring and play experience on the existing LKE core. The main path is create or choose a world, build a protagonist, then play or resume an isolated adventure. Establish world/adventure lifecycle and the deterministic RPG loop before adding deeper continuity and optional simulation; add illustrated publishing after play is stable. Do not replace canonical storage with a memory vendor or make video generation a release dependency. Finish existing integrity and desktop acceptance gates alongside this work.
+
+## Implementation update
+
+The user approved this plan for implementation on 2026-10-23. The first vertical slice is in place on schema v10: reusable world versions, isolated adventures pinned to a world version, character stats and trackers, deterministic d20 checks, human-reviewed tracker/location proposals, and a simple world/adventure setup and RPG panel. The implementation preserves SQLite as authority and uses the existing command gateway. Remaining plan items are tracked in [the RPG implementation guide](agents/RPG_IMPLEMENTATION_GUIDE.md) and [acceptance matrix](ACCEPTANCE_MATRIX.md); this is partial progress, not completion of the whole plan.
 
 ## Evidence and limits
 
@@ -39,7 +43,7 @@ ContextCompiler currently walks accepted claims in narrative order, checks aware
 | P: reusable local world library and separate adventures | Workspaces/branches exist; no world-template and independent-session onboarding flow is evidenced | Versioned world packages and separate adventures; make provenance, migration and import preview visible | P1 |
 | P: community discovery and creator identity | No public account or creator marketplace is in the single-user product baseline | Defer public publishing/community; reuse local tags, search and explicit world ownership only where useful | Deferred |
 | P: local provider choice and image controls | Local Ollama exists for text; no image generation adapter exists | Retain model isolation, show model capability and context limits; make visual providers optional and expose cost/availability before jobs | P2 |
-| P: advertised stats/checks/trackers/map/NPCs | Deterministic rules and graph exist; game-session mechanics incomplete | Explore optional deterministic checks and visible trackers; save changes as reviewed, revisioned proposals | P2 discovery |
+| P: advertised stats/checks/trackers/map/NPCs | RPG session state and checks were absent before this implementation | Ship the built-in visible d20 rule and trackers; add reviewed state, NPC and map suggestions with explicit limits | P1 core, then P2 |
 
 ## Work packages and acceptance
 
@@ -47,39 +51,41 @@ ContextCompiler currently walks accepted claims in narrative order, checks aware
 
 Create a documented golden evaluation set before tuning retrieval: a secret known to only one NPC, future knowledge, a corrected belief, two conflicting accounts, a branch divergence, a long Persian conversation, and an empty-memory question. The repository already has relevant unit/API/browser acceptance evidence, but no fixed bilingual retrieval corpus or numerical baseline; preserve and extend that evidence rather than duplicate it. Record model, prompt version, source revision, latency and token estimates. Acceptance: every case has expected permitted facts, forbidden facts, and an inspectable context manifest. Zero forbidden-fact inclusions in deterministic retrieval fixtures is a release gate; live-model prose leakage is measured separately and cannot be claimed solved by retrieval tests alone.
 
-### E1 — Memory selection and lifecycle (P1, medium/large)
+### E1 — World and adventure lifecycle (P1, medium)
 
-Apply workspace, branch, time, review and actor permissions before ranking. Combine lexical relevance, optionally local embeddings, scene relevance, recency and user pins; never let relevance override access. Reserve context for hard rules and current scene before summaries. Add an inspector showing included/excluded records, reason, source, revision, score and budget. Summaries are rebuildable projections with source spans, coverage and invalidation rules. Separate historical record retention from retrieval suppression; corrections supersede claims without erasing provenance. A stale summary must be rebuilt or omitted.
+Keep world and adventure libraries distinct. Offer a short create-world path from a template, reviewed AI draft, or blank world; guide the user through protagonist setup and final adventure review. Pin an immutable world version to a separately isolated adventure. Preserve existing conversations as unbound legacy stories. Add versioned `.lke-world` and `.lke-adventure` packages with provenance, bounded parsing, safe paths, compatibility checks, duplicate-by-default behavior, conflict preview, and explicit replace action. Keep the full backup and restore path.
 
-Acceptance: relevant late records survive a tight budget; corrections invalidate dependent summaries; secrets remain inaccessible through summaries, caches and semantic search; switching model preserves the same authorized canon. Compare retrieval precision/recall, contradiction rate, context size and latency against E0. Numeric performance targets follow measured local hardware baselines, not vendor marketing.
+Acceptance: two adventures from one world cannot mutate one another; a new world revision does not alter a started adventure; import reports duplicate IDs and unsupported versions before commit; traversal/path attacks are rejected; backup/restore preserves both histories and assets; a new user reaches a first scene without using the knowledge graph.
 
-### E2 — Character bible and scene continuity (P1, large)
+### E2 — Playable RPG loop (P1, large)
 
-Add proposed contracts for identity, motivations, relationship stance, speech register, appearance references, bounded voice examples and current scene state. Keep stable traits, changing beliefs and author preferences separate. Persian requirements include natural dialogue, moderate pacing, RTL/Vazirmatn, and user control of protagonist speech and consequential actions. Generated events and state changes enter a review queue with source turn, before/after values, confidence and conflicts. Unknown preconditions remain unknown.
+Complete character setup, visible stats and trackers, the built-in d20 check, and a clear transcript/composer flow. The gateway calculates `d20 + current stat modifier` against a visible target and stores the inputs and outcome; a provider only narrates the result. Add edit, retry, delete and stop controls for turns with revision-safe history and cancellation that cannot save partial output. Generated changes to trackers, quests, locations, relationships and NPC profiles enter a compact review queue. The player can edit, accept selected changes, or reject them. Only deterministic consequences of approved rules may update automatically.
 
-Acceptance: reject a delta without changing canon; accept it through one auditable command transaction; stale-revision acceptance fails safely; an NPC cannot acquire a secret from another scene; a style example cannot override world rules or user agency. Judge voice and pacing with a human rubric and live-model samples, not keyword checks.
+Acceptance: seeded checks produce exact results; accepted proposals commit through one audited transaction; stale proposals, rejected changes and provider failures leave canonical state and saved prose intact; an NPC cannot acquire a secret from another actor; the user retains control of protagonist speech and consequential actions.
 
-### E3 — World library and guided session setup (P1, medium)
+### E3 — Continuity and memory lifecycle (P1, large)
 
-Offer create-world, resume-session, and start-from-template paths. A world template contains reviewed lore, character profiles, optional rules and opening-scene suggestions. An adventure references an immutable template version and evolves independently, with one clear way to return to its world and its own save. Preview imports, schema/version compatibility, provenance, collisions and untrusted instructions before committing. Allow local tags/search/sort and explicit session separation. Do not treat a branch as a replacement for a separately isolated workspace.
+Add the four Memories views: user-authored Notes with an on/off context switch, reviewable event memories, a rebuildable current Situation, and editable Open Threads. Add NPC profiles for identity, appearance, voice, motivations, relationships, actor-scoped knowledge, trackers, memories and current goals. Require an explicit choice to match a name to an existing NPC, link an alias, or create a new NPC. Apply workspace, branch, actor, review, visibility and time permissions before relevance ranking. Extend the existing manifest and show included/excluded context, source, revision and reason. Retain history; bound retrieval instead of deleting old records. Summaries are rebuildable projections with source spans and invalidation rules.
 
-Acceptance: two adventures from one template cannot mutate each other; export/import retains IDs or reports an explicit remap; unsupported versions and malicious paths are rejected; reopen and full backup/restore preserve both sessions. A new user can reach a first scene without understanding the knowledge graph.
+Acceptance: relevant late records survive a tight budget; stale summaries rebuild or are omitted; secret, future, private, unreviewed and other-actor facts stay out of every context path, including summaries; corrections retain provenance; switching model preserves the same authorized canon. Compare retrieval quality, contradiction rate, context size and latency against E0.
 
-### E4 — Storyboard and publishing (P2, large)
+### E4 — Exploration and bounded simulation (P2, medium/uncertain)
 
-Create an approved outline, editable scene/page cards, a reading view and local print/export. Images attach to page and character revision, with prompt, provider/model, reference asset, generation settings, license notes and cost metadata. Support uploaded art before requiring image generation. Regenerate one asset without rewriting other pages or canon. Narration is optional, with a language capability check, transcript and playback controls. Never promise Persian voice support before testing an actual adapter.
+Add optional maps whose generated places stay suggestions until reviewed. A player-selected travel action changes the current location through the gateway. Off-screen NPC simulation is opt-in and off by default; when enabled, run every five completed turns for at most two NPCs. Route proposed changes to goals, activities, whereabouts and memories through the same review queue. Do not run unattended simulations or advance time without explicit user intent.
 
-Acceptance: mixed Persian/English text and punctuation render correctly in reader and exported pages; a single-page edit preserves other assets; secrets/prompts/context are excluded from public artifacts by default; export preview lists exactly what leaves the workspace. Cancellation and provider failure leave the manuscript intact. Public hosting is separate, explicitly chosen scope.
+Acceptance: suggested locations do not become canon before review; only player-selected travel updates location; disabled simulation makes no provider call or write; enabled simulation respects turn/NPC limits and cannot bypass actor knowledge or proposal review.
 
-### E5 — Optional mechanics and richer media (P3, large/uncertain)
+### E5 — Storyboard and publishing (P2, large)
 
-The MNO UI inspection found settings and library patterns but did not verify an actual game. Before borrowing any mechanic, run a clearly disposable adventure and inspect character creation, checks, tracker persistence, save/load, map meaning and failure recovery. If adopted, record ruleset version, roll inputs/results, state deltas and review policy; maps must distinguish illustrative geography from canonical locations. Video, inpainting and outpainting follow E4 and require per-job budgets, cancellation, retry limits and asset lineage. Defer public communities and unrestricted autonomous NPC simulation.
+After the playable RPG loop is stable, create an approved outline, editable scene/page cards, a reading view and local print/export. Images attach to page and character revisions, with prompt, provider/model, reference asset, generation settings, license notes and cost metadata. Support uploaded art before requiring image generation. Regenerate one asset without rewriting other pages or canon. Narration is optional and requires a tested language capability, transcript and playback controls. Defer video, public hosting, public catalogs and community features.
+
+Acceptance: mixed Persian/English text and punctuation render correctly in reader and exported pages; a single-page edit preserves other assets; secrets, prompts and context are excluded from shared artifacts by default; export preview lists exactly what leaves the workspace; cancellation and provider failure leave the manuscript intact.
 
 ## Sequence, dependencies and decision gates
 
-E0 → E1 and E2 → E3 → E4 → E5. E3 discovery can happen earlier; full template serialization depends on stable E2 contracts. Relative effort labels are planning estimates, not delivery dates. Release hardening from ACCEPTANCE_MATRIX.md remains a parallel prerequisite, especially live Ollama, desktop packaging, browser workflows and restore drills.
+E0 → E1 → E2 → E3 → E4 → E5. Release hardening from ACCEPTANCE_MATRIX.md remains a parallel prerequisite, especially live Ollama, desktop packaging, browser workflows, import/export drills and backup/restore.
 
-Before each implementation slice, write the smallest end-to-end contract, migration/rollback plan, acceptance fixture, privacy boundary and affected modules. Likely owners: retrieval/context for E1; core commands plus narrative/provider contracts for E2; source/backup and UI for E3; new asset adapter and publishing UI for E4. These are suggested boundaries, not code instructions or approved schemas.
+Before each implementation slice, write the smallest end-to-end contract, migration/rollback plan, acceptance fixture, privacy boundary and affected modules. Likely owners: workspace/library UI and package adapter for E1; gateway and turn/provider contracts for E2; retrieval/context plus NPC records for E3; simulation and map proposal flow for E4; new asset adapter and publishing UI for E5. These are suggested boundaries, not a reason to bypass the existing gateway or acceptance gates.
 
 Decide after evidence: local embedding model and multilingual quality; profile versioning; scene-delta review granularity; world-package format; image/TTS adapter availability and licenses. Supermemory now advertises a local runtime, so evaluate both that and a small independently built retrieval projection on the same fixtures. Check the exact license, supported Windows packaging, offline network behavior, query/inference cost, latency, data export, forget versus erase semantics, recovery, and whether source citations survive extraction. Do not promote inferred memories automatically. Canonical SQLite and the command gateway remain authoritative whichever option wins.
 

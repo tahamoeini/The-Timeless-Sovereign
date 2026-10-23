@@ -1,11 +1,12 @@
 """Migration checks for upgrading existing workspace databases."""
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from lke.core import CommandGateway, Database
-from lke.core.database import _SCHEMA_V7
+from lke.core.database import SCHEMA_VERSION, _SCHEMA_V7
 
 
 class DatabaseMigrationTests(unittest.TestCase):
@@ -57,7 +58,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence", "external_exchanges", "story_worlds", "story_world_versions", "story_adventures", "rpg_sheets", "rpg_checks", "rpg_state_proposals"} <= tables)
 
     def test_v2_database_upgrades_to_journal_and_rule_schemas(self) -> None:
@@ -84,7 +85,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIsNotNone(table)
         self.assertIsNotNone(rules)
 
@@ -108,7 +109,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIsNotNone(table)
 
     def test_v4_database_upgrades_to_scenario_schema(self) -> None:
@@ -133,7 +134,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue({"scenarios", "scenario_options", "scenario_assumptions", "scenario_claim_evidence", "scenario_source_evidence"} <= tables)
 
     def test_v5_database_upgrades_to_source_extraction_schema(self) -> None:
@@ -157,7 +158,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue({"extraction_batches", "extraction_candidates", "entity_evidence"} <= tables)
 
     def test_v6_database_upgrades_to_external_exchange_schema(self) -> None:
@@ -177,7 +178,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIsNotNone(exchange_table)
 
     def test_v7_database_backfills_known_transcript_end(self) -> None:
@@ -209,8 +210,36 @@ class DatabaseMigrationTests(unittest.TestCase):
             ).fetchone()
             upgraded.close()
 
-        self.assertEqual(version, 9)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(tuple(migrated), (0, 1, 1))
+
+    def test_v9_world_versions_gain_a_pinned_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "knowledge.sqlite3"
+            database = Database(database_path)
+            gateway = CommandGateway(database)
+            gateway.create_workspace("Migration", "world-migration")
+            gateway.execute(
+                workspace_id="world-migration", idempotency_key="world-migration-create", expected_revision=0,
+                command_type="create_story_world",
+                payload={"world_id": "harbor", "name": "Old Harbor", "template_key": "blank", "content": {}},
+                reason="Create migration fixture",
+            )
+            database.connection.execute("ALTER TABLE story_world_versions DROP COLUMN name")
+            database.connection.execute("DELETE FROM schema_migrations WHERE version=10")
+            database.close()
+
+            upgraded = Database(database_path)
+            version_name = upgraded.connection.execute(
+                "SELECT name FROM story_world_versions WHERE world_id='harbor' AND version=1"
+            ).fetchone()["name"]
+            with self.assertRaises(sqlite3.IntegrityError):
+                upgraded.connection.execute(
+                    "UPDATE story_world_versions SET name='Changed' WHERE world_id='harbor' AND version=1"
+                )
+            upgraded.close()
+
+        self.assertEqual(version_name, "Old Harbor")
 
 
 if __name__ == "__main__":

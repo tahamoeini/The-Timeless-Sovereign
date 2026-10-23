@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from lke.core import CommandGateway, Database
+from lke.core.database import SCHEMA_VERSION
 from lke.ops.backup import BackupError, create_backup, restore_backup, restore_backup_into_database
 
 
@@ -36,7 +37,7 @@ class BackupRestoreTests(unittest.TestCase):
 
             manifest = restore_backup_into_database(active, backup_path)
 
-            self.assertEqual(manifest["schema_version"], 8)
+            self.assertEqual(manifest["schema_version"], SCHEMA_VERSION)
             self.assertEqual([item["workspace_id"] for item in active_gateway.list_workspaces()], ["restored-workspace"])
             self.assertEqual(active_gateway.list_entities("restored-workspace")[0]["label"], "Aria")
             self.assertEqual(active_gateway.current_revision("restored-workspace"), 1)

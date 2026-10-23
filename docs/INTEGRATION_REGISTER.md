@@ -4,8 +4,8 @@ Frameworks and sibling projects are candidates until their actual code, interfac
 
 | Candidate | Intended role | Current decision | Evidence still required |
 |---|---|---|---|
-| SQLite + FTS5 | Canonical storage and text search | In use through schema v8; story, Journal, scenario, extraction, exchange, backup, and search-projection recovery tests pass | Scale and separate-device recovery tests |
-| FastAPI | Local application API | Authenticated loopback adapter; source, Journal, story, extraction, scenario, exchange, backup, restore, and search-projection recovery routes have API tests | Packaged Tauri token-channel end-to-end test |
+| SQLite + FTS5 | Canonical storage and text search | In use through schema v10; story worlds, pinned adventures, RPG sheets, deterministic checks, and reviewed proposals use canonical SQLite rows | RPG route/browser acceptance, scale, and separate-device recovery tests |
+| FastAPI | Local application API | Authenticated loopback adapter; source, Journal, story, extraction, scenario, exchange, backup, restore, and search-projection routes are tested; RPG routes are added | RPG route tests in a socket-enabled environment; packaged Tauri token-channel end-to-end test |
 | React + TypeScript | Desktop interface | Selected by baseline | Build and accessibility validation |
 | Tauri 2 | Windows shell and sidecar | Shell scaffold; standalone sidecar built and token-smoke-tested | Compile GUI host, clean-machine package, lifecycle test |
 | Ollama | Local model runtime | Loopback model discovery/chat adapter implemented; live service not available in validation environment | Hardware, real-model behavior, Persian/English benchmark |

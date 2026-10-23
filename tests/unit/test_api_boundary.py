@@ -311,6 +311,70 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(conversation.status_code, 200, conversation.text)
         return conversation.json()["revision"]
 
+    def test_world_adventure_and_d20_api_flow_is_revisioned_and_idempotent(self) -> None:
+        created_workspace = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "rpg-api", "name": "RPG API"},
+        )
+        self.assertEqual(created_workspace.status_code, 201)
+        hero = self.request(
+            "POST", "/api/v1/workspaces/rpg-api/commands", headers=self.headers,
+            json={
+                "branch_id": "main", "expected_revision": 0, "idempotency_key": "rpg-api-hero",
+                "command_type": "create_entity", "reason": "Create the RPG protagonist",
+                "payload": {"entity_id": "hero", "entity_type": "character", "label": "Mira"},
+            },
+        )
+        self.assertEqual(hero.status_code, 200, hero.text)
+        world = self.request(
+            "POST", "/api/v1/workspaces/rpg-api/story/worlds", headers=self.headers,
+            json={
+                "expected_revision": 1, "idempotency_key": "rpg-api-world", "name": "Harbor",
+                "description": "A coastal town.", "template_key": "fantasy",
+                "content": {"public_lore": "Fog covers the sea.", "stats": {"might": 2},
+                            "trackers": {"health": {"value": 8, "max": 10}}},
+            },
+        )
+        self.assertEqual(world.status_code, 201, world.text)
+        world_id = world.json()["world_id"]
+        adventure = self.request(
+            "POST", "/api/v1/workspaces/rpg-api/story/adventures", headers=self.headers,
+            json={
+                "expected_revision": 2, "idempotency_key": "rpg-api-start", "adventure_id": "adventure-api",
+                "world_id": world_id, "world_version": 1, "conversation_id": "conversation-api",
+                "name": "Into the Fog", "actor_entity_id": "hero",
+            },
+        )
+        self.assertEqual(adventure.status_code, 201, adventure.text)
+        branch_id = adventure.json()["branch_id"]
+        self.assertEqual(branch_id, "adventure-api")
+        state = self.request(
+            "GET", f"/api/v1/workspaces/rpg-api/story/adventures/adventure-api/rpg?branch_id={branch_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(state.json()["sheet"]["stats"], {"might": 2})
+
+        check_body = {
+            "branch_id": branch_id, "expected_revision": adventure.json()["revision"],
+            "idempotency_key": "rpg-api-check", "stat_name": "might", "target": 1,
+        }
+        check = self.request(
+            "POST", "/api/v1/workspaces/rpg-api/story/adventures/adventure-api/checks",
+            headers=self.headers, json=check_body,
+        )
+        self.assertEqual(check.status_code, 200, check.text)
+        recorded = check.json()
+        self.assertEqual(recorded["total"], recorded["die_roll"] + 2)
+        self.assertEqual(recorded["outcome"], "success")
+        replay = self.request(
+            "POST", "/api/v1/workspaces/rpg-api/story/adventures/adventure-api/checks",
+            headers=self.headers, json=check_body,
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(replay.json()["die_roll"], recorded["die_roll"])
+
     def add_temporal_claim(
         self,
         revision: int,

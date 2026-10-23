@@ -515,7 +515,7 @@ export default function App() {
               workspaceId={workspaceId} branchId={branchId} revision={revision} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review} onExtract={extractSource} onCommit={commitDomainCommand}
             />}
-            {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} mainRevision={branches.find((item) => item.branch_id === "main")?.head_revision ?? 0} busy={busy} onNavigate={setPage} onSelectBranch={setBranchId} onCommit={commitStoryCommand} onMainCommit={commitMainCommand} onCreateAdventure={createStoryAdventure} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
+            {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onSelectBranch={setBranchId} onCommit={commitStoryCommand} onMainCommit={commitMainCommand} onCreateAdventure={createStoryAdventure} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
             {page === "journal" && <JournalPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
             {page === "scenario" && <ScenarioPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onPromote={promoteScenarioBranch} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
           </>}
@@ -1081,13 +1081,12 @@ const STORY_WORLD_TEMPLATES = {
   blank: { label: "Blank", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 } }, starting_location: "" } },
 } as const;
 
-function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevision, busy, onNavigate, onSelectBranch, onCommit, onMainCommit, onCreateAdventure, onRevisionChange, onRefresh }: {
+function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, onNavigate, onSelectBranch, onCommit, onMainCommit, onCreateAdventure, onRevisionChange, onRefresh }: {
   entities: Entity[];
   claims: Claim[];
   workspaceId: string;
   branchId: string;
   revision: number;
-  mainRevision: number;
   busy: boolean;
   onNavigate: (page: Page) => void;
   onSelectBranch: (branchId: string) => void;
@@ -1125,13 +1124,18 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
   const [mainCharacters, setMainCharacters] = useState<Entity[]>([]);
   const [adventureHeroId, setAdventureHeroId] = useState("");
   const [selectedWorldId, setSelectedWorldId] = useState("");
+  const [selectedWorldDetail, setSelectedWorldDetail] = useState<{ world_id: string; name: string; latest_version: number; versions: { version: number; description: string; template_key: string; content: Record<string, unknown> }[] } | null>(null);
   const [worldName, setWorldName] = useState("");
   const [worldPremise, setWorldPremise] = useState("");
+  const [editWorldName, setEditWorldName] = useState("");
+  const [editWorldDescription, setEditWorldDescription] = useState("");
+  const [editWorldPremise, setEditWorldPremise] = useState("");
   const [worldTemplate, setWorldTemplate] = useState("fantasy");
   const [adventureName, setAdventureName] = useState("");
   const [heroName, setHeroName] = useState("");
   const [libraryError, setLibraryError] = useState("");
   const [rpgState, setRpgState] = useState<RpgState | null>(null);
+  const [editableStats, setEditableStats] = useState<Record<string, number>>({});
   const [rpgError, setRpgError] = useState("");
   const [checkStat, setCheckStat] = useState("");
   const [checkTarget, setCheckTarget] = useState(12);
@@ -1139,6 +1143,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
   const [proposalTracker, setProposalTracker] = useState("health");
   const [proposalDelta, setProposalDelta] = useState(-1);
   const [proposalLocation, setProposalLocation] = useState("");
+  const [editingProposalId, setEditingProposalId] = useState("");
+  const [editedProposalChanges, setEditedProposalChanges] = useState<RpgState["proposals"][number]["changes"]>([]);
   const storySelectionRequest = useRef(0);
   const pendingStoryRequest = useRef<{ fingerprint: string; body: string } | null>(null);
   const memoryQueryRequest = useRef(0);
@@ -1166,6 +1172,26 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
     });
     return () => { active = false; };
   }, [workspaceId]);
+  useEffect(() => {
+    if (!selectedWorldId) {
+      setSelectedWorldDetail(null);
+      return;
+    }
+    let active = true;
+    request<{ world_id: string; name: string; latest_version: number; versions: { version: number; description: string; template_key: string; content: Record<string, unknown> }[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/${encodeURIComponent(selectedWorldId)}`,
+    ).then((detail) => {
+      if (!active) return;
+      const updatedLatest = detail.versions.find((item) => item.version === detail.latest_version);
+      setSelectedWorldDetail(detail);
+      setEditWorldName(detail.name);
+      setEditWorldDescription(updatedLatest?.description || "");
+      setEditWorldPremise(typeof updatedLatest?.content.public_lore === "string" ? updatedLatest.content.public_lore : "");
+    }).catch((loadError) => {
+      if (active) setLibraryError(loadError instanceof Error ? loadError.message : "The selected world could not be opened.");
+    });
+    return () => { active = false; };
+  }, [selectedWorldId, workspaceId]);
   const activeAdventure = adventures.find((item) => item.branch_id === branchId && item.conversation_id === conversationId) || null;
   useEffect(() => {
     if (!activeAdventure) {
@@ -1179,6 +1205,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
       .catch((loadError) => { if (active) setRpgError(loadError instanceof Error ? loadError.message : "Adventure state could not be loaded."); });
     return () => { active = false; };
   }, [activeAdventure?.adventure_id, branchId, revision, workspaceId]);
+  useEffect(() => {
+    if (rpgState?.sheet) setEditableStats(rpgState.sheet.stats);
+  }, [activeAdventure?.adventure_id, rpgState?.sheet?.updated_revision]);
   const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
   const memoryScope = JSON.stringify([workspaceId, branchId, selectedActor, order, model, revision]);
   memoryScopeRef.current = memoryScope;
@@ -1454,11 +1483,226 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
     }
   }
 
+  async function createWorld(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = worldName.trim();
+    if (!name) return;
+    const template = STORY_WORLD_TEMPLATES[worldTemplate as keyof typeof STORY_WORLD_TEMPLATES];
+    setLibraryError("");
+    try {
+      const created = await onMainCommit("create_story_world", {
+        world_id: newId("world"),
+        name,
+        description: worldPremise.trim(),
+        template_key: worldTemplate,
+        content: { ...template.content, public_lore: worldPremise.trim() },
+      }, "Create a story world from a local template");
+      setWorldName("");
+      setWorldPremise("");
+      const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
+      setWorlds(rows);
+      const createdId = String(created.world_id || "");
+      if (createdId) setSelectedWorldId(createdId);
+    } catch (createError) {
+      setLibraryError(createError instanceof Error ? createError.message : "The world could not be created.");
+    }
+  }
+
+  async function createHero(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const label = heroName.trim();
+    if (!label) return;
+    try {
+      const created = await onMainCommit("create_entity", {
+        entity_id: newId("hero"), entity_type: "character", label, properties: { role: "protagonist" },
+      }, "Create the protagonist for Story Studio");
+      setHeroName("");
+      const rows = await request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/entities?branch_id=main`);
+      const characters = rows.filter((item) => ["character", "person"].includes(item.entity_type));
+      setMainCharacters(characters);
+      const createdId = String(created.entity_id || "");
+      setAdventureHeroId(createdId || characters[0]?.entity_id || "");
+      setActor(createdId || characters[0]?.entity_id || "");
+    } catch (createError) {
+      setLibraryError(createError instanceof Error ? createError.message : "The protagonist could not be created.");
+    }
+  }
+
+  async function reviseWorld(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorldDetail) return;
+    const latest = selectedWorldDetail.versions.find((item) => item.version === selectedWorldDetail.latest_version);
+    if (!latest) return;
+    try {
+      await onMainCommit("revise_story_world", {
+        world_id: selectedWorldDetail.world_id,
+        expected_world_version: selectedWorldDetail.latest_version,
+        name: editWorldName.trim(),
+        description: editWorldDescription.trim(),
+        template_key: latest.template_key,
+        content: { ...latest.content, public_lore: editWorldPremise.trim() },
+      }, "Save a new immutable version of the story world");
+      const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
+      setWorlds(rows);
+      const detail = await request<{ world_id: string; name: string; latest_version: number; versions: { version: number; description: string; template_key: string; content: Record<string, unknown> }[] }>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/${encodeURIComponent(selectedWorldDetail.world_id)}`,
+      );
+      const refreshedVersion = detail.versions.find((item) => item.version === detail.latest_version);
+      setSelectedWorldDetail(detail);
+      setEditWorldName(detail.name);
+      setEditWorldDescription(refreshedVersion?.description || "");
+      setEditWorldPremise(typeof refreshedVersion?.content.public_lore === "string" ? refreshedVersion.content.public_lore : "");
+    } catch (editError) {
+      setLibraryError(editError instanceof Error ? editError.message : "The world revision could not be saved.");
+    }
+  }
+
+  async function startAdventure(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const world = worlds.find((item) => item.world_id === selectedWorldId);
+    if (!world || !adventureHeroId) {
+      setLibraryError("Choose a world and protagonist before starting an adventure.");
+      return;
+    }
+    setLibraryError("");
+    try {
+      await onCreateAdventure({
+        idempotency_key: newId("start-adventure"),
+        adventure_id: newId("adventure"),
+        world_id: world.world_id,
+        world_version: world.latest_version,
+        conversation_id: newId("story"),
+        name: adventureName.trim() || world.name,
+        actor_entity_id: adventureHeroId,
+        actor_is_user_controlled: true,
+      });
+    } catch (createError) {
+      setLibraryError(createError instanceof Error ? createError.message : "The adventure could not be started.");
+    }
+  }
+
+  async function rollD20(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const statName = checkStat || (rpgState?.sheet ? Object.keys(rpgState.sheet.stats)[0] : "");
+    if (!activeAdventure || !statName) return;
+    setRpgError("");
+    try {
+      const rolled = await request<{ revision: number; state: RpgState }>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/checks`,
+        {
+          method: "POST",
+          body: JSON.stringify({ branch_id: branchId, expected_revision: revision, idempotency_key: newId("d20"), stat_name: statName, target: checkTarget }),
+        },
+      );
+      setRpgState(rolled.state);
+      onRevisionChange(rolled.revision);
+      await onRefresh();
+    } catch (rollError) {
+      setRpgError(rollError instanceof Error ? rollError.message : "The check could not be rolled.");
+    }
+  }
+
+  async function proposeRpgChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeAdventure) return;
+    const changes = proposalOperation === "tracker_delta"
+      ? [{ operation: "tracker_delta", tracker_id: proposalTracker, delta: proposalDelta }]
+      : [{ operation: "set_location", location: proposalLocation.trim() }];
+    if (proposalOperation === "set_location" && !proposalLocation.trim()) return;
+    try {
+      await onCommit("propose_rpg_state", {
+        adventure_id: activeAdventure.adventure_id,
+        source_turn_id: [...(conversation?.turns || [])].reverse().find((turn) => turn.role === "assistant")?.turn_id || null,
+        changes,
+      }, "Propose a reviewable RPG state change");
+      setProposalLocation("");
+    } catch (proposalError) {
+      setRpgError(proposalError instanceof Error ? proposalError.message : "The state change could not be proposed.");
+    }
+  }
+
+  async function reviewRpgProposal(
+    proposal: RpgState["proposals"][number],
+    review_status: "accepted" | "rejected",
+    changes = proposal.changes,
+  ) {
+    try {
+      await onCommit("review_rpg_state_proposal", {
+        proposal_id: proposal.proposal_id,
+        review_status,
+        ...(review_status === "accepted" ? { changes } : {}),
+      }, `Review RPG state proposal as ${review_status}`);
+      setEditingProposalId("");
+    } catch (reviewError) {
+      setRpgError(reviewError instanceof Error ? reviewError.message : "The proposal could not be reviewed.");
+    }
+  }
+
+  function updateEditedProposalChange(index: number, change: RpgState["proposals"][number]["changes"][number]) {
+    setEditedProposalChanges((current) => current.map((item, position) => position === index ? change : item));
+  }
+
+  async function saveRpgStats(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeAdventure) return;
+    try {
+      await onCommit("update_rpg_sheet", { adventure_id: activeAdventure.adventure_id, stats: editableStats }, "Update player-reviewed RPG stat modifiers");
+    } catch (saveError) {
+      setRpgError(saveError instanceof Error ? saveError.message : "Character stats could not be saved.");
+    }
+  }
+
   return <>
     <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Continue a saved story with a local model, while keeping character knowledge and world facts under your control." />
+    <section className="panel story-hub">
+      <div className="panel-heading">
+        <div><h2>Worlds & adventures</h2><p>Create a world once, then start separate adventures from its pinned version.</p></div>
+        <span className="privacy-tag">LOCAL</span>
+      </div>
+      <div className="story-hub-grid">
+        <form className="story-hub-form" onSubmit={(event) => void createWorld(event)}>
+          <div className="story-hub-title"><span>01</span><div><strong>Create a world</strong><small>Start with a small template and add detail as you play.</small></div></div>
+          <label className="field-label">World name<input value={worldName} onChange={(event) => setWorldName(event.target.value)} placeholder="The Shattered Coast" maxLength={200} required /></label>
+          <label className="field-label">Starting style<select value={worldTemplate} onChange={(event) => setWorldTemplate(event.target.value)}>{Object.entries(STORY_WORLD_TEMPLATES).map(([key, template]) => <option key={key} value={key}>{template.label}</option>)}</select></label>
+          <label className="field-label">Public setting premise<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Share setting details that are safe for the hero to know." /></label>
+          <button className="secondary-button full-button" disabled={busy || !worldName.trim()}>Save world</button>
+        </form>
+        <div className="story-hub-form">
+          <div className="story-hub-title"><span>02</span><div><strong>Build a protagonist</strong><small>One character leads each adventure.</small></div></div>
+          {mainCharacters.length ? <label className="field-label">Choose your hero<select value={adventureHeroId} onChange={(event) => setAdventureHeroId(event.target.value)}>{mainCharacters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label> : <>
+            <p className="empty-hint">Create your first protagonist here. You can add more characters later.</p>
+            <form className="story-hero-create" onSubmit={(event) => void createHero(event)}><input value={heroName} onChange={(event) => setHeroName(event.target.value)} placeholder="Protagonist name" aria-label="Protagonist name" maxLength={200} required /><button className="secondary-button" disabled={busy}>Create hero</button></form>
+          </>}
+          <form className="story-start-adventure" onSubmit={(event) => void startAdventure(event)}>
+            <label className="field-label">World<select value={selectedWorldId} onChange={(event) => setSelectedWorldId(event.target.value)} disabled={!worlds.length}><option value="">{worlds.length ? "Choose a world" : "Create a world first"}</option>{worlds.map((item) => <option key={item.world_id} value={item.world_id}>{item.name} · v{item.latest_version}</option>)}</select></label>
+            <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={worlds.find((item) => item.world_id === selectedWorldId)?.name || "First adventure"} maxLength={200} /></label>
+            <button className="primary-button full-button" disabled={busy || !worlds.length || !adventureHeroId}>Start adventure <span>↗</span></button>
+          </form>
+        </div>
+      </div>
+      {selectedWorldDetail && <details className="story-world-editor">
+        <summary>Edit selected world · save changes as a new version</summary>
+        <p className="field-note">Adventure sessions keep the world version they started with. This edit only affects new adventures.</p>
+        <form onSubmit={(event) => void reviseWorld(event)}>
+          <label className="field-label">World name<input value={editWorldName} onChange={(event) => setEditWorldName(event.target.value)} maxLength={200} required /></label>
+          <label className="field-label">Public world summary<input value={editWorldDescription} onChange={(event) => setEditWorldDescription(event.target.value)} maxLength={1000} placeholder="A short summary safe to share with the hero" /></label>
+          <label className="field-label">Public setting premise<textarea value={editWorldPremise} onChange={(event) => setEditWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Setting details safe for the hero to know" /></label>
+          <div className="story-world-editor-actions"><small>Current version: v{selectedWorldDetail.latest_version}</small><button className="secondary-button" type="submit" disabled={busy || !editWorldName.trim()}>Save new version</button></div>
+        </form>
+      </details>}
+      {libraryError && <p className="inline-error" role="alert">{libraryError}</p>}
+      {branchId !== "main" && <p className="story-branch-note">This adventure is isolated from the main world. New adventures start from the latest main-workspace snapshot.</p>}
+      <div className="story-adventure-list">
+        <div className="story-adventure-list-heading"><strong>Continue an adventure</strong><small>{adventures.filter((item) => item.parent_branch_id === "main").length} saved</small></div>
+        {adventures.filter((item) => item.parent_branch_id === "main").length ? adventures.filter((item) => item.parent_branch_id === "main").map((item) => <article className="story-adventure-card" key={item.adventure_id}>
+          <div><strong>{item.name}</strong><small>{item.world_name} · world v{item.world_version} · {item.actor_label} · {item.turn_count} turns</small></div>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => onSelectBranch(item.branch_id)}>Resume</button>
+        </article>) : <p className="empty-hint">Your new adventures will appear here. Existing unbound stories remain in the saved story menu below.</p>}
+      </div>
+    </section>
     <div className="story-grid">
       <section className="panel story-canvas">
-        <div className="scene-topline"><span className="scene-indicator">WORLD</span><span>Branch: {branchId === "main" ? "Main story" : branchId}</span></div>
+        <div className="scene-topline"><span className="scene-indicator">WORLD</span><span>{activeAdventure ? `Adventure: ${activeAdventure.name}` : branchId === "main" ? "Main story" : "Legacy story"}</span></div>
         <div className="story-session-bar">
           <label className="field-label">Saved story<select aria-label="Select saved story" disabled={generating} value={conversationId} onChange={(event) => void selectConversation(event.target.value)}>
             <option value="">Choose a story</option>
@@ -1495,6 +1739,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
                     <small>{fact.actor_stance} · {fact.evidence_ids.length} linked sources</small>
                   </div>)}
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
+                  {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length} recent checks</small></div>}
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
                 </details>}
               </>}
@@ -1512,6 +1757,51 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
           </form>
         </>}
         {storyError && <p className="inline-error" role="alert">{storyError}</p>}
+      </section>
+      <div className="story-side-panels">
+      <section className="panel rpg-state-panel">
+        <div className="panel-heading"><div><h2>Character & game state</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} v${activeAdventure.world_version}` : "State appears here when you play a world-based adventure."}</p></div><span className="privacy-tag">D20</span></div>
+        {activeAdventure && rpgState?.sheet ? <>
+          <div className="rpg-location"><small>Current location</small><strong dir="auto">{rpgState.sheet.current_location || "Not set"}</strong></div>
+          <div className="rpg-stat-list"><strong>Stats</strong><div>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <span key={name}>{name}<b>{value >= 0 ? `+${value}` : value}</b></span>)}</div></div>
+          <details className="rpg-edit-stats"><summary>Edit stat modifiers</summary><form onSubmit={(event) => void saveRpgStats(event)}>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <label className="field-label" key={name}>{name}<input type="number" min={-10} max={10} value={editableStats[name] ?? value} onChange={(event) => setEditableStats((stats) => ({ ...stats, [name]: Number(event.target.value) }))} /></label>)}<button className="secondary-button full-button" disabled={busy}>Save stats</button></form></details>
+          <div className="rpg-tracker-list"><strong>Trackers</strong>{Object.entries(rpgState.sheet.trackers).map(([name, tracker]) => <div key={name}><span>{name}</span><b>{tracker.value} / {tracker.max}</b><meter min={0} max={Math.max(1, tracker.max)} value={tracker.value} /></div>)}</div>
+          <form className="rpg-check-form" onSubmit={(event) => void rollD20(event)}>
+            <div className="story-hub-title"><span>🎲</span><div><strong>Roll a check</strong><small>d20 + stat modifier against a visible target.</small></div></div>
+            <div className="rpg-check-fields">
+              <label className="field-label">Stat<select value={checkStat || Object.keys(rpgState.sheet.stats)[0] || ""} onChange={(event) => setCheckStat(event.target.value)}>{Object.keys(rpgState.sheet.stats).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+              <label className="field-label">Target<input type="number" min={1} max={100} value={checkTarget} onChange={(event) => setCheckTarget(Number(event.target.value))} /></label>
+            </div>
+            <button className="secondary-button full-button" disabled={busy || generating || !Object.keys(rpgState.sheet.stats).length}>Roll d20</button>
+          </form>
+          {rpgState.checks[0] && <div className={`rpg-last-check ${rpgState.checks[0].outcome}`}><strong>Last check · {rpgState.checks[0].outcome}</strong><span>{rpgState.checks[0].die_roll} + {rpgState.checks[0].modifier} = {rpgState.checks[0].total} vs {rpgState.checks[0].target}</span></div>}
+          <details className="rpg-proposal-section">
+            <summary>State changes for review · {rpgState.proposals.filter((item) => item.review_status === "proposed").length} pending</summary>
+            <form className="rpg-proposal-form" onSubmit={(event) => void proposeRpgChange(event)}>
+              <label className="field-label">Change type<select value={proposalOperation} onChange={(event) => setProposalOperation(event.target.value as "tracker_delta" | "set_location")}><option value="tracker_delta">Adjust a tracker</option><option value="set_location">Suggest a location</option></select></label>
+              {proposalOperation === "tracker_delta" ? <div className="rpg-check-fields">
+                <label className="field-label">Tracker<select value={Object.hasOwn(rpgState.sheet.trackers, proposalTracker) ? proposalTracker : Object.keys(rpgState.sheet.trackers)[0] || ""} onChange={(event) => setProposalTracker(event.target.value)}>{Object.keys(rpgState.sheet.trackers).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+                <label className="field-label">Change<input type="number" value={proposalDelta} onChange={(event) => setProposalDelta(Number(event.target.value))} /></label>
+              </div> : <label className="field-label">New location<input value={proposalLocation} onChange={(event) => setProposalLocation(event.target.value)} maxLength={200} placeholder="Where should the story move?" /></label>}
+              <small className="field-note">A suggestion stays out of canon and future turns until you accept it.</small>
+              <button className="secondary-button full-button" disabled={busy || !rpgState.sheet}>Submit for review</button>
+            </form>
+            {rpgState.proposals.map((proposal) => <article className={`rpg-proposal ${proposal.review_status}`} key={proposal.proposal_id}>
+              <div><strong>{proposal.review_status === "proposed" ? "Needs your review" : `Proposal ${proposal.review_status}`}</strong><small>{proposal.changes.map((change) => change.operation === "tracker_delta" ? `${change.tracker_id} ${change.delta > 0 ? "+" : ""}${change.delta}` : `Location → ${change.location}`).join(" · ")}</small></div>
+              {proposal.review_status === "proposed" && <>
+                {editingProposalId === proposal.proposal_id && <form className="rpg-proposal-edit" onSubmit={(event) => { event.preventDefault(); void reviewRpgProposal(proposal, "accepted", editedProposalChanges); }}>
+                  {editedProposalChanges.map((change, index) => change.operation === "tracker_delta" ? <div className="rpg-check-fields" key={`${proposal.proposal_id}-${index}`}>
+                    <label className="field-label">Tracker<select value={change.tracker_id} onChange={(event) => updateEditedProposalChange(index, { ...change, tracker_id: event.target.value })}>{Object.keys(rpgState.sheet!.trackers).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+                    <label className="field-label">Change<input type="number" value={change.delta} onChange={(event) => updateEditedProposalChange(index, { ...change, delta: Number(event.target.value) })} /></label>
+                  </div> : <label className="field-label">New location<input value={change.location} maxLength={200} onChange={(event) => updateEditedProposalChange(index, { ...change, location: event.target.value })} /></label>)}
+                  <div className="rpg-proposal-actions"><button type="submit" disabled={busy || !editedProposalChanges.length}>Save and accept</button><button type="button" disabled={busy} onClick={() => setEditingProposalId("")}>Cancel</button></div>
+                </form>}
+                {editingProposalId !== proposal.proposal_id && <div className="rpg-proposal-actions"><button type="button" disabled={busy} onClick={() => { setEditingProposalId(proposal.proposal_id); setEditedProposalChanges(proposal.changes.map((change) => ({ ...change }))); }}>Edit</button><button type="button" disabled={busy} onClick={() => void reviewRpgProposal(proposal, "accepted")}>Accept</button><button type="button" disabled={busy} onClick={() => void reviewRpgProposal(proposal, "rejected")}>Reject</button></div>}
+              </>}
+            </article>)}
+          </details>
+        </> : <p className="empty-hint">Start an adventure from a world to get a character sheet, trackers, and d20 checks.</p>}
+        {rpgError && <p className="inline-error" role="alert">{rpgError}</p>}
       </section>
       <section className="panel context-panel">
         <div className="panel-heading"><div><h2>Character perspective</h2><p>Only reviewed facts this character knows enter the generation context.</p></div><span className="privacy-tag">LOCAL</span></div>
@@ -1561,6 +1851,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, mainRevi
           {contextExportNotice && <p className="context-export-success" role="status">{contextExportNotice}</p>}
         </div>}
       </section>
+      </div>
     </div>
     <ExternalExchangePanel workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onCommit={onCommit} />
   </>;

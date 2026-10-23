@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class Database:
@@ -73,6 +73,9 @@ class Database:
                 current = 8
             if current < 9:
                 self._apply_migration(9, _SCHEMA_V9)
+                current = 9
+            if current < 10:
+                self._apply_migration(10, _SCHEMA_V10)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -781,4 +784,18 @@ WHEN OLD.adventure_id IS NOT NEW.adventure_id OR OLD.conversation_id IS NOT NEW.
 BEGIN SELECT RAISE(ABORT, 'state proposal content is immutable'); END;
 CREATE TRIGGER rpg_state_proposals_no_delete BEFORE DELETE ON rpg_state_proposals
 BEGIN SELECT RAISE(ABORT, 'state proposals are immutable'); END;
+"""
+
+
+_SCHEMA_V10 = """
+DROP TRIGGER story_world_versions_no_update;
+ALTER TABLE story_world_versions ADD COLUMN name TEXT NOT NULL DEFAULT 'World'
+    CHECK(length(trim(name)) BETWEEN 1 AND 200);
+UPDATE story_world_versions SET name=(
+    SELECT name FROM story_worlds
+    WHERE story_worlds.workspace_id=story_world_versions.workspace_id
+      AND story_worlds.world_id=story_world_versions.world_id
+);
+CREATE TRIGGER story_world_versions_no_update BEFORE UPDATE ON story_world_versions
+BEGIN SELECT RAISE(ABORT, 'world versions are immutable'); END;
 """

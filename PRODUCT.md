@@ -13,7 +13,7 @@ The release is one integrated product, not a set of disconnected demonstrations.
 ## Core workflows
 
 1. **Knowledge:** import a source, preserve its exact content and fingerprint, extract candidates with anchors, review them, and commit approved knowledge through the command gateway.
-2. **Story:** define a world, characters, rules, scene, and character knowledge; generate or write a continuation; review state deltas before they become official.
+2. **Story Studio:** create or choose a world, build a protagonist, then start or resume an isolated adventure. Play with a persistent transcript, visible d20 checks and character trackers; review generated state changes before they enter the adventure's canon.
 3. **Journal:** import dated notes, preserve conflicting accounts and original wording, then produce an evidence-linked account of how the user's record changes over time.
 4. **Scenario:** record a question, options, evidence, constraints, and assumptions; compare conditional outcomes on an isolated branch.
 5. **Recovery:** close and reopen a workspace, export an exchange, create a full backup, restore it to a different location, and compare canonical content and history.

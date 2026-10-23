@@ -1668,9 +1668,9 @@ class CommandGateway:
                 )
                 event_type = "story.world_revised"
             connection.execute(
-                "INSERT INTO story_world_versions(workspace_id,world_id,version,description,template_key,content_json,created_revision,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (workspace_id, world_id, version, description.strip(), template_key, _json(content), revision, now),
+                "INSERT INTO story_world_versions(workspace_id,world_id,version,name,description,template_key,content_json,created_revision,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (workspace_id, world_id, version, name, description.strip(), template_key, _json(content), revision, now),
             )
             return {"world_id": world_id, "name": name, "version": version, "template_key": template_key}, event_type, True
 
@@ -1839,7 +1839,7 @@ class CommandGateway:
             if decision not in {"accepted", "rejected"}:
                 raise ValidationError("review_status must be accepted or rejected")
             proposal = connection.execute(
-                "SELECT adventure_id,changes_json,review_status FROM rpg_state_proposals "
+                "SELECT adventure_id,changes_json,review_status,created_revision FROM rpg_state_proposals "
                 "WHERE workspace_id=? AND branch_id=? AND proposal_id=?",
                 (workspace_id, branch_id, proposal_id),
             ).fetchone()
@@ -1850,12 +1850,14 @@ class CommandGateway:
             changes = _validated_rpg_changes(payload.get("changes", json.loads(proposal["changes_json"]))) if decision == "accepted" else []
             if decision == "accepted":
                 sheet = connection.execute(
-                    "SELECT stats_json,trackers_json,current_location FROM rpg_sheets "
+                    "SELECT stats_json,trackers_json,current_location,updated_revision FROM rpg_sheets "
                     "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
                     (workspace_id, branch_id, proposal["adventure_id"]),
                 ).fetchone()
                 if not sheet:
                     raise NotFoundError("Adventure character sheet does not exist in this branch")
+                if sheet["updated_revision"] > proposal["created_revision"]:
+                    raise ConflictError("RPG state proposal is stale because the character sheet changed after it was proposed")
                 trackers = json.loads(sheet["trackers_json"])
                 location = sheet["current_location"]
                 for change in changes:
@@ -2447,7 +2449,7 @@ class CommandGateway:
     def list_story_worlds(self, workspace_id: str) -> list[dict[str, Any]]:
         with self.db.lock:
             rows = self.db.connection.execute(
-                "SELECT w.world_id,w.name,w.latest_version,w.created_at,w.updated_at,"
+                "SELECT w.world_id,v.name,w.latest_version,w.created_at,w.updated_at,"
                 "v.description,v.template_key FROM story_worlds w JOIN story_world_versions v "
                 "ON v.workspace_id=w.workspace_id AND v.world_id=w.world_id AND v.version=w.latest_version "
                 "WHERE w.workspace_id=? ORDER BY w.updated_at DESC,w.name COLLATE NOCASE",
@@ -2465,7 +2467,7 @@ class CommandGateway:
             if not world:
                 raise NotFoundError("World does not exist in this workspace")
             versions = self.db.connection.execute(
-                "SELECT version,description,template_key,content_json,created_revision,created_at "
+                "SELECT version,name,description,template_key,content_json,created_revision,created_at "
                 "FROM story_world_versions WHERE workspace_id=? AND world_id=? ORDER BY version DESC",
                 (workspace_id, world_id),
             ).fetchall()
@@ -2487,10 +2489,10 @@ class CommandGateway:
                 if not branch:
                     raise NotFoundError("Branch does not exist in this workspace")
             query = (
-                "SELECT a.adventure_id,a.branch_id,b.parent_branch_id,a.world_id,w.name AS world_name,a.world_version,"
+                "SELECT a.adventure_id,a.branch_id,b.parent_branch_id,a.world_id,v.name AS world_name,a.world_version,"
                 "a.conversation_id,a.name,a.actor_entity_id,e.label AS actor_label,a.status,"
                 "a.created_revision,a.updated_revision,a.created_at,a.updated_at,COUNT(t.turn_id) AS turn_count "
-                "FROM story_adventures a JOIN story_worlds w ON w.workspace_id=a.workspace_id AND w.world_id=a.world_id "
+                "FROM story_adventures a JOIN story_world_versions v ON v.workspace_id=a.workspace_id AND v.world_id=a.world_id AND v.version=a.world_version "
                 "JOIN branches b ON b.workspace_id=a.workspace_id AND b.branch_id=a.branch_id "
                 "JOIN entities e ON e.workspace_id=a.workspace_id AND e.branch_id=a.branch_id AND e.entity_id=a.actor_entity_id "
                 "LEFT JOIN story_turns t ON t.workspace_id=a.workspace_id AND t.branch_id=a.branch_id AND t.conversation_id=a.conversation_id "

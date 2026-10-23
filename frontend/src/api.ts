@@ -193,6 +193,19 @@ export type ContextManifest = {
   }[];
   excluded: { claim_id: string; reason: string }[];
   token_estimate: number;
+  story?: {
+    world_id: string;
+    world_name: string;
+    world_version: number;
+    description: string;
+    public_lore: string;
+    character_sheet: {
+      stats: Record<string, number>;
+      trackers: Record<string, { value: number; max: number }>;
+      current_location: string;
+    };
+    recent_checks: { stat_name: string; die_roll: number; modifier: number; total: number; target: number; outcome: "success" | "failure" }[];
+  };
 };
 export type TemporalQueryResult = {
   status: "answered" | "insufficient";
