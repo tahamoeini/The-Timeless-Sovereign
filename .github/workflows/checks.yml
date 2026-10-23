@@ -1,0 +1,70 @@
+name: Windows application checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install backend and API test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Run full core and authenticated API suite
+        run: python -m unittest discover -s tests/unit -v
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Verify story export privacy
+        run: npm run test:story-export
+      - name: Check types and build frontend
+        run: npm run build
+
+  desktop-package:
+    if: github.event_name == 'workflow_dispatch'
+    needs: checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Rust MSVC toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Select Rust toolchain
+        run: rustup default stable
+      - name: Install build dependencies
+        run: |
+          python -m pip install -e ".[package]"
+          npm ci
+      - name: Bundle current API source
+        shell: pwsh
+        run: ./scripts/build-sidecar.ps1
+      - name: Smoke test bundled API
+        run: python scripts/smoke-sidecar.py apps/desktop/src-tauri/binaries/lke-api-x86_64-pc-windows-msvc.exe
+      - name: Build Windows installers
+        working-directory: apps/desktop
+        run: ../../node_modules/.bin/tauri.cmd build --config src-tauri/tauri.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lke-windows-installers
+          if-no-files-found: error
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe

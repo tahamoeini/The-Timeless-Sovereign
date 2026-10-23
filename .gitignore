@@ -40,4 +40,6 @@ Thumbs.db
 .vscode/
 .idea/
 .playwright-cli/
+.tmp-api-deps/
+_MEI*/
 output/playwright/

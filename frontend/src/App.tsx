@@ -1,4 +1,6 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError } from "./api";
+import { buildStoryExport } from "./storyExport";
 import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryConversation, StoryConversationSummary, StoryGenerationResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
@@ -1035,7 +1037,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [exportIncludesContext, setExportIncludesContext] = useState(false);
+  const [exportIncludesPrompts, setExportIncludesPrompts] = useState(true);
   const storySelectionRequest = useRef(0);
+  const pendingStoryRequest = useRef<{ fingerprint: string; body: string } | null>(null);
   const storyMounted = useRef(true);
   useEffect(() => {
     storyMounted.current = true;
@@ -1140,21 +1144,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
 
   function exportStory() {
     if (!conversation) return;
-    const exportPackage = {
-      protocol: "lke.story-export.v1",
-      exported_at: new Date().toISOString(),
-      workspace_id: workspaceId,
-      branch_id: branchId,
-      base_revision: revision,
-      context_manifests_included: exportIncludesContext,
-      conversation: {
-        ...conversation,
-        turns: conversation.turns.map((turn) => ({
-          ...turn,
-          context_manifest: exportIncludesContext ? turn.context_manifest : undefined,
-        })),
-      },
-    };
+    const exportPackage = buildStoryExport(conversation, workspaceId, branchId, revision, exportIncludesContext, exportIncludesPrompts);
     const file = new Blob([JSON.stringify(exportPackage, null, 2)], { type: "application/json;charset=utf-8" });
     const fileUrl = URL.createObjectURL(file);
     const link = document.createElement("a");
@@ -1209,6 +1199,22 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   async function generateStoryTurn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!conversation || generating || busy || !model) return;
+    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, model, prompt, order]);
+    if (pendingStoryRequest.current?.fingerprint !== fingerprint) {
+      pendingStoryRequest.current = {
+        fingerprint,
+        body: JSON.stringify({
+          branch_id: branchId,
+          conversation_id: conversation.conversation_id,
+          expected_revision: revision,
+          idempotency_key: newId("story-turn"),
+          model,
+          prompt,
+          narrative_order: order,
+        }),
+      };
+    }
+    const requestBody = pendingStoryRequest.current.body;
     setGenerating(true);
     setStoryError("");
     try {
@@ -1216,17 +1222,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/generate`,
         {
           method: "POST",
-          body: JSON.stringify({
-            branch_id: branchId,
-            conversation_id: conversation.conversation_id,
-            expected_revision: revision,
-            idempotency_key: newId("story-turn"),
-            model,
-            prompt,
-            narrative_order: order,
-          }),
+          body: requestBody,
         },
       );
+      pendingStoryRequest.current = null;
       if (!storyMounted.current) return;
       setConversation(generated.conversation);
       setPrompt("");
@@ -1236,6 +1235,16 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       await loadConversations(generated.conversation_id);
     } catch (generationError) {
       if (!storyMounted.current) return;
+      if (generationError instanceof ApiError && generationError.status === 409) {
+        pendingStoryRequest.current = null;
+        setStoryError("This branch changed before the turn could be saved. Your prompt is preserved. Refreshing the branch; review it before continuing again.");
+        try {
+          await onRefresh();
+        } catch (refreshError) {
+          if (storyMounted.current) setStoryError(`Your prompt is preserved, but the branch could not be refreshed: ${refreshError instanceof Error ? refreshError.message : "Refresh failed."}`);
+        }
+        return;
+      }
       setStoryError(generationError instanceof Error ? generationError.message : "The local model could not continue this story.");
     } finally {
       setGenerating(false);
@@ -1274,8 +1283,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {conversation && <button className="secondary-button" type="button" onClick={exportStory}>Export story JSON ↓</button>}
         </div>
         {conversation && <div className="story-export-options">
+          <label className="control-choice"><input type="checkbox" checked={exportIncludesPrompts} onChange={(event) => setExportIncludesPrompts(event.target.checked)} /><span>Include my prompts in export</span></label>
           <label className="control-choice"><input type="checkbox" checked={exportIncludesContext} onChange={(event) => setExportIncludesContext(event.target.checked)} /><span>Include character context manifests in export</span></label>
-          <small className="field-note">The export includes your prompts and generated prose. Context manifests can also reveal private character knowledge. Review the file before sharing.</small>
+          <small className="field-note">Generated prose may repeat details from prompts even when prompts are omitted. Context manifests can reveal private character knowledge. Review the file before sharing.</small>
         </div>}
         {!conversation && <form className="story-start-form" onSubmit={(event) => void startConversation(event)}>
           <div className="story-placeholder"><div className="story-sigil">✳</div><h2>Start a persistent story.</h2><p>Each turn is saved locally with its branch revision and the character context used to generate it.</p></div>

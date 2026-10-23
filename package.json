@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --config frontend/vite.config.ts",
     "build": "tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "test:story-export": "node tests/story-export.mjs",
     "preview": "vite preview --config frontend/vite.config.ts",
     "tauri": "tauri --config apps/desktop/src-tauri/tauri.conf.json"
   },

@@ -256,6 +256,13 @@ async function resolveRuntime(): Promise<RuntimeConfig> {
   throw new Error("The local LKE service did not start. Restart the app and try again.");
 }
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const config = await resolveRuntime();
   const response = await fetch(`${config.baseUrl}${path}`, {
@@ -268,7 +275,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${response.status})`);
+    throw new ApiError(typeof body?.detail === "string" ? body.detail : `Request failed (${response.status})`, response.status);
   }
   return response.json() as Promise<T>;
 }

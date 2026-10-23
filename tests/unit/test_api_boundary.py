@@ -566,7 +566,7 @@ class ApiBoundaryTests(unittest.TestCase):
             },
         )
         self.assertEqual(imported.status_code, 200, imported.text)
-        self.assertEqual(imported.json()["result"]["exchange_id"], "external-api-1")
+        self.assertEqual(imported.json()["exchange_id"], "external-api-1")
 
         listed = self.request(
             "GET", "/api/v1/workspaces/exchange-api/exchanges?branch_id=main", headers=self.headers,
