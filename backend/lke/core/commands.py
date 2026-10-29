@@ -28,7 +28,7 @@ _ALLOWED_COMMANDS = {
     "set_npc_simulation",
     "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
     "review_scenario_assumption", "record_extraction_batch", "review_extraction_candidate",
-    "import_exchange", "promote_branch",
+    "import_exchange", "import_story_adventure", "promote_branch",
 }
 _SEARCH_TOKEN = re.compile(r'"([^"\s]+)"|([^\s]+)')
 
@@ -292,6 +292,12 @@ def _package_optional_text(value: Any, field: str, limit: int) -> str | None:
     return None if value is None else _required_text(value, field, limit)
 
 
+def _package_choice(value: Any, choices: set[str], field: str) -> str:
+    if not isinstance(value, str) or value not in choices:
+        raise ValidationError(f"{field} is unsupported")
+    return value
+
+
 def validate_adventure_package(package: Any) -> dict[str, Any]:
     """Validate a portable adventure snapshot. Historical context manifests are deliberately omitted."""
     root_fields = {"protocol", "provenance", "world", "context_manifests_included", "adventure"}
@@ -316,15 +322,16 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     world = validate_world_package(root["world"])
     adventure = _package_object(
         root["adventure"],
-        {"name", "status", "completed_turns", "npc_simulation_enabled", "actor_entity_id", "entities",
+        {"name", "world_version", "status", "completed_turns", "npc_simulation_enabled", "actor_entity_id", "entities",
          "conversation", "sheet", "turns", "turn_edits", "checks", "proposals", "memories", "threads",
          "npcs", "assets", "locations"},
         "Adventure data",
     )
     name = _required_text(adventure["name"], "adventure name", 200)
-    status = adventure["status"]
-    if status not in {"active", "complete", "paused"}:
-        raise ValidationError("Adventure status is unsupported")
+    world_version = adventure["world_version"]
+    if type(world_version) is not int or not 1 <= world_version <= len(world["versions"]):
+        raise ValidationError("Adventure world_version must reference a packaged world version")
+    status = _package_choice(adventure["status"], {"active", "complete", "paused"}, "Adventure status")
     completed_turns = adventure["completed_turns"]
     if type(completed_turns) is not int or completed_turns < 0:
         raise ValidationError("completed_turns must be a non-negative integer")
@@ -375,11 +382,12 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         order, narrative_order = turn["turn_order"], turn["narrative_order"]
         if turn_id in turn_ids or type(order) is not int or order < 0 or order in turn_orders:
             raise ValidationError("Turn IDs and non-negative turn_order values must be unique")
-        if type(narrative_order) is not int or narrative_order < 0 or turn["role"] not in {"user", "assistant"}:
+        role = _package_choice(turn["role"], {"user", "assistant"}, "Turn role")
+        if type(narrative_order) is not int or narrative_order < 0:
             raise ValidationError("Turn role and narrative order are invalid")
         content = _required_text(turn["content"], "turn content", 200_000)
         clean_turns.append({
-            "turn_id": turn_id, "turn_order": order, "role": turn["role"],
+            "turn_id": turn_id, "turn_order": order, "role": role,
             "narrative_order": narrative_order, "content": content,
             "provider": _package_optional_text(turn["provider"], "provider", 100),
             "model": _package_optional_text(turn["model"], "model", 200),
@@ -396,12 +404,13 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     edit_versions: dict[str, list[int]] = {}
     for edit in edits:
         turn_id, version = _required_text(edit["turn_id"], "edited turn_id", 100), edit["version"]
-        if turn_id not in turn_ids or type(version) is not int or version < 1 or edit["status"] not in {"active", "deleted", "superseded"}:
+        edit_status = _package_choice(edit["status"], {"active", "deleted", "superseded"}, "Turn edit status")
+        if turn_id not in turn_ids or type(version) is not int or version < 1:
             raise ValidationError("Turn edit references an invalid turn, version, or status")
         clean_edits.append({
             "turn_id": turn_id, "version": version,
             "content": _required_text(edit["content"], "edited turn content", 200_000),
-            "status": edit["status"], "provider": _package_optional_text(edit["provider"], "provider", 100),
+            "status": edit_status, "provider": _package_optional_text(edit["provider"], "provider", 100),
             "model": _package_optional_text(edit["model"], "model", 200),
             "created_at": _package_time(edit["created_at"], "turn edit created_at"),
         })
@@ -439,7 +448,8 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             source_turn = _required_text(source_turn, "source_turn_id", 100)
             if source_turn not in turn_ids:
                 raise ValidationError("Proposal source turn is missing from the adventure")
-        if proposal_id in proposal_ids or proposal["review_status"] not in {"proposed", "accepted", "rejected"}:
+        proposal_status = _package_choice(proposal["review_status"], {"proposed", "accepted", "rejected"}, "Proposal review status")
+        if proposal_id in proposal_ids:
             raise ValidationError("Proposal ID or review status is invalid")
         clean_changes = _validated_rpg_changes(proposal["changes"])
         for change in clean_changes:
@@ -448,7 +458,7 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             if change["operation"] == "add_event_memory" and not set(change["known_by"]) <= entity_ids:
                 raise ValidationError("Memory proposal references a character missing from the package")
         clean_proposals.append({"proposal_id": proposal_id, "source_turn_id": source_turn,
-                                "changes": clean_changes, "review_status": proposal["review_status"],
+                                "changes": clean_changes, "review_status": proposal_status,
                                 "created_at": _package_time(proposal["created_at"], "proposal created_at")})
         proposal_ids.add(proposal_id)
 
@@ -467,23 +477,22 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             raise ValidationError("Memory knowledge holders must reference packaged characters")
         if type(version) is not int or version < 1 or type(memory["narrative_order"]) is not int or memory["narrative_order"] < 0:
             raise ValidationError("Memory version and narrative order must be non-negative integers")
-        if memory["kind"] not in {"note", "event", "situation"} or memory["review_status"] not in {"proposed", "accepted", "rejected"}:
-            raise ValidationError("Memory type or review status is invalid")
+        memory_kind = _package_choice(memory["kind"], {"note", "event", "situation"}, "Memory type")
+        memory_status = _package_choice(memory["review_status"], {"proposed", "accepted", "rejected"}, "Memory review status")
         if not isinstance(memory["context_enabled"], bool) or type(memory["importance"]) is not int or not 1 <= memory["importance"] <= 5:
             raise ValidationError("Memory context setting or importance is invalid")
-        if memory["knowledge_scope"] not in {"shared", "actors", "author", "private"}:
-            raise ValidationError("Memory knowledge scope is invalid")
-        if (memory["knowledge_scope"] == "actors") != bool(known_by):
+        knowledge_scope = _package_choice(memory["knowledge_scope"], {"shared", "actors", "author", "private"}, "Memory knowledge scope")
+        if (knowledge_scope == "actors") != bool(known_by):
             raise ValidationError("Actor-scoped memory must name its knowledge holders")
         supersedes = memory["supersedes_version"]
         if supersedes is not None and (type(supersedes) is not int or supersedes < 1 or supersedes >= version):
             raise ValidationError("Memory supersession reference is invalid")
-        clean_memories.append({"memory_id": memory_id, "version": version, "kind": memory["kind"],
+        clean_memories.append({"memory_id": memory_id, "version": version, "kind": memory_kind,
                                "content": _required_text(memory["content"], "memory content", 4000),
-                               "context_enabled": memory["context_enabled"], "review_status": memory["review_status"],
+                               "context_enabled": memory["context_enabled"], "review_status": memory_status,
                                "source_turn_id": source_turn, "narrative_order": memory["narrative_order"],
                                "supersedes_version": supersedes, "importance": memory["importance"],
-                               "knowledge_scope": memory["knowledge_scope"], "known_by": list(dict.fromkeys(known_by)),
+                               "knowledge_scope": knowledge_scope, "known_by": list(dict.fromkeys(known_by)),
                                "created_at": _package_time(memory["created_at"], "memory created_at")})
         memory_versions.setdefault(memory_id, []).append(version)
     for versions in memory_versions.values():
@@ -492,16 +501,20 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
 
     threads = _package_list(adventure["threads"], {"thread_id", "title", "detail", "status", "created_at", "updated_at"}, "threads")
     clean_threads: list[dict[str, Any]] = []
+    thread_ids: set[str] = set()
     for thread in threads:
-        if thread["status"] not in {"open", "closed"}:
-            raise ValidationError("Thread status is invalid")
+        thread_id = _required_text(thread["thread_id"], "thread_id", 100)
+        thread_status = _package_choice(thread["status"], {"open", "closed"}, "Thread status")
+        if thread_id in thread_ids:
+            raise ValidationError("Thread IDs must be unique")
         detail = thread["detail"]
         if not isinstance(detail, str) or len(detail) > 2000:
             raise ValidationError("Thread detail is limited to 2000 characters")
-        clean_threads.append({"thread_id": _required_text(thread["thread_id"], "thread_id", 100),
+        clean_threads.append({"thread_id": thread_id,
                               "title": _required_text(thread["title"], "thread title", 200), "detail": detail,
-                              "status": thread["status"], "created_at": _package_time(thread["created_at"], "thread created_at"),
+                              "status": thread_status, "created_at": _package_time(thread["created_at"], "thread created_at"),
                               "updated_at": _package_time(thread["updated_at"], "thread updated_at")})
+        thread_ids.add(thread_id)
 
     npcs = _package_list(adventure["npcs"], {"npc_entity_id", "aliases", "public_profile", "private_profile", "review_status", "created_at", "updated_at"}, "npcs", 500)
     clean_npcs: list[dict[str, Any]] = []
@@ -514,22 +527,26 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         if not isinstance(aliases, list) or len(aliases) > 50:
             raise ValidationError("NPC aliases must be an array of at most 50 names")
         clean_aliases = [_required_text(alias, "NPC alias", 100) for alias in aliases]
-        if npc["review_status"] not in {"proposed", "accepted", "rejected"}:
-            raise ValidationError("NPC review status is invalid")
+        npc_status = _package_choice(npc["review_status"], {"proposed", "accepted", "rejected"}, "NPC review status")
         clean_npcs.append({"npc_entity_id": npc_id, "aliases": clean_aliases,
                            "public_profile": _validated_world_content(npc["public_profile"]),
                            "private_profile": _validated_world_content(npc["private_profile"]),
-                           "review_status": npc["review_status"],
+                           "review_status": npc_status,
                            "created_at": _package_time(npc["created_at"], "NPC created_at"),
                            "updated_at": _package_time(npc["updated_at"], "NPC updated_at")})
         npc_ids.add(npc_id)
 
     assets = _package_list(adventure["assets"], {"asset_id", "target_kind", "target_id", "display_name", "mime_type", "data_base64", "provenance", "created_at"}, "assets", 500)
     clean_assets: list[dict[str, Any]] = []
+    asset_ids: set[str] = set()
     for asset in assets:
-        if asset["target_kind"] not in {"character", "scene"} or asset["mime_type"] not in {"image/png", "image/jpeg", "image/webp"}:
-            raise ValidationError("Story asset target or media type is invalid")
-        if asset["target_kind"] == "character" and asset["target_id"] not in entity_ids:
+        asset_id = _required_text(asset["asset_id"], "asset_id", 100)
+        target_kind = _package_choice(asset["target_kind"], {"character", "scene"}, "Story asset target")
+        mime_type = _package_choice(asset["mime_type"], {"image/png", "image/jpeg", "image/webp"}, "Story asset media type")
+        if asset_id in asset_ids:
+            raise ValidationError("Story asset IDs must be unique")
+        target_id = _required_text(asset["target_id"], "asset target_id", 100)
+        if target_kind == "character" and target_id not in entity_ids:
             raise ValidationError("Character asset target is missing from the package")
         try:
             content = base64.b64decode(_required_text(asset["data_base64"], "asset data", 7_000_000), validate=True)
@@ -537,37 +554,42 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             raise ValidationError("Story asset data must be valid base64") from error
         if not 1 <= len(content) <= 5_242_880:
             raise ValidationError("Each story asset must contain between 1 byte and 5 MB")
-        clean_assets.append({"asset_id": _required_text(asset["asset_id"], "asset_id", 100),
-                             "target_kind": asset["target_kind"],
-                             "target_id": _required_text(asset["target_id"], "asset target_id", 100),
+        clean_assets.append({"asset_id": asset_id,
+                             "target_kind": target_kind,
+                             "target_id": target_id,
                              "display_name": _required_text(asset["display_name"], "asset display_name", 200),
-                             "mime_type": asset["mime_type"], "content": content,
+                             "mime_type": mime_type, "content": content,
                              "provenance": _validated_world_content(asset["provenance"]),
                              "created_at": _package_time(asset["created_at"], "asset created_at")})
+        asset_ids.add(asset_id)
 
     locations = _package_list(adventure["locations"], {"location_id", "name", "status", "source_proposal_id", "created_at"}, "locations", 1000)
     clean_locations: list[dict[str, Any]] = []
     location_names: set[str] = set()
+    location_ids: set[str] = set()
     for location in locations:
+        location_id = _required_text(location["location_id"], "location_id", 100)
         clean_name = _required_text(location["name"], "location name", 200)
         name_key = clean_name.casefold()
+        location_status = _package_choice(location["status"], {"approved", "rejected"}, "Map location status")
         source_proposal_id = location["source_proposal_id"]
         if source_proposal_id is not None:
             source_proposal_id = _required_text(source_proposal_id, "source_proposal_id", 100)
             if source_proposal_id not in proposal_ids:
                 raise ValidationError("Map location proposal reference is missing")
-        if name_key in location_names or location["status"] not in {"approved", "rejected"}:
+        if name_key in location_names or location_id in location_ids:
             raise ValidationError("Map locations must have unique names and supported statuses")
-        clean_locations.append({"location_id": _required_text(location["location_id"], "location_id", 100),
+        clean_locations.append({"location_id": location_id,
                                 "name": clean_name,
-                                "status": location["status"], "source_proposal_id": source_proposal_id,
+                                "status": location_status, "source_proposal_id": source_proposal_id,
                                 "created_at": _package_time(location["created_at"], "location created_at")})
         location_names.add(name_key)
+        location_ids.add(location_id)
 
     return {
         "protocol": "lke.adventure.v1", "provenance": clean_provenance, "world": world,
         "context_manifests_included": False,
-        "adventure": {"name": name, "status": status, "completed_turns": completed_turns,
+        "adventure": {"name": name, "world_version": world_version, "status": status, "completed_turns": completed_turns,
                       "npc_simulation_enabled": adventure["npc_simulation_enabled"],
                       "actor_entity_id": actor_entity_id, "entities": clean_entities,
                       "conversation": clean_conversation, "sheet": clean_sheet,
@@ -659,6 +681,197 @@ def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
         else:
             raise ValidationError("unsupported RPG state change")
     return clean
+
+
+def _import_adventure_records(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    branch_id: str,
+    revision: int,
+    adventure_id: str,
+    conversation_id: str,
+    world_id: str,
+    world_version: int,
+    package: dict[str, Any],
+) -> dict[str, Any]:
+    clean = validate_adventure_package(package)
+    data = clean["adventure"]
+    if branch_id != adventure_id:
+        raise ValidationError("Imported adventure_id must match its isolated branch_id")
+    if type(world_version) is not int or world_version != data["world_version"]:
+        raise ValidationError("Imported adventure must retain its pinned world version")
+
+    source_world = clean["world"]["versions"][world_version - 1]
+    target_world = connection.execute(
+        "SELECT v.name,v.description,v.template_key,v.content_json FROM story_world_versions v "
+        "WHERE v.workspace_id=? AND v.world_id=? AND v.version=?",
+        (workspace_id, world_id, world_version),
+    ).fetchone()
+    if not target_world:
+        raise NotFoundError("Target world version does not exist in this workspace")
+    if (
+        target_world["name"] != source_world["name"]
+        or target_world["description"] != source_world["description"]
+        or target_world["template_key"] != source_world["template_key"]
+        or json.loads(target_world["content_json"]) != source_world["content"]
+    ):
+        raise ConflictError("Target world version does not match the adventure package")
+
+    entity_map: dict[str, str] = {}
+    imported_entities = 0
+    for entity in data["entities"]:
+        original_id = entity["entity_id"]
+        existing = connection.execute(
+            "SELECT entity_type,label,properties_json FROM entities "
+            "WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+            (workspace_id, branch_id, original_id),
+        ).fetchone()
+        if existing and (
+            existing["entity_type"] != entity["entity_type"]
+            or existing["label"] != entity["label"]
+            or json.loads(existing["properties_json"]) != entity["properties"]
+        ):
+            prefix = original_id[:60]
+            imported_id = f"{prefix}_copy_{uuid4().hex[:12]}"
+            while connection.execute(
+                "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, imported_id),
+            ).fetchone():
+                imported_id = f"{prefix}_copy_{uuid4().hex[:12]}"
+            entity_map[original_id] = imported_id
+            original_id = imported_id
+        else:
+            entity_map[original_id] = original_id
+        if existing and original_id == entity["entity_id"]:
+            continue
+        properties_json = _json(entity["properties"])
+        connection.execute(
+            "INSERT INTO entities(workspace_id,branch_id,entity_id,entity_type,label,properties_json,created_revision,updated_revision) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (workspace_id, branch_id, original_id, entity["entity_type"], entity["label"], properties_json, revision, revision),
+        )
+        connection.execute(
+            "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) VALUES(?,?,?,?,?)",
+            (workspace_id, branch_id, original_id, entity["label"], properties_json),
+        )
+        imported_entities += 1
+
+    actor_entity_id = entity_map[data["actor_entity_id"]]
+    now = _now()
+    conversation = data["conversation"]
+    connection.execute(
+        "INSERT INTO story_conversations(workspace_id,branch_id,conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (workspace_id, branch_id, conversation_id, actor_entity_id, conversation["title"],
+         int(conversation["actor_is_user_controlled"]), revision, revision, now, now),
+    )
+    connection.execute(
+        "INSERT INTO story_adventures(workspace_id,branch_id,adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (workspace_id, branch_id, adventure_id, world_id, world_version, conversation_id, data["name"],
+         actor_entity_id, data["status"], revision, revision, now, now, data["completed_turns"],
+         int(data["npc_simulation_enabled"])),
+    )
+    sheet = data["sheet"]
+    connection.execute(
+        "INSERT INTO rpg_sheets(workspace_id,branch_id,adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (workspace_id, branch_id, adventure_id, conversation_id, _json(sheet["stats"]), _json(sheet["trackers"]),
+         sheet["current_location"], revision, revision),
+    )
+
+    connection.executemany(
+        "INSERT INTO story_turns(workspace_id,branch_id,conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
+        [(workspace_id, branch_id, conversation_id, turn["turn_id"], turn["turn_order"], turn["role"],
+          turn["narrative_order"], turn["content"], turn["provider"], turn["model"], revision, turn["created_at"])
+         for turn in data["turns"]],
+    )
+    connection.executemany(
+        "INSERT INTO story_turn_edits(workspace_id,branch_id,conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
+        [(workspace_id, branch_id, conversation_id, edit["turn_id"], edit["version"], edit["content"],
+          edit["status"], edit["provider"], edit["model"], revision, edit["created_at"])
+         for edit in data["turn_edits"]],
+    )
+
+    connection.executemany(
+        "INSERT INTO rpg_checks(workspace_id,branch_id,check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(workspace_id, branch_id, check["check_id"], adventure_id, conversation_id, actor_entity_id,
+          check["stat_name"], check["die_roll"], check["modifier"], check["total"], check["target"],
+          check["outcome"], revision, check["created_at"]) for check in data["checks"]],
+    )
+
+    for proposal in data["proposals"]:
+        changes = []
+        for change in proposal["changes"]:
+            remapped = dict(change)
+            if remapped["operation"] == "npc_profile":
+                remapped["npc_entity_id"] = entity_map[remapped["npc_entity_id"]]
+            elif remapped["operation"] == "add_event_memory":
+                remapped["known_by"] = [entity_map[item] for item in remapped["known_by"]]
+            changes.append(remapped)
+        connection.execute(
+            "INSERT INTO rpg_state_proposals(workspace_id,branch_id,proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (workspace_id, branch_id, proposal["proposal_id"], adventure_id, conversation_id,
+             proposal["source_turn_id"], _json(changes), proposal["review_status"], revision,
+             revision if proposal["review_status"] != "proposed" else None, proposal["created_at"]),
+        )
+
+    connection.executemany(
+        "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(workspace_id, branch_id, adventure_id, memory["memory_id"], memory["version"], memory["kind"],
+          memory["content"], int(memory["context_enabled"]), memory["review_status"], memory["source_turn_id"],
+          memory["narrative_order"], memory["supersedes_version"], memory["importance"], memory["knowledge_scope"],
+          _json([entity_map[item] for item in memory["known_by"]]), revision,
+          revision if memory["review_status"] != "proposed" else None, memory["created_at"])
+         for memory in data["memories"]],
+    )
+    connection.executemany(
+        "INSERT INTO story_threads(workspace_id,branch_id,adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        [(workspace_id, branch_id, adventure_id, thread["thread_id"], thread["title"], thread["detail"],
+          thread["status"], revision, revision, thread["created_at"], thread["updated_at"])
+         for thread in data["threads"]],
+    )
+    connection.executemany(
+        "INSERT INTO story_npc_profiles(workspace_id,branch_id,adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(workspace_id, branch_id, adventure_id, entity_map[npc["npc_entity_id"]], _json(npc["aliases"]),
+          _json(npc["public_profile"]), _json(npc["private_profile"]), npc["review_status"], revision, revision,
+          npc["created_at"], npc["updated_at"]) for npc in data["npcs"]],
+    )
+    connection.executemany(
+        "INSERT INTO story_assets(workspace_id,branch_id,adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(workspace_id, branch_id, adventure_id, asset["asset_id"], asset["target_kind"],
+          entity_map.get(asset["target_id"], asset["target_id"]), asset["display_name"], asset["mime_type"],
+          asset["content"], _json(asset["provenance"]), revision, asset["created_at"])
+         for asset in data["assets"]],
+    )
+    connection.executemany(
+        "INSERT INTO story_map_locations(workspace_id,branch_id,adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        [(workspace_id, branch_id, adventure_id, location["location_id"], location["name"], location["status"],
+          location["source_proposal_id"], revision, revision, location["created_at"])
+         for location in data["locations"]],
+    )
+
+    return {
+        "adventure_id": adventure_id,
+        "conversation_id": conversation_id,
+        "world_id": world_id,
+        "world_version": world_version,
+        "actor_entity_id": actor_entity_id,
+        "entities_imported": imported_entities,
+        "entity_id_map": entity_map,
+        "turns_imported": len(data["turns"]),
+        "source": clean["provenance"],
+    }
 
 
 def _validated_extraction_candidate(candidate: Any, source_content: str) -> tuple[str, str, dict[str, Any]]:
@@ -2200,6 +2413,39 @@ class CommandGateway:
                 "name": name,
             }, "story.adventure_created", True
 
+        if command_type == "import_story_adventure":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot import adventures")
+            parent = connection.execute(
+                "SELECT parent_branch_id FROM branches WHERE workspace_id=? AND branch_id=?",
+                (workspace_id, branch_id),
+            ).fetchone()
+            if not parent or parent["parent_branch_id"] != "main":
+                raise ValidationError("An imported adventure must use a new isolated snapshot of the main branch")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            conversation_id = _required_text(payload.get("conversation_id"), "conversation_id", 100)
+            world_id = _required_text(payload.get("world_id"), "world_id", 100)
+            world_version = payload.get("world_version")
+            if branch_id != adventure_id:
+                raise ValidationError("Imported adventure_id must match its branch_id")
+            if connection.execute(
+                "SELECT 1 FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone():
+                raise ConflictError("Adventure already exists in this branch")
+            imported = _import_adventure_records(
+                connection,
+                workspace_id=workspace_id,
+                branch_id=branch_id,
+                revision=revision,
+                adventure_id=adventure_id,
+                conversation_id=conversation_id,
+                world_id=world_id,
+                world_version=world_version,
+                package=payload.get("package"),
+            )
+            return imported, "story.adventure_imported", True
+
         if command_type == "update_rpg_sheet":
             if actor.startswith("ai:"):
                 raise ValidationError("AI actors cannot change canonical RPG state")
@@ -3418,6 +3664,206 @@ class CommandGateway:
         return {"protocol": clean["protocol"], "provenance": clean["provenance"],
                 "name": clean["versions"][-1]["name"], "versions": len(clean["versions"]),
                 "source_id_conflict": collision, "import_mode": "duplicate"}
+
+    def export_story_adventure_package(
+        self, workspace_id: str, branch_id: str, adventure_id: str
+    ) -> dict[str, Any]:
+        with self.db.lock:
+            adventure = self.db.connection.execute(
+                "SELECT adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,completed_turns,npc_simulation_enabled "
+                "FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure:
+                raise NotFoundError("Adventure does not exist in this branch")
+            conversation = self.db.connection.execute(
+                "SELECT title,actor_is_user_controlled FROM story_conversations "
+                "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (workspace_id, branch_id, adventure["conversation_id"]),
+            ).fetchone()
+            sheet = self.db.connection.execute(
+                "SELECT stats_json,trackers_json,current_location FROM rpg_sheets "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not conversation or not sheet:
+                raise ValidationError("Adventure is missing its conversation or character sheet")
+            turns = self.db.connection.execute(
+                "SELECT turn_id,turn_order,role,narrative_order,content,provider,model,created_at "
+                "FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? ORDER BY turn_order",
+                (workspace_id, branch_id, adventure["conversation_id"]),
+            ).fetchall()
+            edits = self.db.connection.execute(
+                "SELECT turn_id,version,content,status,provider,model,created_at FROM story_turn_edits "
+                "WHERE workspace_id=? AND branch_id=? AND conversation_id=? ORDER BY turn_id,version",
+                (workspace_id, branch_id, adventure["conversation_id"]),
+            ).fetchall()
+            checks = self.db.connection.execute(
+                "SELECT check_id,stat_name,die_roll,modifier,total,target,outcome,created_at FROM rpg_checks "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY created_revision,check_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            proposal_rows = self.db.connection.execute(
+                "SELECT proposal_id,source_turn_id,changes_json,review_status,created_at FROM rpg_state_proposals "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY created_revision,proposal_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            memory_rows = self.db.connection.execute(
+                "SELECT memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_at "
+                "FROM story_memories WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY memory_id,version",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            threads = self.db.connection.execute(
+                "SELECT thread_id,title,detail,status,created_at,updated_at FROM story_threads "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY thread_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            npc_rows = self.db.connection.execute(
+                "SELECT npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_at,updated_at "
+                "FROM story_npc_profiles WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY npc_entity_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            asset_rows = self.db.connection.execute(
+                "SELECT asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_at "
+                "FROM story_assets WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY asset_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+            locations = self.db.connection.execute(
+                "SELECT location_id,name,status,source_proposal_id,created_at FROM story_map_locations "
+                "WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY location_id",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchall()
+
+            proposal_data = [
+                {"proposal_id": row["proposal_id"], "source_turn_id": row["source_turn_id"],
+                 "changes": json.loads(row["changes_json"]), "review_status": row["review_status"],
+                 "created_at": row["created_at"]}
+                for row in proposal_rows
+            ]
+            memory_data = [
+                {"memory_id": row["memory_id"], "version": row["version"], "kind": row["kind"],
+                 "content": row["content"], "context_enabled": bool(row["context_enabled"]),
+                 "review_status": row["review_status"], "source_turn_id": row["source_turn_id"],
+                 "narrative_order": row["narrative_order"], "supersedes_version": row["supersedes_version"],
+                 "importance": row["importance"], "knowledge_scope": row["knowledge_scope"],
+                 "known_by": json.loads(row["known_by_json"]), "created_at": row["created_at"]}
+                for row in memory_rows
+            ]
+            npc_data = [
+                {"npc_entity_id": row["npc_entity_id"], "aliases": json.loads(row["aliases_json"]),
+                 "public_profile": json.loads(row["public_profile_json"]),
+                 "private_profile": json.loads(row["private_profile_json"]),
+                 "review_status": row["review_status"], "created_at": row["created_at"],
+                 "updated_at": row["updated_at"]}
+                for row in npc_rows
+            ]
+            asset_data = [
+                {"asset_id": row["asset_id"], "target_kind": row["target_kind"],
+                 "target_id": row["target_id"], "display_name": row["display_name"],
+                 "mime_type": row["mime_type"], "data_base64": base64.b64encode(row["content"]).decode("ascii"),
+                 "provenance": json.loads(row["provenance_json"]), "created_at": row["created_at"]}
+                for row in asset_rows
+            ]
+
+            entity_ids = {adventure["actor_entity_id"]}
+            entity_ids.update(npc["npc_entity_id"] for npc in npc_data)
+            for proposal in proposal_data:
+                for change in proposal["changes"]:
+                    if change.get("operation") == "npc_profile":
+                        entity_ids.add(change["npc_entity_id"])
+                    elif change.get("operation") == "add_event_memory":
+                        entity_ids.update(change.get("known_by", []))
+            for memory in memory_data:
+                entity_ids.update(memory["known_by"])
+            entity_ids.update(
+                asset["target_id"] for asset in asset_data if asset["target_kind"] == "character"
+            )
+            entity_rows = self.db.connection.execute(
+                "SELECT entity_id,entity_type,label,properties_json FROM entities "
+                "WHERE workspace_id=? AND branch_id=? ORDER BY entity_id",
+                (workspace_id, branch_id),
+            ).fetchall()
+            entities = [
+                {"entity_id": row["entity_id"], "entity_type": row["entity_type"], "label": row["label"],
+                 "properties": json.loads(row["properties_json"])}
+                for row in entity_rows if row["entity_id"] in entity_ids
+            ]
+            if {entity["entity_id"] for entity in entities} != entity_ids:
+                raise ValidationError("Adventure records reference a character that is missing from this branch")
+
+            package_adventure = {
+                "name": adventure["name"], "world_version": adventure["world_version"],
+                "status": adventure["status"], "completed_turns": adventure["completed_turns"],
+                "npc_simulation_enabled": bool(adventure["npc_simulation_enabled"]),
+                "actor_entity_id": adventure["actor_entity_id"], "entities": entities,
+                "conversation": {"title": conversation["title"],
+                                 "actor_is_user_controlled": bool(conversation["actor_is_user_controlled"])},
+                "sheet": {"stats": json.loads(sheet["stats_json"]), "trackers": json.loads(sheet["trackers_json"]),
+                          "current_location": sheet["current_location"]},
+                "turns": [dict(row) for row in turns], "turn_edits": [dict(row) for row in edits],
+                "checks": [dict(row) for row in checks], "proposals": proposal_data,
+                "memories": memory_data, "threads": [dict(row) for row in threads],
+                "npcs": npc_data, "assets": asset_data, "locations": [dict(row) for row in locations],
+            }
+            source_world_id = adventure["world_id"]
+            source_adventure_id = adventure["adventure_id"]
+
+        package = {
+            "protocol": "lke.adventure.v1",
+            "provenance": {"workspace_id": workspace_id, "branch_id": branch_id,
+                           "adventure_id": source_adventure_id, "exported_at": _now()},
+            "world": self.export_world_package(workspace_id, source_world_id),
+            "context_manifests_included": False,
+            "adventure": package_adventure,
+        }
+        return validate_adventure_package(package)
+
+    def preview_story_adventure_package(self, workspace_id: str, package: Any) -> dict[str, Any]:
+        self.current_revision(workspace_id, "main")
+        clean = validate_adventure_package(package)
+        source_world_id = clean["world"]["provenance"]["world_id"]
+        matching_world_id: str | None = None
+        source_id_conflict = False
+        with self.db.lock:
+            source_exists = self.db.connection.execute(
+                "SELECT 1 FROM story_worlds WHERE workspace_id=? AND world_id=?",
+                (workspace_id, source_world_id),
+            ).fetchone()
+            source_id_conflict = source_exists is not None
+        for world_row in self.list_story_worlds(workspace_id):
+            existing = self.export_world_package(workspace_id, world_row["world_id"])
+            if existing["versions"] == clean["world"]["versions"]:
+                matching_world_id = world_row["world_id"]
+                break
+
+        with self.db.lock:
+            entity_conflicts = []
+            for entity in clean["adventure"]["entities"]:
+                existing = self.db.connection.execute(
+                    "SELECT entity_type,label,properties_json FROM entities WHERE workspace_id=? AND branch_id='main' AND entity_id=?",
+                    (workspace_id, entity["entity_id"]),
+                ).fetchone()
+                if existing and (
+                    existing["entity_type"] != entity["entity_type"]
+                    or existing["label"] != entity["label"]
+                    or json.loads(existing["properties_json"]) != entity["properties"]
+                ):
+                    entity_conflicts.append({"entity_id": entity["entity_id"], "label": entity["label"],
+                                             "existing_label": existing["label"]})
+
+        data = clean["adventure"]
+        return {
+            "protocol": clean["protocol"], "provenance": clean["provenance"],
+            "name": data["name"], "world_version": data["world_version"],
+            "turns": len(data["turns"]), "memories": len(data["memories"]),
+            "characters": len(data["entities"]), "images": len(data["assets"]),
+            "source_world_id_conflict": source_id_conflict,
+            "matching_world_id": matching_world_id,
+            "world_import_required": matching_world_id is None,
+            "entity_id_conflicts": entity_conflicts,
+            "context_manifests_included": False,
+            "import_mode": "duplicate",
+        }
 
     def get_story_world(self, workspace_id: str, world_id: str) -> dict[str, Any]:
         with self.db.lock:
