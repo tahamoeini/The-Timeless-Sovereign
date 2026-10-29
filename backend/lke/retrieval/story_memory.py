@@ -51,6 +51,29 @@ def bounded_story_history(
     return list(reversed(selected))
 
 
+def situation_dependency_revision(
+    turns: list[dict[str, Any]], sheet: dict[str, Any], threads: list[dict[str, Any]]
+) -> int:
+    """Return the newest revision of the inputs used to build a situation draft."""
+    revisions = [sheet.get("updated_revision", 0) or 0]
+    revisions.extend(thread.get("updated_revision", 0) or 0 for thread in threads)
+    for turn in turns:
+        revisions.append(turn.get("created_revision", 0) or 0)
+        revisions.extend(edit.get("created_revision", 0) or 0 for edit in turn.get("edit_history", []))
+    return max(revisions)
+
+
+def situation_content_revision(memory: dict[str, Any], versions: list[dict[str, Any]]) -> int:
+    """Context toggles do not make an unchanged situation fresh again."""
+    basis = memory["created_revision"]
+    fields = ("kind", "content", "source_turn_id", "narrative_order")
+    for previous in reversed(versions[:-1]):
+        if any(previous.get(field) != memory.get(field) for field in fields):
+            break
+        basis = previous["created_revision"]
+    return basis
+
+
 def select_story_memories(
     memories: list[dict[str, Any]],
     *,
@@ -58,6 +81,8 @@ def select_story_memories(
     as_of_narrative_order: int,
     query: str,
     source_turns: list[dict[str, Any]] | None = None,
+    situation_revision: int | None = None,
+    memory_history: dict[str, list[dict[str, Any]]] | None = None,
     max_items: int = 12,
     character_budget: int = 4000,
     author_budget: int = 1500,
@@ -78,6 +103,10 @@ def select_story_memories(
             reason = "context_disabled"
         elif memory["narrative_order"] > as_of_narrative_order:
             reason = "future_memory"
+        if reason is None and memory.get("kind") == "situation" and situation_revision is not None:
+            versions = (memory_history or {}).get(memory_id, [memory])
+            if situation_content_revision(memory, versions) < situation_revision:
+                reason = "stale_situation"
         if reason is None and memory.get("source_turn_id") and turns_by_id is not None:
             source = turns_by_id.get(memory["source_turn_id"])
             if source is None:

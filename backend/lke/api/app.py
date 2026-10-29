@@ -28,7 +28,7 @@ from lke.core.errors import ConflictError, IdempotencyConflictError, LKEError, N
 from lke.extraction import EXTRACTOR_VERSION, OUTPUT_SCHEMA_VERSION, PROMPT_VERSION, extraction_messages, validate_candidates
 from lke.ops.backup import BackupError, MAX_BACKUP_ARCHIVE_BYTES, create_backup, restore_backup_into_database
 from lke.retrieval import ContextCompiler
-from lke.retrieval.story_memory import bounded_story_history, select_story_episodes, select_story_memories
+from lke.retrieval.story_memory import bounded_story_history, select_story_episodes, select_story_memories, situation_dependency_revision
 
 
 _TAURI_ORIGINS = {"tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"}
@@ -910,15 +910,18 @@ def _story_adventure_context(
     state = gateway.get_rpg_state(workspace_id, branch_id, adventure["adventure_id"])
     sheet = state["sheet"]
     memory_state = gateway.get_story_memories(workspace_id, branch_id, adventure["adventure_id"])
+    story_turns = conversation["turns"] if turns is None else turns
     selected_memories = select_story_memories(
         memory_state["memories"],
         actor_entity_id=conversation["actor_entity_id"],
         as_of_narrative_order=as_of_narrative_order,
         query=query,
-        source_turns=conversation["turns"] if turns is None else turns,
+        source_turns=story_turns,
+        situation_revision=situation_dependency_revision(story_turns, sheet, memory_state["threads"]),
+        memory_history=memory_state["history"],
     )
     episode_recall = select_story_episodes(
-        conversation["turns"] if turns is None else turns,
+        story_turns,
         as_of_narrative_order=as_of_narrative_order,
         query=query,
     )

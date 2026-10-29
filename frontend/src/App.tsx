@@ -1885,11 +1885,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     event.preventDefault();
     if (!activeAdventure || !situationDraft.trim()) return;
     const current = studioData?.memories.memories.find((item) => item.kind === "situation");
+    const lastScene = [...(conversation?.turns || [])].reverse().find((turn) => turn.role === "assistant" && turn.status === "active");
     try {
       await onCommit(current ? "revise_story_memory" : "create_story_memory", {
         adventure_id: activeAdventure.adventure_id, memory_id: current?.memory_id || newId("situation"),
         ...(current ? { expected_version: current.version } : {}), kind: "situation", content: situationDraft.trim(),
-        context_enabled: true, review_status: "proposed", source_turn_id: null, importance: 5,
+        context_enabled: true, review_status: "proposed", source_turn_id: lastScene?.turn_id || null, importance: 5,
         knowledge_scope: "actors", known_by: [activeAdventure.actor_entity_id],
       }, "Save a rebuildable situation summary for review");
       await reloadStudioData();
