@@ -3,7 +3,8 @@
 import unittest
 
 from lke.retrieval.story_memory import (
-    bounded_story_history, select_story_episodes, select_story_memories, situation_dependency_revision,
+    bounded_story_history, restrict_retry_context, select_story_episodes, select_story_memories,
+    situation_dependency_revision,
 )
 
 
@@ -170,6 +171,88 @@ class StoryMemoryRetrievalTests(unittest.TestCase):
         self.assertEqual(reasons["superseded"], "turn_not_active")
         self.assertEqual(reasons["old-assistant"], "no_query_match")
         self.assertNotIn("recent", reasons)
+
+    def test_retry_uses_recorded_fact_values_and_historical_story_snapshot(self):
+        original = {
+            "base_revision": 10,
+            "manifest_id": "scene-manifest-10",
+            "included": [
+                {"claim_id": "gate", "object": "The gate opens at dawn."},
+                {"claim_id": "secret", "object": "The ferryman betrayed Mira."},
+            ],
+            "story": {
+                "character_sheet": {"level": 1, "updated_revision": 8},
+                "recent_checks": [{"check_id": "check-old", "outcome": "success"}],
+                "memories": [{"memory_id": "event-old", "content": "Mira found a brass key.",
+                              "created_revision": 7, "updated_revision": 7}],
+                "author_notes": [{"memory_id": "note-old", "content": "Keep the ferryman's motive hidden.",
+                                  "created_revision": 6, "updated_revision": 6}],
+                "open_threads": [{"thread_id": "thread-old", "content": "Who forged the key?",
+                                  "created_revision": 5, "updated_revision": 5}],
+                "public_npcs": [{"entity_id": "npc-old", "name": "Ilan", "created_revision": 4,
+                                 "updated_revision": 4}],
+                "approved_locations": ["Harbor", "Old tower"],
+                "retrieved_episodes": [{"turn_id": "turn-old", "content": "Ilan rang the bell twice."}],
+                "excluded_episode_count": 0,
+            },
+        }
+        current = {
+            "base_revision": 20,
+            "included": [
+                {"claim_id": "gate", "object": "The gate opens only after Mira's trial."},
+                {"claim_id": "new-fact", "object": "The ferryman is the prince."},
+            ],
+            "excluded": [{"claim_id": "secret", "reason": "author_only"}],
+            "story": {
+                "character_sheet": {"level": 4, "updated_revision": 18},
+                "recent_checks": [{"check_id": "check-new", "outcome": "failure"}],
+                "memories": [
+                    {"memory_id": "event-old", "content": "Mira gave away the brass key.",
+                     "created_revision": 7, "updated_revision": 16},
+                    {"memory_id": "event-new", "content": "The ferryman was unmasked.",
+                     "created_revision": 17, "updated_revision": 17},
+                ],
+                "author_notes": [{"memory_id": "note-new", "content": "Reveal the prince now.",
+                                  "created_revision": 17, "updated_revision": 17}],
+                "open_threads": [
+                    {"thread_id": "thread-old", "content": "Who forged the key?", "created_revision": 5,
+                     "updated_revision": 5},
+                    {"thread_id": "thread-new", "content": "Why was Ilan at the palace?", "created_revision": 17,
+                     "updated_revision": 17},
+                ],
+                "public_npcs": [{"entity_id": "npc-old", "name": "Ilan, the prince", "created_revision": 4,
+                                 "updated_revision": 18}],
+                "approved_locations": ["Harbor", "Palace"],
+                "retrieved_episodes": [
+                    {"turn_id": "turn-old", "content": "Ilan rang the bell once."},
+                    {"turn_id": "turn-new", "content": "Ilan entered the palace."},
+                ],
+                "excluded_episode_count": 0,
+            },
+        }
+
+        result = restrict_retry_context(current, original, original_revision=10)
+
+        self.assertEqual(result["included"], original["included"][:1])
+        self.assertEqual(result["excluded"][-1], {"claim_id": "new-fact", "reason": "not_in_original_turn_context"})
+        self.assertEqual(result["story"]["character_sheet"], original["story"]["character_sheet"])
+        self.assertEqual(result["story"]["recent_checks"], original["story"]["recent_checks"])
+        self.assertEqual(result["story"]["memories"], [])
+        self.assertEqual(result["story"]["author_notes"], [])
+        self.assertEqual(result["story"]["open_threads"], original["story"]["open_threads"])
+        self.assertEqual(result["story"]["public_npcs"], [])
+        self.assertEqual(result["story"]["approved_locations"], ["Harbor"])
+        self.assertEqual(result["story"]["retrieved_episodes"], [])
+        self.assertEqual(result["story"]["excluded_episode_count"], 1)
+
+    def test_retry_without_a_saved_story_snapshot_does_not_add_current_rpg_state(self):
+        result = restrict_retry_context(
+            {"included": [], "excluded": [], "story": {"character_sheet": {"level": 9}}},
+            {"base_revision": 4, "included": [], "excluded": []},
+            original_revision=4,
+        )
+
+        self.assertNotIn("story", result)
 
 
 if __name__ == "__main__":

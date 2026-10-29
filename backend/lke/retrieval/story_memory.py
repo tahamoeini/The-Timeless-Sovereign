@@ -82,18 +82,31 @@ def restrict_retry_context(
     current: dict[str, Any], original: dict[str, Any], *, original_revision: int
 ) -> dict[str, Any]:
     """Keep a retry inside its recorded historical view and today's permissions."""
-    allowed_claims = {item.get("claim_id") for item in original.get("included", [])}
+    original_claims = {
+        item.get("claim_id"): item for item in original.get("included", []) if isinstance(item, dict)
+    }
     current_claims = current.get("included", [])
-    included = [item for item in current_claims if item.get("claim_id") in allowed_claims]
+    # Current compilation rechecks today's permissions; use the exact fact values
+    # from the saved manifest so a later edit to the same stable ID cannot leak
+    # into a retry of an older scene.
+    included = [
+        original_claims[item["claim_id"]]
+        for item in current_claims
+        if isinstance(item, dict) and item.get("claim_id") in original_claims
+    ]
     excluded = list(current.get("excluded", []))
     excluded.extend(
         {"claim_id": item.get("claim_id"), "reason": "not_in_original_turn_context"}
-        for item in current_claims if item.get("claim_id") not in allowed_claims
+        for item in current_claims
+        if isinstance(item, dict) and item.get("claim_id") not in original_claims
     )
     result = {**current, "included": included, "excluded": excluded}
     original_story = original.get("story")
     current_story = current.get("story")
-    if not isinstance(original_story, dict) or not isinstance(current_story, dict):
+    if not isinstance(original_story, dict):
+        result.pop("story", None)
+        return result
+    if not isinstance(current_story, dict):
         return result
     story = {**current_story}
     for key in ("character_sheet", "recent_checks"):

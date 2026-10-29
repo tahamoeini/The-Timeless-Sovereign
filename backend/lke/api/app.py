@@ -667,6 +667,15 @@ def create_app(
             context = restrict_retry_context(context, original_manifest, original_revision=original_revision)
             context["story_snapshot_revision"] = original_revision
             context["retry_of_manifest_id"] = original_manifest.get("manifest_id")
+        else:
+            context["excluded"] = [
+                *context.get("excluded", []),
+                *({"claim_id": item.get("claim_id"), "reason": "historical_snapshot_unavailable"}
+                  for item in context.get("included", []) if isinstance(item, dict)),
+            ]
+            context["included"] = []
+            context.pop("story", None)
+            context["retry_context_limited"] = "The original scene context was not saved, so current world and RPG state were withheld."
         messages = _story_messages(prefix, context, preceding_user["content"])
         try:
             assistant_content = await run_in_threadpool(story_provider_registry.generate, body.provider, body.model, messages)

@@ -26,20 +26,30 @@ sidecar build dependency with python -m pip install -e ".[package]", and run
 ./scripts/build-sidecar.ps1 from PowerShell. Then start the app from the project
 root with npm run tauri. Use npm run tauri:build for a Windows desktop build.
 
-In Ubuntu/WSL, npm run tauri starts a Linux desktop build, not a Windows executable.
-It needs the Linux Tauri dependencies, a graphical display, Rust, and a Linux sidecar.
-Use a separate Linux virtual environment, install .[package], and run
-bash scripts/build-sidecar.sh before starting the app. Install Node dependencies
-for the operating system running the command; native npm packages are platform-specific.
-The Linux/WSL desktop flow has not yet been validated end to end; the current
-bundle configuration targets Windows installers.
+In Ubuntu/WSL, `npm run tauri` starts a Linux desktop build, not a Windows
+executable. It needs the Linux Tauri dependencies, a graphical display, Rust,
+Node dependencies installed for Linux, and a Linux sidecar. Run it from the
+project root without adding `--config`; the script enters `apps/desktop` and
+Tauri discovers its configuration there. The checked-in icon set is required
+for the Linux window and the Windows installer targets. Regenerate it with
+`python scripts/generate-desktop-icons.py` after editing the icon generator.
+
 See [Tauri's prerequisites](https://v2.tauri.app/start/prerequisites/) for the
 required Linux packages and Rust. From the project root, a typical WSL setup is:
 
-    python3 -m venv .venv-linux
-    . .venv-linux/bin/activate
-    python -m pip install -e '.[package]'
-    bash scripts/build-sidecar.sh
+```bash
+npm install
+python3 -m venv .venv-linux
+. .venv-linux/bin/activate
+python -m pip install -e '.[package]'
+bash scripts/build-sidecar.sh
+npm run tauri
+```
+
+The Linux/WSL desktop flow still needs a fresh end-to-end run; the configured
+bundle targets are Windows installers. Native npm packages depend on the OS
+running the command, so install dependencies from the same OS before launching
+Tauri.
     npm run tauri
 
 Run the canonical-core tests with the bundled or installed Python:
