@@ -204,6 +204,7 @@ export type ContextManifest = {
     world_version: number;
     description: string;
     public_lore: string;
+    opening_scene?: { situation: string; hook: string } | null;
     character_sheet: {
       stats: Record<string, number>;
       trackers: Record<string, { value: number; max: number }>;

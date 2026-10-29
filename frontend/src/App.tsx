@@ -10,6 +10,24 @@ type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
 const EXTERNAL_STORY_PROVIDERS: StoryProvider["id"][] = ["openai", "claude", "codex", "huggingface"];
 type StoryWorldCover = { mime_type: "image/jpeg" | "image/png" | "image/webp"; data_base64: string; alt_text: string };
+type StoryOpeningScene = { situation: string; hook: string };
+type StoryWorldArchitectDraft = { public_lore: string; starting_location: string; locations: string[]; opening_scene: StoryOpeningScene };
+
+function readStoryOpeningScene(value: unknown): StoryOpeningScene {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { situation: "", hook: "" };
+  const scene = value as Partial<StoryOpeningScene>;
+  return {
+    situation: typeof scene.situation === "string" ? scene.situation : "",
+    hook: typeof scene.hook === "string" ? scene.hook : "",
+  };
+}
+
+function parseStoryWorldLocations(value: string): string[] | null {
+  const locations = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  const keys = locations.map((item) => item.toLocaleLowerCase());
+  return locations.length <= 100 && locations.every((item) => item.length <= 150)
+    && new Set(keys).size === keys.length ? locations : null;
+}
 
 function readStoryWorldCover(value: unknown): StoryWorldCover | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -1329,12 +1347,24 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [editWorldLocations, setEditWorldLocations] = useState("");
   const [worldName, setWorldName] = useState("");
   const [worldPremise, setWorldPremise] = useState("");
+  const [worldStartingLocation, setWorldStartingLocation] = useState("The Crossroads");
+  const [worldLocations, setWorldLocations] = useState("The Crossroads");
+  const [worldOpeningSituation, setWorldOpeningSituation] = useState("");
+  const [worldOpeningHook, setWorldOpeningHook] = useState("");
+  const [worldArchitectBrief, setWorldArchitectBrief] = useState("");
+  const [worldArchitectModel, setWorldArchitectModel] = useState("");
+  const [worldArchitectDraft, setWorldArchitectDraft] = useState<StoryWorldArchitectDraft | null>(null);
+  const [worldArchitectBusy, setWorldArchitectBusy] = useState(false);
+  const [worldArchitectMessage, setWorldArchitectMessage] = useState("");
   const [worldCover, setWorldCover] = useState<StoryWorldCover | null>(null);
   const [editWorldCover, setEditWorldCover] = useState<StoryWorldCover | null>(null);
   const [coverPreparing, setCoverPreparing] = useState(false);
   const [editWorldName, setEditWorldName] = useState("");
   const [editWorldDescription, setEditWorldDescription] = useState("");
   const [editWorldPremise, setEditWorldPremise] = useState("");
+  const [editWorldStartingLocation, setEditWorldStartingLocation] = useState("");
+  const [editWorldOpeningSituation, setEditWorldOpeningSituation] = useState("");
+  const [editWorldOpeningHook, setEditWorldOpeningHook] = useState("");
   const [worldTemplate, setWorldTemplate] = useState("fantasy");
   const [creationPointBudget, setCreationPointBudget] = useState(10);
   const [creationAllowUnspentPoints, setCreationAllowUnspentPoints] = useState(false);
@@ -1407,6 +1437,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
   const storyProviderAvailable = selectedStoryProvider?.available ?? false;
   const models = selectedStoryProvider?.models ?? [];
+  const localStoryProvider = storyProviders.find((provider) => provider.id === "ollama");
+  const localStoryModels = localStoryProvider?.models ?? [];
+  const selectedWorldArchitectModel = localStoryModels.includes(worldArchitectModel)
+    ? worldArchitectModel
+    : localStoryProvider?.default_model && localStoryModels.includes(localStoryProvider.default_model)
+      ? localStoryProvider.default_model
+      : localStoryModels[0] || "";
   function ensureExternalProviderConsent(requestedProvider: StoryProvider["id"]): boolean {
     if (!EXTERNAL_STORY_PROVIDERS.includes(requestedProvider) || externalProviderConsents.includes(requestedProvider)) return true;
     const selectedProvider = storyProviders.find((provider) => provider.id === requestedProvider);
@@ -1507,6 +1544,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setEditWorldName(detail.name);
       setEditWorldDescription(updatedLatest?.description || "");
       setEditWorldPremise(typeof updatedLatest?.content.public_lore === "string" ? updatedLatest.content.public_lore : "");
+      setEditWorldStartingLocation(typeof updatedLatest?.content.starting_location === "string" ? updatedLatest.content.starting_location : "");
+      const openingScene = readStoryOpeningScene(updatedLatest?.content.opening_scene);
+      setEditWorldOpeningSituation(openingScene.situation);
+      setEditWorldOpeningHook(openingScene.hook);
       setEditWorldCover(readStoryWorldCover(updatedLatest?.content.cover_image));
       setEditWorldLocations(Array.isArray(updatedLatest?.content.locations) ? updatedLatest.content.locations.filter((value): value is string => typeof value === "string").join("\n") : "");
       setEditTrackerText(trackerDefinitionsText(updatedLatest?.content.trackers));
@@ -2177,8 +2218,49 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     }
   }
 
+  async function generateWorldDraft() {
+    const name = worldName.trim();
+    const brief = worldArchitectBrief.trim();
+    if (!name || !brief) {
+      setCreationError("Enter a world name and a short creative brief before asking the local architect.");
+      return;
+    }
+    if (!localStoryProvider?.available || !selectedWorldArchitectModel) {
+      setCreationError("Choose an available local Ollama model to draft this world. You can still create it manually.");
+      return;
+    }
+    setCreationError("");
+    setWorldArchitectMessage("");
+    setWorldArchitectDraft(null);
+    setWorldArchitectBusy(true);
+    try {
+      const response = await request<{ draft: StoryWorldArchitectDraft; saved: false }>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/draft`,
+        { method: "POST", body: JSON.stringify({ name, template_key: worldTemplate, brief, model: selectedWorldArchitectModel }) },
+      );
+      setWorldArchitectDraft(response.draft);
+      setWorldArchitectMessage("Local draft ready. Review it, then choose whether to use it in the editable world form.");
+    } catch (error) {
+      setCreationError(error instanceof Error ? error.message : "The local world draft could not be generated.");
+    } finally {
+      setWorldArchitectBusy(false);
+    }
+  }
+
+  function applyWorldArchitectDraft() {
+    if (!worldArchitectDraft) return;
+    setWorldPremise(worldArchitectDraft.public_lore);
+    setWorldStartingLocation(worldArchitectDraft.starting_location);
+    setWorldLocations(worldArchitectDraft.locations.join("\n"));
+    setWorldOpeningSituation(worldArchitectDraft.opening_scene.situation);
+    setWorldOpeningHook(worldArchitectDraft.opening_scene.hook);
+    setWorldArchitectDraft(null);
+    setWorldArchitectMessage("Draft copied into the editable form. Review every field, then save the world to publish version 1.");
+  }
+
   async function createWorld(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (worldArchitectBusy) return;
     const name = worldName.trim();
     if (!name) return;
     if (!creationWorldValid) {
@@ -2188,6 +2270,23 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     const trackers = parseTrackerDefinitions(creationTrackerText);
     if (!trackers) {
       setCreationError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
+      return;
+    }
+    const locations = parseStoryWorldLocations(worldLocations);
+    if (!locations) {
+      setCreationError("Use up to 100 unique location names, each no longer than 150 characters.");
+      return;
+    }
+    const requestedStartingLocation = worldStartingLocation.trim();
+    const startingLocation = locations.find((location) => location.toLocaleLowerCase() === requestedStartingLocation.toLocaleLowerCase()) || "";
+    if (requestedStartingLocation && !startingLocation) {
+      setCreationError("Choose a starting location from the world’s location list, or leave it blank.");
+      return;
+    }
+    const openingSituation = worldOpeningSituation.trim();
+    const openingHook = worldOpeningHook.trim();
+    if (Boolean(openingSituation) !== Boolean(openingHook)) {
+      setCreationError("Complete both opening-scene fields, or leave both empty.");
       return;
     }
     const template = STORY_WORLD_TEMPLATES[worldTemplate as keyof typeof STORY_WORLD_TEMPLATES];
@@ -2200,6 +2299,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         template_key: worldTemplate,
         content: {
           ...template.content,
+          ...(openingSituation ? { opening_scene: { situation: openingSituation, hook: openingHook } } : {}),
           cover_image: worldCover,
           trackers,
           game_mechanics: creationMechanics,
@@ -2227,11 +2327,20 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             }])),
           },
           public_lore: worldPremise.trim(),
-          locations: typeof template.content.starting_location === "string" && template.content.starting_location ? [template.content.starting_location] : [],
+          starting_location: startingLocation,
+          locations,
         },
       }, "Create a story world from a local template");
       setWorldName("");
       setWorldPremise("");
+      const defaultStartingLocation = typeof template.content.starting_location === "string" ? template.content.starting_location : "";
+      setWorldStartingLocation(defaultStartingLocation);
+      setWorldLocations(defaultStartingLocation);
+      setWorldOpeningSituation("");
+      setWorldOpeningHook("");
+      setWorldArchitectBrief("");
+      setWorldArchitectDraft(null);
+      setWorldArchitectMessage("");
       setWorldCover(null);
       const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
       setWorlds(rows);
@@ -2473,6 +2582,35 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setLibraryError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
       return;
     }
+    const openingSituation = editWorldOpeningSituation.trim();
+    const openingHook = editWorldOpeningHook.trim();
+    if (Boolean(openingSituation) !== Boolean(openingHook)) {
+      setLibraryError("Complete both opening-scene fields, or leave both empty.");
+      return;
+    }
+    const locations = parseStoryWorldLocations(editWorldLocations);
+    if (!locations) {
+      setLibraryError("Use up to 100 unique location names, each no longer than 150 characters.");
+      return;
+    }
+    const requestedStartingLocation = editWorldStartingLocation.trim();
+    const matchingStartingLocation = locations.find((location) => location.toLocaleLowerCase() === requestedStartingLocation.toLocaleLowerCase());
+    const startingLocation = matchingStartingLocation || (!locations.length ? requestedStartingLocation : "");
+    if (requestedStartingLocation && locations.length > 0 && !matchingStartingLocation) {
+      setLibraryError("Choose a starting location from the world’s location list, or leave it blank.");
+      return;
+    }
+    const revisedContent: Record<string, unknown> = {
+      ...latest.content,
+      cover_image: editWorldCover,
+      trackers,
+      game_mechanics: editMechanics,
+      public_lore: editWorldPremise.trim(),
+      starting_location: startingLocation,
+      locations,
+    };
+    if (openingSituation) revisedContent.opening_scene = { situation: openingSituation, hook: openingHook };
+    else delete revisedContent.opening_scene;
     try {
       await onMainCommit("revise_story_world", {
         world_id: selectedWorldDetail.world_id,
@@ -2480,8 +2618,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         name: editWorldName.trim(),
         description: editWorldDescription.trim(),
         template_key: latest.template_key,
-        content: { ...latest.content, cover_image: editWorldCover, trackers, game_mechanics: editMechanics,
-          public_lore: editWorldPremise.trim(), locations: editWorldLocations.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).slice(0, 100) },
+        content: revisedContent,
       }, "Save a new immutable version of the story world");
       const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
       setWorlds(rows);
@@ -2493,6 +2630,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setEditWorldName(detail.name);
       setEditWorldDescription(refreshedVersion?.description || "");
       setEditWorldPremise(typeof refreshedVersion?.content.public_lore === "string" ? refreshedVersion.content.public_lore : "");
+      setEditWorldStartingLocation(typeof refreshedVersion?.content.starting_location === "string" ? refreshedVersion.content.starting_location : "");
+      const openingScene = readStoryOpeningScene(refreshedVersion?.content.opening_scene);
+      setEditWorldOpeningSituation(openingScene.situation);
+      setEditWorldOpeningHook(openingScene.hook);
       setEditWorldCover(readStoryWorldCover(refreshedVersion?.content.cover_image));
       setEditWorldLocations(Array.isArray(refreshedVersion?.content.locations) ? refreshedVersion.content.locations.filter((value): value is string => typeof value === "string").join("\n") : "");
       setEditTrackerText(trackerDefinitionsText(refreshedVersion?.content.trackers));
@@ -2976,6 +3117,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     ? selectedWorldDetail.versions.find((item) => item.version === selectedSetupWorld?.latest_version)?.content || null
     : null;
   const selectedSetupCover = readStoryWorldCover(selectedSetupContent?.cover_image);
+  const selectedSetupOpeningScene = readStoryOpeningScene(selectedSetupContent?.opening_scene);
+  const hasSelectedSetupOpeningScene = !!selectedSetupOpeningScene.situation && !!selectedSetupOpeningScene.hook;
   const selectedSetupCreation = selectedSetupContent ? characterCreationFromContent(selectedSetupContent) : null;
   const selectedSetupBaselines = selectedSetupContent?.stats && typeof selectedSetupContent.stats === "object" && !Array.isArray(selectedSetupContent.stats)
     ? selectedSetupContent.stats as Record<string, number>
@@ -3131,24 +3274,66 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <span>Selected: {selectedSetupWorld.name} · world v{selectedSetupWorld.latest_version}</span>
             {selectedSetupCover && <img src={storyWorldCoverUrl(selectedSetupCover)} alt={selectedSetupCover.alt_text || `${selectedSetupWorld.name} cover`} />}
           </div>}
-          <button className="secondary-button" type="button" disabled={busy} onClick={() => { setShowWorldCreation((visible) => !visible); setCreationError(""); }}>
+          <button className="secondary-button" type="button" disabled={busy || worldArchitectBusy} onClick={() => { setShowWorldCreation((visible) => !visible); setCreationError(""); }}>
             {showWorldCreation ? "Cancel new world" : "Create a new world"}
           </button>
           {showWorldCreation && <form className="story-hub-form story-hub-create-world" onSubmit={(event) => void createWorld(event)}>
           <div className="story-hub-title"><span>＋</span><div><strong>Create a world</strong><small>Start with a small template. Advanced rules stay optional.</small></div></div>
-          <label className="field-label">World name<input value={worldName} onChange={(event) => setWorldName(event.target.value)} placeholder="The Shattered Coast" maxLength={200} required /></label>
-          <label className="field-label">Starting style<select value={worldTemplate} onChange={(event) => {
+          <label className="field-label">World name<input value={worldName} disabled={worldArchitectBusy} onChange={(event) => { setWorldName(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} placeholder="The Shattered Coast" maxLength={200} required /></label>
+          <label className="field-label">Starting style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
             const nextTemplate = event.target.value;
+            const nextTemplateContent = STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content;
+            const defaultStartingLocation = typeof nextTemplateContent?.starting_location === "string" ? nextTemplateContent.starting_location : "";
             const nextStats = defaultCharacterCreationStats(nextTemplate);
             setWorldTemplate(nextTemplate);
+            setWorldStartingLocation(defaultStartingLocation);
+            setWorldLocations(defaultStartingLocation);
             setCreationStatDefinitions(nextStats);
             setCreationTrackerText(trackerDefinitionsText(
               STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content.trackers,
             ));
             setCreationMechanics(defaultStoryMechanics(nextTemplate === "narrative" ? "narrative_only" : "d20"));
             setCreationError("");
+            setWorldArchitectDraft(null);
+            setWorldArchitectMessage("");
           }}>{Object.entries(STORY_WORLD_TEMPLATES).map(([key, template]) => <option key={key} value={key}>{template.label}</option>)}</select></label>
           <label className="field-label">Public setting premise<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Share setting details that are safe for the hero to know." /></label>
+          <details className="character-creation-rules">
+            <summary>Draft with the local World Architect (optional)</summary>
+            <p className="field-note">Uses only the local Ollama model selected here. It receives the world name, style, and brief. Drafts are not saved or canonical until you review, apply, edit, and save the world.</p>
+            <label className="field-label">Creative brief<textarea value={worldArchitectBrief} disabled={worldArchitectBusy} onChange={(event) => { setWorldArchitectBrief(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} rows={3} maxLength={4000} placeholder="A rainbound archipelago where city-states trade memories and old lighthouses predict storms" /></label>
+            <div className="world-architect-controls">
+              <label className="field-label">Local Ollama model<select aria-label="World Architect local model" value={selectedWorldArchitectModel} onChange={(event) => setWorldArchitectModel(event.target.value)} disabled={worldArchitectBusy}>
+                {!selectedWorldArchitectModel && <option value="">Choose a local model</option>}
+                {localStoryModels.map((localModel) => <option key={localModel} value={localModel}>{localModel}</option>)}
+              </select></label>
+              <button className="quiet-button" type="button" disabled={modelDiscoveryBusy || worldArchitectBusy} onClick={() => void loadProviderModels("ollama")}>{modelDiscoveryBusy ? "Checking…" : "Refresh local models"}</button>
+              <button className="secondary-button" type="button" disabled={worldArchitectBusy || !worldName.trim() || !worldArchitectBrief.trim() || !localStoryProvider?.available || !selectedWorldArchitectModel} onClick={() => void generateWorldDraft()}>{worldArchitectBusy ? "Drafting locally…" : "Generate local draft"}</button>
+            </div>
+            {modelDiscoveryError && <p className="inline-error" role="alert">{modelDiscoveryError}</p>}
+            {!localStoryProvider?.available && <p className="field-note">Local Ollama is unavailable. Start Ollama and refresh models, or continue with manual world creation.</p>}
+            {worldArchitectMessage && <p className="field-note" role="status" aria-live="polite">{worldArchitectMessage}</p>}
+            {worldArchitectDraft && <section className="export-preview world-architect-preview" aria-label="World Architect draft preview">
+              <strong>Local draft · not saved</strong>
+              <p>{worldArchitectDraft.public_lore}</p>
+              <p><strong>Starting location:</strong> {worldArchitectDraft.starting_location}</p>
+              <p><strong>Other locations:</strong> {worldArchitectDraft.locations.join(" · ")}</p>
+              <p><strong>Opening situation:</strong> {worldArchitectDraft.opening_scene.situation}</p>
+              <p><strong>Immediate hook:</strong> {worldArchitectDraft.opening_scene.hook}</p>
+              <button className="secondary-button" type="button" onClick={applyWorldArchitectDraft}>Use this draft in the editable form</button>
+            </section>}
+          </details>
+          <details className="character-creation-rules">
+            <summary>Starting place and map locations</summary>
+            <label className="field-label">Starting location<input value={worldStartingLocation} onChange={(event) => { setWorldStartingLocation(event.target.value); setCreationError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
+            <label className="field-label">World locations<textarea value={worldLocations} onChange={(event) => { setWorldLocations(event.target.value); setCreationError(""); }} rows={3} maxLength={16000} placeholder="One location per line" /><small className="field-note">Use unique names; if a starting location is set, it must appear in this list.</small></label>
+          </details>
+          <details className="character-creation-rules">
+            <summary>Add an opening scene (optional)</summary>
+            <p className="field-note">This public scene seed is included with the first generated reply. Describe the situation and its hook; the player still chooses what their hero says and does.</p>
+            <label className="field-label">Opening situation<textarea value={worldOpeningSituation} onChange={(event) => { setWorldOpeningSituation(event.target.value); setCreationError(""); }} rows={3} maxLength={4000} placeholder="Where the scene begins and what is already happening" /></label>
+            <label className="field-label">Immediate hook<textarea value={worldOpeningHook} onChange={(event) => { setWorldOpeningHook(event.target.value); setCreationError(""); }} rows={2} maxLength={2000} placeholder="A question, pressure, or opportunity for the hero" /></label>
+          </details>
           <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Stored in the local world version and portable package. Lorethra compresses it to a small JPEG, up to 64 KiB.</small></label>
           {worldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(worldCover)} alt={worldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={worldCover.alt_text} onChange={(event) => setWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setWorldCover(null)}>Remove cover</button></div>}
           <details className="character-creation-rules story-world-advanced">
@@ -3210,7 +3395,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </details>
           {creationError && <p className="inline-error" role="alert">{creationError}</p>}
           {!creationWorldValid && <p className="field-note" role="status">Use distinct stat keys, valid baseline bounds, and point costs from 1 to 20.</p>}
-          <button className="secondary-button full-button" disabled={busy || coverPreparing || !worldName.trim() || !creationWorldValid}>Save world</button>
+          <button className="secondary-button full-button" disabled={busy || coverPreparing || worldArchitectBusy || !worldName.trim() || !creationWorldValid}>Save world</button>
           </form>}
           <div className="wizard-actions">
             <button className="primary-button" type="button" disabled={busy || !selectedSetupWorld || !!selectedSetupWorld.archived_at || !selectedSetupContent} onClick={() => { setLibraryError(""); setSetupStep(2); }}>Continue to hero <span>→</span></button>
@@ -3301,6 +3486,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <p className="story-start-summary" role="status">{selectedSetupWorld && selectedSetupHero
             ? `“${adventureName.trim() || selectedSetupWorld.name}” starts as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
             : "Choose a world and hero before starting."}</p>
+          {hasSelectedSetupOpeningScene && <details className="character-creation-review">
+            <summary>Review the opening scene</summary>
+            <p>{selectedSetupOpeningScene.situation}</p>
+            <p><strong>Immediate hook:</strong> {selectedSetupOpeningScene.hook}</p>
+            <small className="field-note">This guides the first generated reply. You choose your hero’s response when you begin play.</small>
+          </details>}
           {selectedSetupCreation && <details className="character-creation-review" open>
             <summary>Starting attributes · {adventurePointsSpent} / {selectedSetupCreation.point_budget} points spent</summary>
             <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
@@ -3417,9 +3608,17 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <label className="field-label">World name<input value={editWorldName} onChange={(event) => setEditWorldName(event.target.value)} maxLength={200} required /></label>
           <label className="field-label">Public world summary<input value={editWorldDescription} onChange={(event) => setEditWorldDescription(event.target.value)} maxLength={1000} placeholder="A short summary safe to share with the hero" /></label>
           <label className="field-label">Public setting premise<textarea value={editWorldPremise} onChange={(event) => setEditWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Setting details safe for the hero to know" /></label>
+          <details className="character-creation-rules">
+            <summary>Edit the opening scene (optional)</summary>
+            <p className="field-note">This version's public scene seed is used only for the first generated reply. It sets the situation and hook without choosing the hero's response.</p>
+            <label className="field-label">Opening situation<textarea value={editWorldOpeningSituation} onChange={(event) => { setEditWorldOpeningSituation(event.target.value); setLibraryError(""); }} rows={3} maxLength={4000} placeholder="Where the scene begins and what is already happening" /></label>
+            <label className="field-label">Immediate hook<textarea value={editWorldOpeningHook} onChange={(event) => { setEditWorldOpeningHook(event.target.value); setLibraryError(""); }} rows={2} maxLength={2000} placeholder="A question, pressure, or opportunity for the hero" /></label>
+            <small className="field-note">Leave both fields empty to remove the opening scene in the new version.</small>
+          </details>
           <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, true); }} /><small className="field-note">This image is pinned with the new version and included in world packages.</small></label>
           {editWorldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(editWorldCover)} alt={editWorldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={editWorldCover.alt_text} onChange={(event) => setEditWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setEditWorldCover(null)}>Remove cover</button></div>}
-          <label className="field-label">Map locations<textarea value={editWorldLocations} onChange={(event) => setEditWorldLocations(event.target.value)} rows={3} maxLength={4000} placeholder="One approved location per line" /><small className="field-note">These locations belong to the new world version. Adventures already started keep their pinned map.</small></label>
+          <label className="field-label">Starting location<input value={editWorldStartingLocation} onChange={(event) => { setEditWorldStartingLocation(event.target.value); setLibraryError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
+          <label className="field-label">Map locations<textarea value={editWorldLocations} onChange={(event) => { setEditWorldLocations(event.target.value); setLibraryError(""); }} rows={3} maxLength={16000} placeholder="One approved location per line" /><small className="field-note">Use unique names; if a starting location is set, include it here. Adventures already started keep their pinned map.</small></label>
           <label className="field-label">World-specific trackers<textarea value={editTrackerText} onChange={(event) => setEditTrackerText(event.target.value)} rows={3} maxLength={4000} placeholder="health=10/10\nfocus=6/6" /><small className="field-note">One tracker per line as name=current/maximum. These rules affect new adventures from this version.</small></label>
           <StoryMechanicsEditor value={editMechanics}
             stats={Object.keys((selectedWorldDetail.versions.find((item) => item.version === selectedWorldDetail.latest_version)?.content.stats as Record<string, unknown>) || {})}
@@ -3499,6 +3698,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   </div>)}
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
                   {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length + turn.context_manifest.story.recent_mechanic_checks.length} recent checks · {turn.context_manifest.story.character_sheet.experience.total_xp} XP</small>
+                    {turn.context_manifest.story.opening_scene && <small>Opening scene seed · {turn.context_manifest.story.opening_scene.situation} · Hook: {turn.context_manifest.story.opening_scene.hook}</small>}
                     {(turn.context_manifest.story.memories ?? []).map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
                     {(turn.context_manifest.story.author_notes ?? []).map((memory) => <small key={memory.memory_id}>Narrator-only guidance · importance {memory.importance}: {memory.content}</small>)}
                     {(turn.context_manifest.story.excluded_memories ?? []).map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}

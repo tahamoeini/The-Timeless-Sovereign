@@ -352,6 +352,45 @@ def _validated_world_content(value: Any, *, max_bytes: int | None = None, label:
     return value
 
 
+def _validated_story_opening_scene(content: dict[str, Any]) -> dict[str, str] | None:
+    """Validate the optional public scene seed pinned to a reusable world version."""
+    if "opening_scene" not in content:
+        return None
+    raw = content["opening_scene"]
+    if not isinstance(raw, dict) or set(raw) != {"situation", "hook"}:
+        raise ValidationError("opening_scene must define a situation and an immediate hook")
+    return {
+        "situation": _required_text(raw["situation"], "opening scene situation", 4000),
+        "hook": _required_text(raw["hook"], "opening scene hook", 2000),
+    }
+
+
+def _validated_story_world_locations(content: dict[str, Any]) -> None:
+    """Check authored world location names and the optional starting-place reference."""
+    starting_location = content.get("starting_location", "")
+    if not isinstance(starting_location, str) or len(starting_location.strip()) > 200:
+        raise ValidationError("starting_location must be text of at most 200 characters")
+    starting_location = starting_location.strip()
+    if "locations" not in content:
+        if "starting_location" in content:
+            content["starting_location"] = starting_location
+        return
+    raw = content["locations"]
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValidationError("World locations must be an array of at most 100 names")
+    locations = [_required_text(item, "world location", 150) for item in raw]
+    location_keys = {item.casefold() for item in locations}
+    if len(location_keys) != len(locations):
+        raise ValidationError("World location names must be unique regardless of letter case")
+    content["locations"] = locations
+    if starting_location and locations and starting_location.casefold() not in location_keys:
+        raise ValidationError("starting_location must match one of the world locations")
+    if starting_location and locations:
+        starting_location = next(item for item in locations if item.casefold() == starting_location.casefold())
+    if "starting_location" in content:
+        content["starting_location"] = starting_location
+
+
 _DEFAULT_STORY_STATS = {"might": 0, "agility": 0, "insight": 0, "presence": 0}
 
 
@@ -923,6 +962,7 @@ def validate_world_package(package: Any) -> dict[str, Any]:
         if not isinstance(description, str) or len(description.strip()) > 4000:
             raise ValidationError("World description must be text of at most 4000 characters")
         content = _validated_world_content(item.get("content"))
+        _validated_story_opening_scene(content)
         _validated_story_character_creation(content)
         _validated_story_ability_definitions(content)
         _validated_story_mechanics(content)
@@ -1436,7 +1476,7 @@ def _public_world_export(package: dict[str, Any]) -> dict[str, Any]:
         content = version["content"]
         visible = {
             key: content[key] for key in
-            ("starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "cover_image") if key in content
+            ("starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "opening_scene", "cover_image") if key in content
         }
         import_metadata = content.get("mno_import")
         if isinstance(import_metadata, dict):
@@ -1704,7 +1744,7 @@ def _adventure_export_report(package: dict[str, Any], mode: str) -> dict[str, An
 
 
 def _world_export_report(package: dict[str, Any], mode: str) -> dict[str, Any]:
-    visible_fields = {"starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "cover_image"}
+    visible_fields = {"starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "opening_scene", "cover_image"}
     visible_import_fields = {"format", "version", "stat_definitions", "npc_tracker_definitions", "conversion"}
     unclassified = []
     for version in package["versions"]:
@@ -3518,6 +3558,8 @@ class CommandGateway:
             if not isinstance(description, str) or len(description.strip()) > 4000:
                 raise ValidationError("description must be text of at most 4000 characters")
             content = _validated_world_content(payload.get("content", {}))
+            _validated_story_opening_scene(content)
+            _validated_story_world_locations(content)
             _validated_story_character_creation(content)
             _validated_story_ability_definitions(content)
             _validated_story_mechanics(content)

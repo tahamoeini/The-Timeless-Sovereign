@@ -14,6 +14,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | ci(windows): build desktop package on pull requests (`851a1b1`) | Run Windows checks, bundled API smoke, MSI/NSIS builds, and artifact upload on pull requests |
 | feat(story): streamline adventure discovery and setup (`80095ba`) | Add an always-visible adventure creation action, progressive disclosure for long libraries, clearer wizard steps, and live point-budget guidance |
 | docs(status): refresh UX and Windows acceptance evidence | Synchronize project status, release gates, operations, and changelog with the verified UI workflow and Windows package |
+| feat(story): add local world architect and opening scenes | Add local Ollama drafting, strict semantic checks, human preview/apply, versioned opening scenes, and public package preservation |
 
 ### RPG authoring and deterministic play
 
@@ -21,6 +22,8 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - Added explicit exceptional-ability definitions and branch-local activation state. The world version records effects, declared costs/cooldowns, capabilities, limitations, and unresolved aspects. Undeclared costs or restrictions are not invented.
 - Added world-pinned d20, custom dice, narrative-only, and hybrid mechanics, with difficulty and encounter definitions, skill ranks, and manual/automatic/hybrid experience. The API generates dice and gateway code validates and records the deterministic result with a rule snapshot.
 - Added reviewable setup and play surfaces for mechanics, abilities, experience, and starting attributes. Added a bounded, validated local world cover image with alt text.
+- Added an optional local-Ollama World Architect. Its strict draft schema checks bounded text, unique location names, and a matching starting location; the user previews and applies the draft to editable fields, then explicitly saves through the world command. It creates no canonical write and never calls an external provider.
+- Added an optional, structured opening-scene seed to immutable world versions. Setup requires situation and hook together, displays the exact seed during final review, and the provider context includes it only for the first generated response; public world packages preserve the seed.
 
 ### Continuity and providers
 
