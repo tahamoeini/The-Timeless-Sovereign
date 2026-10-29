@@ -21,16 +21,23 @@ python -m pip install -e .
 npm install
 ```
 
-For desktop development on Windows, install the Rust/Tauri prerequisites, install the
-sidecar build dependency with python -m pip install -e ".[package]", and run
-./scripts/build-sidecar.ps1 from PowerShell. Then start the app from the project
-root with npm run tauri. Use npm run tauri:build for a Windows desktop build.
+For desktop development on Windows, install the Rust/Tauri prerequisites and the
+Python project in the virtual environment above, then run `npm run tauri:dev` from
+the project root. This opens the native desktop window, starts Vite with frontend
+hot reload, and runs the Python API directly from source. `npm run tauri` remains
+an equivalent shortcut. The first Rust compile can take time; later launches and
+Rust rebuilds use Cargo's incremental cache. Python source edits require restarting
+the desktop app. Build the PyInstaller sidecar only when preparing a packaged
+desktop build: install `.[package]`, run `./scripts/build-sidecar.ps1`, then use
+`npm run tauri:build`.
 
-In Ubuntu/WSL, `npm run tauri` starts a Linux desktop build, not a Windows
+In Ubuntu/WSL, `npm run tauri:dev` starts a Linux desktop build, not a Windows
 executable. It needs the Linux Tauri dependencies, a graphical display, Rust,
-Node dependencies installed for Linux, and a Linux sidecar. Run it from the
-project root without adding `--config`; the script enters `apps/desktop` and
-Tauri discovers its configuration there. The checked-in icon set is required
+Node dependencies installed for Linux, and the Python project installed in the
+active virtual environment. The debug app uses the Python source API; no Linux
+sidecar build is needed for development. Run it from the project root without
+adding `--config`; the script enters `apps/desktop` and Tauri discovers its
+configuration there. The checked-in icon set is required
 for the Linux window and the Windows installer targets. Regenerate it with
 `python scripts/generate-desktop-icons.py` after editing the icon generator.
 
@@ -41,10 +48,12 @@ required Linux packages and Rust. From the project root, a typical WSL setup is:
 npm ci --include=optional
 python3 -m venv .venv-linux
 . .venv-linux/bin/activate
-python -m pip install -e '.[package]'
-bash scripts/build-sidecar.sh
-npm run tauri
+python -m pip install -e .
+npm run tauri:dev
 ```
+
+To create a packaged Linux build, install `.[package]`, build the sidecar with
+`bash scripts/build-sidecar.sh`, and run `npm run tauri:build` instead.
 
 `npm ci` installs the native optional packages for the current operating system.
 This checkout may also be used from Windows, so its `node_modules` directory can

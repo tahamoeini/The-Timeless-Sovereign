@@ -40,7 +40,7 @@ The first model-assisted extraction path accepts local text sources up to 24,000
 
 ## Local API boundary
 
-The FastAPI adapter binds to loopback, checks the peer address, limits browser origins, and requires a bearer token on data routes. The desktop shell provisions a fresh per-run token through a private sidecar launch channel. The bundled API sidecar was built and smoke-tested for loopback health and bearer-token enforcement; the Tauri host itself has not been compiled or packaged on this machine. Do not expose the API on a LAN interface, add permissive CORS, or accept a token from imported content.
+The FastAPI adapter binds to loopback, checks the peer address, limits browser origins, and requires a bearer token on data routes. The desktop shell provisions a fresh per-run token through a private process-launch channel. Tauri debug mode runs the Python API from the checkout and permits the Vite origin; release mode launches the bundled sidecar and disables the development origin. Do not expose the API on a LAN interface, add permissive CORS, or accept a token from imported content.
 
 ## Providers and frameworks
 

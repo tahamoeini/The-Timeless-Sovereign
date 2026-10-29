@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child as ProcessChild, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{Manager, RunEvent, State};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 use uuid::Uuid;
 
@@ -22,6 +22,7 @@ impl ApiChild {
             }
             Self::Development(child) => {
                 let _ = child.kill();
+                let _ = child.wait();
             }
         }
     }
@@ -60,10 +61,7 @@ fn development_python(project_root: &Path) -> PathBuf {
     }
 
     #[cfg(target_os = "windows")]
-    let candidates = [
-        project_root.join(".venv/Scripts/python.exe"),
-        project_root.join(".venv-linux/Scripts/python.exe"),
-    ];
+    let candidates = [project_root.join(".venv/Scripts/python.exe")];
     #[cfg(not(target_os = "windows"))]
     let candidates = [
         project_root.join(".venv/bin/python"),
@@ -90,10 +88,15 @@ fn spawn_development_api(token: &str, port: &str, data_path: &str) -> Result<Pro
     let project_root = manifest_dir
         .join("../../..")
         .canonicalize()
-        .map_err(|error| format!("Could not locate the project source for desktop development: {error}"))?;
+        .map_err(|error| {
+            format!("Could not locate the project source for desktop development: {error}")
+        })?;
     let backend_path = project_root.join("backend");
     if !backend_path.is_dir() {
-        return Err(format!("Backend source directory is missing: {}", backend_path.display()));
+        return Err(format!(
+            "Backend source directory is missing: {}",
+            backend_path.display()
+        ));
     }
 
     Command::new(development_python(&project_root))
@@ -104,6 +107,7 @@ fn spawn_development_api(token: &str, port: &str, data_path: &str) -> Result<Pro
         .env("LKE_API_PORT", port)
         .env("LKE_DATA_DIR", data_path)
         .env("LKE_DEV_MODE", "1")
+        .env("PYTHONUNBUFFERED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -140,9 +144,7 @@ fn main() {
                     .env("LKE_DATA_DIR", &data_path)
                     .env("LKE_DEV_MODE", "0");
                 let (mut events, child) = command.spawn()?;
-                tauri::async_runtime::spawn(async move {
-                    while events.recv().await.is_some() {}
-                });
+                tauri::async_runtime::spawn(async move { while events.recv().await.is_some() {} });
                 ApiChild::Bundled(child)
             };
 
