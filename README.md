@@ -19,6 +19,18 @@ python -m pip install -e .
 npm install
 ```
 
+For desktop development on Windows, install the Rust/Tauri prerequisites, install the
+sidecar build dependency with python -m pip install -e ".[package]", and run
+./scripts/build-sidecar.ps1 from PowerShell. Then start the app from the project
+root with npm run tauri. Use npm run tauri:build for a desktop build.
+
+In Ubuntu/WSL, npm run tauri starts a Linux desktop build, not a Windows executable.
+It needs the Linux Tauri dependencies, a graphical display, Rust, and a Linux sidecar.
+Use a separate Linux virtual environment, install .[package], and run
+bash scripts/build-sidecar.sh before starting the app. Install Node dependencies
+for the operating system running the command; native npm packages are platform-specific.
+The Linux/WSL desktop flow has not yet been validated end to end.
+
 Run the canonical-core tests with the bundled or installed Python:
 
 ```powershell

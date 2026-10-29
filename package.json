@@ -8,7 +8,8 @@
     "build": "tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
     "test:story-export": "node tests/story-export.mjs",
     "preview": "vite preview --config frontend/vite.config.ts",
-    "tauri": "tauri --config apps/desktop/src-tauri/tauri.conf.json"
+    "tauri": "cd apps/desktop && tauri dev",
+    "tauri:build": "cd apps/desktop && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
