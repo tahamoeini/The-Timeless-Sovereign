@@ -122,6 +122,12 @@ class StoryMemoryRetrievalTests(unittest.TestCase):
             situation_revision=10, memory_history={"situation": [original, toggled]},
         )
         self.assertEqual(result["excluded_memories"][0]["reason"], "stale_situation")
+        rereviewed = {**toggled, "version": 3, "created_revision": 13, "reviewed_revision": 14}
+        result = select_story_memories(
+            [rereviewed], actor_entity_id="hero", as_of_narrative_order=5, query="harbor",
+            situation_revision=10, memory_history={"situation": [original, toggled, rereviewed]},
+        )
+        self.assertEqual([item["memory_id"] for item in result["memories"]], ["situation"])
         rebuilt = {**toggled, "version": 3, "content": "Now at the market.", "created_revision": 13}
         result = select_story_memories(
             [rebuilt], actor_entity_id="hero", as_of_narrative_order=5, query="market",

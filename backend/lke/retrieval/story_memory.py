@@ -66,11 +66,15 @@ def situation_dependency_revision(
 def memory_content_revision(memory: dict[str, Any], versions: list[dict[str, Any]]) -> int:
     """Context toggles do not make unchanged memory content fresh again."""
     basis = memory["created_revision"]
+    if memory.get("reviewed_revision") is not None:
+        return basis
     fields = ("kind", "content", "source_turn_id", "narrative_order")
     for previous in reversed(versions[:-1]):
         if any(previous.get(field) != memory.get(field) for field in fields):
             break
         basis = previous["created_revision"]
+        if previous.get("reviewed_revision") is not None:
+            break
     return basis
 
 
