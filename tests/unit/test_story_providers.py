@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,6 +10,7 @@ from lke.ai.providers import (
     StoryProviderError,
     StoryProviderRegistry,
     _CodexAppServer,
+    _stop_codex_process,
     _anthropic_messages,
     _local_hf_base_url,
     _openai_responses,
@@ -67,7 +69,16 @@ class StoryProviderTests(unittest.TestCase):
         self.assertEqual(sent[2]["method"], "model/list")
         self.assertEqual(sent[3]["params"]["cursor"], "page-two")
         self.assertNotIn("OPENAI_API_KEY", start.call_args.kwargs["env"])
-        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=2)
+
+    def test_codex_windows_timeout_stops_only_the_launched_process_tree(self):
+        process = Mock(stdin=io.StringIO(), pid=1234)
+        process.wait.side_effect = [subprocess.TimeoutExpired("codex", 2), 0]
+        process.poll.return_value = None
+        with patch("lke.ai.providers.os.name", "nt"), patch("lke.ai.providers.subprocess.run") as stop_tree:
+            _stop_codex_process(process)
+        self.assertEqual(stop_tree.call_args.args[0], ["taskkill", "/PID", "1234", "/T", "/F"])
+        process.kill.assert_called_once()
 
     def test_codex_catalog_failure_keeps_automatic_default_available(self):
         registry = StoryProviderRegistry(FakeOllama(), {"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"})

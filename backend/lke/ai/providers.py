@@ -198,6 +198,28 @@ def _model_names(base_url: str, api_key: str | None = None) -> list[str]:
     return sorted(name for name in names if _MODEL_NAME.fullmatch(name))
 
 
+def _stop_codex_process(process: subprocess.Popen) -> None:
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=2)
+
+
 class _CodexAppServer:
     """One ephemeral, read-only Codex app-server turn; story state stays in Lorethra."""
 
@@ -289,15 +311,7 @@ class _CodexAppServer:
                         cursor = next_cursor
                     return models
                 finally:
-                    if process.stdin is not None:
-                        process.stdin.close()
-                    if process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait(timeout=2)
+                    _stop_codex_process(process)
         except (OSError, ValueError) as error:
             raise StoryProviderError("Codex model discovery could not start.") from error
 
@@ -432,15 +446,7 @@ class _CodexAppServer:
                     elif "id" in event and "method" in event:
                         send({"id": event["id"], "error": {"code": -32000, "message": "Story Studio does not approve tools."}})
             finally:
-                if process.stdin is not None:
-                    process.stdin.close()
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=2)
+                _stop_codex_process(process)
 
 
 def receive_after_send(send: Any, receive: Any, deadline: float, method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
