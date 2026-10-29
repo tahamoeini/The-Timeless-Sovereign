@@ -183,6 +183,33 @@ class StoryContinuityTests(unittest.TestCase):
         self.assertEqual(threads[0]["thread_id"], "missing-sailor")
         self.assertGreater(thread["revision"], note["revision"])
 
+    def test_adventure_turns_create_sourced_reviewable_memories_and_retries_refresh_them(self):
+        turn = self.append_turn("automatic-memory", self.revision, "Look ahead", "A lantern glows above the ferry bell.")
+        memory_state = self.gateway.get_story_memories(self.workspace_id, "adventure", "adventure")
+        original = next(item for item in memory_state["memories"] if item["source_turn_id"] == turn["assistant_turn_id"])
+        self.assertEqual(original["kind"], "event")
+        self.assertEqual(original["review_status"], "proposed")
+        self.assertEqual(original["knowledge_scope"], "actors")
+        self.assertEqual(original["known_by"], ["hero"])
+        self.assertIn("lantern glows", original["content"])
+
+        edited = self.command("retry-automatic-memory", turn["revision"], "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": turn["assistant_turn_id"], "action": "edit",
+            "content": "A dark window faces the road.", "provider": "ollama", "model": "local-test",
+            "context_manifest_id": "retry-auto-manifest",
+            "context_manifest": {"manifest_id": "retry-auto-manifest", "base_revision": turn["revision"],
+                                 "workspace_id": self.workspace_id, "branch_id": "adventure",
+                                 "actor": {"entity_id": "hero"}, "included": [], "excluded": []},
+            "context_revision": turn["revision"],
+        }, branch="adventure")
+        memory_state = self.gateway.get_story_memories(self.workspace_id, "adventure", "adventure")
+        revised = [item for item in memory_state["memories"] if item["source_turn_id"] == turn["assistant_turn_id"]]
+        self.assertEqual(len(revised), 2)
+        latest = max(revised, key=lambda item: item["created_revision"])
+        self.assertEqual(latest["review_status"], "proposed")
+        self.assertIn("dark window", latest["content"])
+        self.assertEqual(edited["revision"], turn["revision"] + 1)
+
     def test_actor_scoped_memory_revisions_preserve_importance_and_knowledge_holders(self):
         created = self.command("scoped-memory", self.revision, "create_story_memory", {
             "adventure_id": "adventure", "memory_id": "hero-secret", "kind": "event",

@@ -1874,20 +1874,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     }
   }
 
-  async function saveEventMemory(turn: StoryConversation["turns"][number]) {
-    if (!activeAdventure || turn.role !== "assistant") return;
-    try {
-      await onCommit("create_story_memory", {
-        adventure_id: activeAdventure.adventure_id, memory_id: newId("memory"), kind: "event",
-        content: turn.content.slice(0, 1000), context_enabled: true, review_status: "proposed", source_turn_id: turn.turn_id,
-        importance: 3, knowledge_scope: "actors", known_by: [activeAdventure.actor_entity_id],
-      }, "Propose a sourced event memory for player review");
-      await reloadStudioData();
-    } catch (memoryError) {
-      setRpgError(memoryError instanceof Error ? memoryError.message : "The event could not be proposed.");
-    }
-  }
-
   async function reviewMemory(memory: StoryMemory, review_status: "accepted" | "rejected") {
     if (!activeAdventure) return;
     try {
@@ -2170,7 +2156,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                 <button type="button" disabled={busy || generating} onClick={() => { setEditingTurnId(turn.turn_id); setEditedTurnText(turn.content); }}>Edit</button>
                 {turn.role === "assistant" && <button type="button" disabled={busy || generating || !model.trim() || !storyProviderAvailable} onClick={() => void retryStoryTurn(turn)}>Retry</button>}
                 <button type="button" disabled={busy || generating} onClick={() => void deleteStoryTurn(turn)}>Hide</button>
-                {turn.role === "assistant" && activeAdventure && <button type="button" disabled={busy || generating} onClick={() => void saveEventMemory(turn)}>Remember event</button>}
+                {turn.role === "assistant" && activeAdventure && studioData?.memories.memories.some((memory) => memory.kind === "event" && memory.source_turn_id === turn.turn_id) && <small>Scene memory proposal is available in the Memories panel.</small>}
               </div>}
               {studioData?.assets.filter((asset) => asset.target_kind === "scene" && asset.target_id === turn.turn_id).map((asset) => assetData[asset.asset_id] && <img className="story-turn-art" key={asset.asset_id} src={assetData[asset.asset_id]} alt={asset.display_name} />)}
               {turn.role === "assistant" && <>

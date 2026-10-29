@@ -2167,6 +2167,17 @@ class CommandGateway:
                 "UPDATE story_conversations SET updated_revision=?,updated_at=? WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
                 (revision, now, workspace_id, branch_id, conversation_id),
             )
+            if turn["role"] == "assistant" and action == "edit":
+                memory_text = content[:1000].rstrip()
+                if len(content) > 1000:
+                    memory_text += "…"
+                connection.execute(
+                    "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at) "
+                    "SELECT a.workspace_id,a.branch_id,a.adventure_id,?,1,'event',?,1,'proposed',?,t.narrative_order,NULL,3,'actors',json_array(a.actor_entity_id),?,NULL,? "
+                    "FROM story_adventures a JOIN story_turns t ON t.workspace_id=a.workspace_id AND t.branch_id=a.branch_id "
+                    "AND t.conversation_id=a.conversation_id WHERE a.workspace_id=? AND a.branch_id=? AND t.turn_id=?",
+                    (str(uuid4()), memory_text, turn_id, revision, now, workspace_id, branch_id, turn_id),
+                )
             return {"conversation_id": conversation_id, "turn_id": turn_id, "action": action, "superseded_count": len(targets) - 1}, "story.turn_edited" if action == "edit" else "story.turn_deleted", True
 
         if command_type in {"create_story_memory", "revise_story_memory"}:
@@ -2531,6 +2542,16 @@ class CommandGateway:
                 "UPDATE story_adventures SET completed_turns=completed_turns+1,updated_revision=?,updated_at=? "
                 "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
                 (revision, now, workspace_id, branch_id, conversation_id),
+            )
+            memory_text = assistant_content[:1000].rstrip()
+            if len(assistant_content) > 1000:
+                memory_text += "…"
+            connection.execute(
+                "INSERT INTO story_memories(workspace_id,branch_id,adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at) "
+                "SELECT workspace_id,branch_id,adventure_id,?,1,'event',?,1,'proposed',?,?,NULL,3,'actors',json_array(actor_entity_id),?,NULL,? "
+                "FROM story_adventures WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                (str(uuid4()), memory_text, assistant_turn_id, narrative_order, revision, now,
+                 workspace_id, branch_id, conversation_id),
             )
             return {
                 "conversation_id": conversation_id,

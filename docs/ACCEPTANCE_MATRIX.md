@@ -59,6 +59,8 @@ After the continuity changes, a separate focused run of 46 in-memory continuity,
 
 World-package continuation: 53 focused in-memory tests passed across package, continuity, retrieval, provider, gateway and branch-promotion modules; the frontend TypeScript check also passed. Package fixtures exercise version-preserving export/import to a separate workspace, preview collision reporting, idempotent replay, target-ID conflicts, unsupported formats, noncontiguous versions, oversized content, and credential-like fields. The UI and API paths are implemented but have not yet been exercised in a browser or across devices. Adventure packages and explicit world replacement remain open.
 
+Automatic memory continuation: each adventure append and assistant edit/retry atomically writes a source-turn-linked, actor-scoped event excerpt as proposed; focused tests verify it awaits review and retry creates a new proposal. This improves capture coverage but does not identify salient facts semantically; stale state reconstruction and explicit correction links remain open.
+
 Entity F1, relation precision, evidence grounding, retrieval Recall@K, temporal accuracy, context efficiency, narrative continuity, human review cost, import performance, and recovery performance require a fixed bilingual evaluation corpus and rubric. Numeric targets are intentionally unset until a measured baseline exists.
 
 ## Definition of Done

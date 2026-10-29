@@ -56,7 +56,9 @@ Re-running extraction records new proposed candidates and does not overwrite an 
 
 `import_story_world` validates a bounded `lke.world.v1` package, requires a new world ID, and atomically copies its contiguous version sequence into the main-branch library. The audit command records the package and source workspace/world IDs; imported versions receive the destination revision. The export and preview endpoints are read-only. Packages contain world content, which may include private notes; they do not export provider settings, but arbitrary user-authored text should be reviewed before sharing. World replacement and adventure packages are not implemented.
 
-Story-turn edits, memories, NPC profiles, map locations, travel, local image attachments, and opt-in NPC simulation also have gateway commands. Historical state reconstruction after edits, generalized merge, richer event/scene deltas, and full publishing workflows remain incomplete; consult the acceptance matrix for current evidence.
+Every committed adventure turn and every edit or retry of an assistant scene creates a sourced, actor-scoped event-memory proposal in the same command transaction. The proposal contains a bounded scene excerpt and requires human review; it never becomes canon automatically. Editing or removing the source turn makes its pending review stale and retrieval excludes its accepted record until a revised proposal is reviewed. This is a sourced excerpt workflow, not semantic event extraction.
+
+Story-turn edits, other memory lifecycle actions, NPC profiles, map locations, travel, local image attachments, and opt-in NPC simulation also have gateway commands. Historical state reconstruction after edits, generalized merge, richer event/scene deltas, and full publishing workflows remain incomplete; consult the acceptance matrix for current evidence.
 
 ## Failure behavior
 
