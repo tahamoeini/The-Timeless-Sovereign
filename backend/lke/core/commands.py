@@ -272,6 +272,306 @@ def validate_world_package(package: Any) -> dict[str, Any]:
     return {"protocol": "lke.world.v1", "provenance": {"workspace_id": source_workspace, "world_id": source_world}, "versions": clean}
 
 
+def _package_object(value: Any, fields: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValidationError(f"{label} contains unsupported or missing fields")
+    return value
+
+
+def _package_list(value: Any, fields: set[str], label: str, maximum: int = 10_000) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > maximum:
+        raise ValidationError(f"{label} must be an array of at most {maximum} records")
+    return [_package_object(row, fields, f"{label} record") for row in value]
+
+
+def _package_time(value: Any, field: str) -> str:
+    return _required_text(value, field, 80)
+
+
+def validate_adventure_package(package: Any) -> dict[str, Any]:
+    """Validate a portable adventure snapshot. Historical context manifests are deliberately omitted."""
+    root_fields = {"protocol", "provenance", "world", "context_manifests_included", "adventure"}
+    root = _package_object(package, root_fields, "Adventure package")
+    if root["protocol"] != "lke.adventure.v1":
+        raise ValidationError("Unsupported adventure package format or version")
+    if root["context_manifests_included"] is not False:
+        raise ValidationError("Adventure packages must omit historical context manifests")
+    try:
+        if len(_json(root).encode("utf-8")) > 10_000_000:
+            raise ValidationError("Adventure package is limited to 10 MB")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("Adventure package must contain valid JSON") from error
+
+    provenance = _package_object(root["provenance"], {"workspace_id", "branch_id", "adventure_id", "exported_at"}, "Adventure provenance")
+    clean_provenance = {
+        "workspace_id": _required_text(provenance["workspace_id"], "source workspace_id", 100),
+        "branch_id": _required_text(provenance["branch_id"], "source branch_id", 100),
+        "adventure_id": _required_text(provenance["adventure_id"], "source adventure_id", 100),
+        "exported_at": _package_time(provenance["exported_at"], "exported_at"),
+    }
+    world = validate_world_package(root["world"])
+    adventure = _package_object(
+        root["adventure"],
+        {"name", "status", "completed_turns", "npc_simulation_enabled", "actor_entity_id", "entities",
+         "conversation", "sheet", "turns", "turn_edits", "checks", "proposals", "memories", "threads",
+         "npcs", "assets", "locations"},
+        "Adventure data",
+    )
+    name = _required_text(adventure["name"], "adventure name", 200)
+    status = adventure["status"]
+    if status not in {"active", "complete", "paused"}:
+        raise ValidationError("Adventure status is unsupported")
+    completed_turns = adventure["completed_turns"]
+    if type(completed_turns) is not int or completed_turns < 0:
+        raise ValidationError("completed_turns must be a non-negative integer")
+    if not isinstance(adventure["npc_simulation_enabled"], bool):
+        raise ValidationError("npc_simulation_enabled must be a boolean")
+
+    entities = _package_list(adventure["entities"], {"entity_id", "entity_type", "label", "properties"}, "entities", 500)
+    clean_entities: list[dict[str, Any]] = []
+    entity_ids: set[str] = set()
+    for entity in entities:
+        entity_id = _required_text(entity["entity_id"], "entity_id", 100)
+        if entity_id in entity_ids:
+            raise ValidationError("Adventure entity IDs must be unique")
+        entity_ids.add(entity_id)
+        clean_entities.append({
+            "entity_id": entity_id,
+            "entity_type": _required_text(entity["entity_type"], "entity_type", 100),
+            "label": _required_text(entity["label"], "entity label", 200),
+            "properties": _validated_world_content(entity["properties"]),
+        })
+    actor_entity_id = _required_text(adventure["actor_entity_id"], "actor_entity_id", 100)
+    actor = next((entity for entity in clean_entities if entity["entity_id"] == actor_entity_id), None)
+    if not actor or actor["entity_type"] not in {"character", "person"}:
+        raise ValidationError("Adventure protagonist must be a character in the package")
+
+    conversation = _package_object(adventure["conversation"], {"title", "actor_is_user_controlled"}, "Conversation")
+    clean_conversation = {
+        "title": _required_text(conversation["title"], "conversation title", 200),
+        "actor_is_user_controlled": conversation["actor_is_user_controlled"],
+    }
+    if not isinstance(clean_conversation["actor_is_user_controlled"], bool):
+        raise ValidationError("actor_is_user_controlled must be a boolean")
+    sheet = _package_object(adventure["sheet"], {"stats", "trackers", "current_location"}, "Character sheet")
+    clean_sheet = {
+        "stats": _validated_stats(sheet["stats"]),
+        "trackers": _validated_trackers(sheet["trackers"]),
+        "current_location": sheet["current_location"],
+    }
+    if not isinstance(clean_sheet["current_location"], str) or len(clean_sheet["current_location"]) > 200:
+        raise ValidationError("current_location must be text of at most 200 characters")
+
+    turns = _package_list(adventure["turns"], {"turn_id", "turn_order", "role", "narrative_order", "content", "provider", "model", "created_at"}, "turns")
+    clean_turns: list[dict[str, Any]] = []
+    turn_ids: set[str] = set()
+    turn_orders: set[int] = set()
+    for turn in turns:
+        turn_id = _required_text(turn["turn_id"], "turn_id", 100)
+        order, narrative_order = turn["turn_order"], turn["narrative_order"]
+        if turn_id in turn_ids or type(order) is not int or order < 0 or order in turn_orders:
+            raise ValidationError("Turn IDs and non-negative turn_order values must be unique")
+        if type(narrative_order) is not int or narrative_order < 0 or turn["role"] not in {"user", "assistant"}:
+            raise ValidationError("Turn role and narrative order are invalid")
+        content = _required_text(turn["content"], "turn content", 200_000)
+        clean_turns.append({
+            "turn_id": turn_id, "turn_order": order, "role": turn["role"],
+            "narrative_order": narrative_order, "content": content,
+            "provider": _optional_text(turn["provider"], "provider", 100),
+            "model": _optional_text(turn["model"], "model", 200),
+            "created_at": _package_time(turn["created_at"], "turn created_at"),
+        })
+        turn_ids.add(turn_id)
+        turn_orders.add(order)
+    clean_turns.sort(key=lambda turn: turn["turn_order"])
+    if turn_orders and turn_orders != set(range(len(turn_orders))):
+        raise ValidationError("turn_order values must be contiguous and start at zero")
+
+    edits = _package_list(adventure["turn_edits"], {"turn_id", "version", "content", "status", "provider", "model", "created_at"}, "turn_edits")
+    clean_edits: list[dict[str, Any]] = []
+    edit_versions: dict[str, list[int]] = {}
+    for edit in edits:
+        turn_id, version = _required_text(edit["turn_id"], "edited turn_id", 100), edit["version"]
+        if turn_id not in turn_ids or type(version) is not int or version < 1 or edit["status"] not in {"active", "deleted", "superseded"}:
+            raise ValidationError("Turn edit references an invalid turn, version, or status")
+        clean_edits.append({
+            "turn_id": turn_id, "version": version,
+            "content": _required_text(edit["content"], "edited turn content", 200_000),
+            "status": edit["status"], "provider": _optional_text(edit["provider"], "provider", 100),
+            "model": _optional_text(edit["model"], "model", 200),
+            "created_at": _package_time(edit["created_at"], "turn edit created_at"),
+        })
+        edit_versions.setdefault(turn_id, []).append(version)
+    for versions in edit_versions.values():
+        if sorted(versions) != list(range(1, len(versions) + 1)):
+            raise ValidationError("Turn edit versions must be contiguous and start at one")
+
+    checks = _package_list(adventure["checks"], {"check_id", "stat_name", "die_roll", "modifier", "total", "target", "outcome", "created_at"}, "checks")
+    clean_checks: list[dict[str, Any]] = []
+    check_ids: set[str] = set()
+    for check in checks:
+        check_id = _required_text(check["check_id"], "check_id", 100)
+        stat_name = _required_text(check["stat_name"], "stat_name", 40)
+        if check_id in check_ids or stat_name not in clean_sheet["stats"]:
+            raise ValidationError("D20 check ID or stat reference is invalid")
+        roll, modifier, total, target = check["die_roll"], check["modifier"], check["total"], check["target"]
+        if any(type(value) is not int for value in (roll, modifier, total, target)) or not 1 <= roll <= 20 or not -20 <= modifier <= 20 or not 1 <= target <= 100 or total != roll + modifier:
+            raise ValidationError("D20 check math or bounds are invalid")
+        outcome = "success" if total >= target else "failure"
+        if check["outcome"] != outcome:
+            raise ValidationError("D20 check outcome does not match its recorded math")
+        clean_checks.append({"check_id": check_id, "stat_name": stat_name, "die_roll": roll,
+                             "modifier": modifier, "total": total, "target": target,
+                             "outcome": outcome, "created_at": _package_time(check["created_at"], "check created_at")})
+        check_ids.add(check_id)
+
+    proposals = _package_list(adventure["proposals"], {"proposal_id", "source_turn_id", "changes", "review_status", "created_at"}, "proposals")
+    clean_proposals: list[dict[str, Any]] = []
+    proposal_ids: set[str] = set()
+    for proposal in proposals:
+        proposal_id = _required_text(proposal["proposal_id"], "proposal_id", 100)
+        source_turn = proposal["source_turn_id"]
+        if source_turn is not None:
+            source_turn = _required_text(source_turn, "source_turn_id", 100)
+            if source_turn not in turn_ids:
+                raise ValidationError("Proposal source turn is missing from the adventure")
+        if proposal_id in proposal_ids or proposal["review_status"] not in {"proposed", "accepted", "rejected"}:
+            raise ValidationError("Proposal ID or review status is invalid")
+        clean_changes = _validated_rpg_changes(proposal["changes"])
+        for change in clean_changes:
+            if change["operation"] == "npc_profile" and change["npc_entity_id"] not in entity_ids:
+                raise ValidationError("NPC proposal references an entity missing from the package")
+            if change["operation"] == "add_event_memory" and not set(change["known_by"]) <= entity_ids:
+                raise ValidationError("Memory proposal references a character missing from the package")
+        clean_proposals.append({"proposal_id": proposal_id, "source_turn_id": source_turn,
+                                "changes": clean_changes, "review_status": proposal["review_status"],
+                                "created_at": _package_time(proposal["created_at"], "proposal created_at")})
+        proposal_ids.add(proposal_id)
+
+    memories = _package_list(adventure["memories"], {"memory_id", "version", "kind", "content", "context_enabled", "review_status", "source_turn_id", "narrative_order", "supersedes_version", "importance", "knowledge_scope", "known_by", "created_at"}, "memories")
+    clean_memories: list[dict[str, Any]] = []
+    memory_versions: dict[str, list[int]] = {}
+    for memory in memories:
+        memory_id, version = _required_text(memory["memory_id"], "memory_id", 100), memory["version"]
+        source_turn = memory["source_turn_id"]
+        if source_turn is not None:
+            source_turn = _required_text(source_turn, "memory source_turn_id", 100)
+            if source_turn not in turn_ids:
+                raise ValidationError("Memory source turn is missing from the adventure")
+        known_by = memory["known_by"]
+        if not isinstance(known_by, list) or any(not isinstance(item, str) or item not in entity_ids for item in known_by):
+            raise ValidationError("Memory knowledge holders must reference packaged characters")
+        if type(version) is not int or version < 1 or type(memory["narrative_order"]) is not int or memory["narrative_order"] < 0:
+            raise ValidationError("Memory version and narrative order must be non-negative integers")
+        if memory["kind"] not in {"note", "event", "situation"} or memory["review_status"] not in {"proposed", "accepted", "rejected"}:
+            raise ValidationError("Memory type or review status is invalid")
+        if not isinstance(memory["context_enabled"], bool) or not 1 <= memory["importance"] <= 5:
+            raise ValidationError("Memory context setting or importance is invalid")
+        if memory["knowledge_scope"] not in {"shared", "actors", "author", "private"}:
+            raise ValidationError("Memory knowledge scope is invalid")
+        if (memory["knowledge_scope"] == "actors") != bool(known_by):
+            raise ValidationError("Actor-scoped memory must name its knowledge holders")
+        supersedes = memory["supersedes_version"]
+        if supersedes is not None and (type(supersedes) is not int or supersedes < 1 or supersedes >= version):
+            raise ValidationError("Memory supersession reference is invalid")
+        clean_memories.append({"memory_id": memory_id, "version": version, "kind": memory["kind"],
+                               "content": _required_text(memory["content"], "memory content", 4000),
+                               "context_enabled": memory["context_enabled"], "review_status": memory["review_status"],
+                               "source_turn_id": source_turn, "narrative_order": memory["narrative_order"],
+                               "supersedes_version": supersedes, "importance": memory["importance"],
+                               "knowledge_scope": memory["knowledge_scope"], "known_by": list(dict.fromkeys(known_by)),
+                               "created_at": _package_time(memory["created_at"], "memory created_at")})
+        memory_versions.setdefault(memory_id, []).append(version)
+    for versions in memory_versions.values():
+        if sorted(versions) != list(range(1, len(versions) + 1)):
+            raise ValidationError("Memory versions must be contiguous and start at one")
+
+    threads = _package_list(adventure["threads"], {"thread_id", "title", "detail", "status", "created_at", "updated_at"}, "threads")
+    clean_threads: list[dict[str, Any]] = []
+    for thread in threads:
+        if thread["status"] not in {"open", "closed"}:
+            raise ValidationError("Thread status is invalid")
+        detail = thread["detail"]
+        if not isinstance(detail, str) or len(detail) > 2000:
+            raise ValidationError("Thread detail is limited to 2000 characters")
+        clean_threads.append({"thread_id": _required_text(thread["thread_id"], "thread_id", 100),
+                              "title": _required_text(thread["title"], "thread title", 200), "detail": detail,
+                              "status": thread["status"], "created_at": _package_time(thread["created_at"], "thread created_at"),
+                              "updated_at": _package_time(thread["updated_at"], "thread updated_at")})
+
+    npcs = _package_list(adventure["npcs"], {"npc_entity_id", "aliases", "public_profile", "private_profile", "review_status", "created_at", "updated_at"}, "npcs", 500)
+    clean_npcs: list[dict[str, Any]] = []
+    npc_ids: set[str] = set()
+    for npc in npcs:
+        npc_id = _required_text(npc["npc_entity_id"], "npc_entity_id", 100)
+        aliases = npc["aliases"]
+        if npc_id not in entity_ids or npc_id == actor_entity_id or npc_id in npc_ids:
+            raise ValidationError("NPC profile must reference a separate packaged character")
+        if not isinstance(aliases, list) or len(aliases) > 50:
+            raise ValidationError("NPC aliases must be an array of at most 50 names")
+        clean_aliases = [_required_text(alias, "NPC alias", 100) for alias in aliases]
+        if npc["review_status"] not in {"proposed", "accepted", "rejected"}:
+            raise ValidationError("NPC review status is invalid")
+        clean_npcs.append({"npc_entity_id": npc_id, "aliases": clean_aliases,
+                           "public_profile": _validated_world_content(npc["public_profile"]),
+                           "private_profile": _validated_world_content(npc["private_profile"]),
+                           "review_status": npc["review_status"],
+                           "created_at": _package_time(npc["created_at"], "NPC created_at"),
+                           "updated_at": _package_time(npc["updated_at"], "NPC updated_at")})
+        npc_ids.add(npc_id)
+
+    assets = _package_list(adventure["assets"], {"asset_id", "target_kind", "target_id", "display_name", "mime_type", "data_base64", "provenance", "created_at"}, "assets", 500)
+    clean_assets: list[dict[str, Any]] = []
+    for asset in assets:
+        if asset["target_kind"] not in {"character", "scene"} or asset["mime_type"] not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ValidationError("Story asset target or media type is invalid")
+        if asset["target_kind"] == "character" and asset["target_id"] not in entity_ids:
+            raise ValidationError("Character asset target is missing from the package")
+        try:
+            content = base64.b64decode(_required_text(asset["data_base64"], "asset data", 7_000_000), validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValidationError("Story asset data must be valid base64") from error
+        if not 1 <= len(content) <= 5_242_880:
+            raise ValidationError("Each story asset must contain between 1 byte and 5 MB")
+        clean_assets.append({"asset_id": _required_text(asset["asset_id"], "asset_id", 100),
+                             "target_kind": asset["target_kind"],
+                             "target_id": _required_text(asset["target_id"], "asset target_id", 100),
+                             "display_name": _required_text(asset["display_name"], "asset display_name", 200),
+                             "mime_type": asset["mime_type"], "content": content,
+                             "provenance": _validated_world_content(asset["provenance"]),
+                             "created_at": _package_time(asset["created_at"], "asset created_at")})
+
+    locations = _package_list(adventure["locations"], {"location_id", "name", "status", "source_proposal_id", "created_at"}, "locations", 1000)
+    clean_locations: list[dict[str, Any]] = []
+    location_names: set[str] = set()
+    for location in locations:
+        name_key = _required_text(location["name"], "location name", 200).casefold()
+        source_proposal_id = location["source_proposal_id"]
+        if source_proposal_id is not None:
+            source_proposal_id = _required_text(source_proposal_id, "source_proposal_id", 100)
+            if source_proposal_id not in proposal_ids:
+                raise ValidationError("Map location proposal reference is missing")
+        if name_key in location_names or location["status"] not in {"approved", "rejected"}:
+            raise ValidationError("Map locations must have unique names and supported statuses")
+        clean_locations.append({"location_id": _required_text(location["location_id"], "location_id", 100),
+                                "name": name_key if False else location["name"].strip(),
+                                "status": location["status"], "source_proposal_id": source_proposal_id,
+                                "created_at": _package_time(location["created_at"], "location created_at")})
+        location_names.add(name_key)
+
+    return {
+        "protocol": "lke.adventure.v1", "provenance": clean_provenance, "world": world,
+        "context_manifests_included": False,
+        "adventure": {"name": name, "status": status, "completed_turns": completed_turns,
+                      "npc_simulation_enabled": adventure["npc_simulation_enabled"],
+                      "actor_entity_id": actor_entity_id, "entities": clean_entities,
+                      "conversation": clean_conversation, "sheet": clean_sheet,
+                      "turns": clean_turns, "turn_edits": clean_edits, "checks": clean_checks,
+                      "proposals": clean_proposals, "memories": clean_memories, "threads": clean_threads,
+                      "npcs": clean_npcs, "assets": clean_assets, "locations": clean_locations},
+    }
+
+
 def _validated_stats(value: Any) -> dict[str, int]:
     if not isinstance(value, dict) or len(value) > 20:
         raise ValidationError("stats must be an object with at most 20 values")
