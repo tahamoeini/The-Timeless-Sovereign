@@ -298,6 +298,16 @@ def _package_choice(value: Any, choices: set[str], field: str) -> str:
     return value
 
 
+def _image_signature_matches(mime_type: str, content: bytes) -> bool:
+    return (
+        mime_type == "image/png" and content.startswith(b"\x89PNG\r\n\x1a\n")
+    ) or (
+        mime_type == "image/jpeg" and content.startswith(b"\xff\xd8\xff")
+    ) or (
+        mime_type == "image/webp" and len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP"
+    )
+
+
 def validate_adventure_package(package: Any) -> dict[str, Any]:
     """Validate a portable adventure snapshot. Historical context manifests are deliberately omitted."""
     root_fields = {"protocol", "provenance", "world", "context_manifests_included", "adventure"}
@@ -386,11 +396,17 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         if type(narrative_order) is not int or narrative_order < 0:
             raise ValidationError("Turn role and narrative order are invalid")
         content = _required_text(turn["content"], "turn content", 200_000)
+        provider = _package_optional_text(turn["provider"], "provider", 100)
+        model = _package_optional_text(turn["model"], "model", 200)
+        if role == "user" and (provider is not None or model is not None):
+            raise ValidationError("User turns cannot contain provider metadata")
+        if role == "assistant" and (provider not in _ALLOWED_STORY_PROVIDERS or model is None):
+            raise ValidationError("Assistant turns need supported provider metadata")
         clean_turns.append({
             "turn_id": turn_id, "turn_order": order, "role": role,
             "narrative_order": narrative_order, "content": content,
-            "provider": _package_optional_text(turn["provider"], "provider", 100),
-            "model": _package_optional_text(turn["model"], "model", 200),
+            "provider": provider,
+            "model": model,
             "created_at": _package_time(turn["created_at"], "turn created_at"),
         })
         turn_ids.add(turn_id)
@@ -398,6 +414,13 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     clean_turns.sort(key=lambda turn: turn["turn_order"])
     if turn_orders and turn_orders != set(range(len(turn_orders))):
         raise ValidationError("turn_order values must be contiguous and start at zero")
+    if len(clean_turns) % 2 or any(
+        turn["role"] != ("user" if index % 2 == 0 else "assistant")
+        for index, turn in enumerate(clean_turns)
+    ):
+        raise ValidationError("Adventure turns must preserve complete user/assistant pairs")
+    if completed_turns != len(clean_turns) // 2:
+        raise ValidationError("completed_turns must match the saved conversation turns")
 
     edits = _package_list(adventure["turn_edits"], {"turn_id", "version", "content", "status", "provider", "model", "created_at"}, "turn_edits")
     clean_edits: list[dict[str, Any]] = []
@@ -473,7 +496,11 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             if source_turn not in turn_ids:
                 raise ValidationError("Memory source turn is missing from the adventure")
         known_by = memory["known_by"]
-        if not isinstance(known_by, list) or any(not isinstance(item, str) or item not in entity_ids for item in known_by):
+        if not isinstance(known_by, list) or any(
+            not isinstance(item, str) or item not in entity_ids
+            or next(entity for entity in clean_entities if entity["entity_id"] == item)["entity_type"] not in {"character", "person"}
+            for item in known_by
+        ):
             raise ValidationError("Memory knowledge holders must reference packaged characters")
         if type(version) is not int or version < 1 or type(memory["narrative_order"]) is not int or memory["narrative_order"] < 0:
             raise ValidationError("Memory version and narrative order must be non-negative integers")
@@ -522,7 +549,11 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     for npc in npcs:
         npc_id = _required_text(npc["npc_entity_id"], "npc_entity_id", 100)
         aliases = npc["aliases"]
-        if npc_id not in entity_ids or npc_id == actor_entity_id or npc_id in npc_ids:
+        npc_entity = next((entity for entity in clean_entities if entity["entity_id"] == npc_id), None)
+        if (
+            not npc_entity or npc_entity["entity_type"] not in {"character", "person"}
+            or npc_id == actor_entity_id or npc_id in npc_ids
+        ):
             raise ValidationError("NPC profile must reference a separate packaged character")
         if not isinstance(aliases, list) or len(aliases) > 50:
             raise ValidationError("NPC aliases must be an array of at most 50 names")
@@ -554,6 +585,12 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             raise ValidationError("Story asset data must be valid base64") from error
         if not 1 <= len(content) <= 5_242_880:
             raise ValidationError("Each story asset must contain between 1 byte and 5 MB")
+        if not _image_signature_matches(mime_type, content):
+            raise ValidationError("Story asset bytes do not match the declared file type")
+        if target_kind == "scene" and not any(
+            turn["turn_id"] == target_id and turn["role"] == "assistant" for turn in clean_turns
+        ):
+            raise ValidationError("Scene asset target must be an assistant turn in the adventure")
         clean_assets.append({"asset_id": asset_id,
                              "target_kind": target_kind,
                              "target_id": target_id,
@@ -663,7 +700,7 @@ def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
                 raise ValidationError("event memory context_enabled must be a boolean")
             if type(importance) is not int or not 1 <= importance <= 5:
                 raise ValidationError("event memory importance must be from 1 to 5")
-            if knowledge_scope not in {"shared", "actors"}:
+            if not isinstance(knowledge_scope, str) or knowledge_scope not in {"shared", "actors"}:
                 raise ValidationError("proposed event memories must be shared or actor-scoped")
             if not isinstance(known_by, list) or any(not isinstance(item, str) or not item.strip() for item in known_by):
                 raise ValidationError("event memory known_by must be an array of character IDs")
@@ -3030,8 +3067,7 @@ class CommandGateway:
                 raise ValidationError("Image data must be valid base64") from error
             if not data or len(data) > 5 * 1024 * 1024:
                 raise ValidationError("Images are limited to 5 MiB")
-            signature_ok = (mime_type == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n")) or (mime_type == "image/jpeg" and data.startswith(b"\xff\xd8\xff")) or (mime_type == "image/webp" and len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP")
-            if not signature_ok:
+            if not _image_signature_matches(mime_type, data):
                 raise ValidationError("Image bytes do not match the declared file type")
             adventure = connection.execute(
                 "SELECT conversation_id,actor_entity_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
@@ -3816,7 +3852,10 @@ class CommandGateway:
             "context_manifests_included": False,
             "adventure": package_adventure,
         }
-        return validate_adventure_package(package)
+        clean = validate_adventure_package(package)
+        for asset in clean["adventure"]["assets"]:
+            asset["data_base64"] = base64.b64encode(asset.pop("content")).decode("ascii")
+        return clean
 
     def preview_story_adventure_package(self, workspace_id: str, package: Any) -> dict[str, Any]:
         self.current_revision(workspace_id, "main")

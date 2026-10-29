@@ -422,9 +422,10 @@ def create_app(
         preview = gateway.preview_story_adventure_package(workspace_id, body.package)
         world_id = preview["matching_world_id"]
         main_revision = body.expected_revision
-        world_imported = False
+        imported_world_id = "world_import_" + hashlib.sha256(body.idempotency_key.encode("utf-8")).hexdigest()[:20]
+        world_imported = world_id is None or world_id == imported_world_id
         if world_id is None:
-            world_id = "world_import_" + hashlib.sha256(body.idempotency_key.encode("utf-8")).hexdigest()[:20]
+            world_id = imported_world_id
             world_result = gateway.execute(
                 workspace_id=workspace_id,
                 branch_id="main",
