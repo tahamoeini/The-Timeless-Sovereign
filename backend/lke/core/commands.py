@@ -288,6 +288,10 @@ def _package_time(value: Any, field: str) -> str:
     return _required_text(value, field, 80)
 
 
+def _package_optional_text(value: Any, field: str, limit: int) -> str | None:
+    return None if value is None else _required_text(value, field, limit)
+
+
 def validate_adventure_package(package: Any) -> dict[str, Any]:
     """Validate a portable adventure snapshot. Historical context manifests are deliberately omitted."""
     root_fields = {"protocol", "provenance", "world", "context_manifests_included", "adventure"}
@@ -377,8 +381,8 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         clean_turns.append({
             "turn_id": turn_id, "turn_order": order, "role": turn["role"],
             "narrative_order": narrative_order, "content": content,
-            "provider": _optional_text(turn["provider"], "provider", 100),
-            "model": _optional_text(turn["model"], "model", 200),
+            "provider": _package_optional_text(turn["provider"], "provider", 100),
+            "model": _package_optional_text(turn["model"], "model", 200),
             "created_at": _package_time(turn["created_at"], "turn created_at"),
         })
         turn_ids.add(turn_id)
@@ -397,8 +401,8 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         clean_edits.append({
             "turn_id": turn_id, "version": version,
             "content": _required_text(edit["content"], "edited turn content", 200_000),
-            "status": edit["status"], "provider": _optional_text(edit["provider"], "provider", 100),
-            "model": _optional_text(edit["model"], "model", 200),
+            "status": edit["status"], "provider": _package_optional_text(edit["provider"], "provider", 100),
+            "model": _package_optional_text(edit["model"], "model", 200),
             "created_at": _package_time(edit["created_at"], "turn edit created_at"),
         })
         edit_versions.setdefault(turn_id, []).append(version)
@@ -465,7 +469,7 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
             raise ValidationError("Memory version and narrative order must be non-negative integers")
         if memory["kind"] not in {"note", "event", "situation"} or memory["review_status"] not in {"proposed", "accepted", "rejected"}:
             raise ValidationError("Memory type or review status is invalid")
-        if not isinstance(memory["context_enabled"], bool) or not 1 <= memory["importance"] <= 5:
+        if not isinstance(memory["context_enabled"], bool) or type(memory["importance"]) is not int or not 1 <= memory["importance"] <= 5:
             raise ValidationError("Memory context setting or importance is invalid")
         if memory["knowledge_scope"] not in {"shared", "actors", "author", "private"}:
             raise ValidationError("Memory knowledge scope is invalid")
@@ -545,7 +549,8 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     clean_locations: list[dict[str, Any]] = []
     location_names: set[str] = set()
     for location in locations:
-        name_key = _required_text(location["name"], "location name", 200).casefold()
+        clean_name = _required_text(location["name"], "location name", 200)
+        name_key = clean_name.casefold()
         source_proposal_id = location["source_proposal_id"]
         if source_proposal_id is not None:
             source_proposal_id = _required_text(source_proposal_id, "source_proposal_id", 100)
@@ -554,7 +559,7 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         if name_key in location_names or location["status"] not in {"approved", "rejected"}:
             raise ValidationError("Map locations must have unique names and supported statuses")
         clean_locations.append({"location_id": _required_text(location["location_id"], "location_id", 100),
-                                "name": name_key if False else location["name"].strip(),
+                                "name": clean_name,
                                 "status": location["status"], "source_proposal_id": source_proposal_id,
                                 "created_at": _package_time(location["created_at"], "location created_at")})
         location_names.add(name_key)
