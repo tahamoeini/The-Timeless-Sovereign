@@ -10,7 +10,7 @@ The page describes a ten-page personalized illustrated book generated from a pro
 
 **Useful pattern:** A finished, navigable artifact gives the user a satisfying endpoint beyond a chat transcript. Offer page-level text and image editing, print-friendly layout, local export, and language-specific narration capabilities. Use an explicit source-to-fiction boundary for personal notes and imported documents.
 
-**Do not copy blindly:** Whole-book regeneration can disturb approved text and visual continuity. LKE should keep the user in control of per-page edits and exclude prompts, private context and source files from shared artifacts by default. The Gemini page's sharing model is account-dependent and conflicts with LKE's local-first default unless the user chooses a specific export destination.
+**Do not copy blindly:** Whole-book regeneration can disturb approved text and visual continuity. Lorethra should keep the user in control of per-page edits and exclude prompts, private context and source files from shared artifacts by default. The Gemini page's sharing model is account-dependent and conflicts with Lorethra's local-first default unless the user chooses a specific export destination.
 
 ## Story Studio AI
 
@@ -32,7 +32,7 @@ The API supports scoped namespaces and metadata filters, asynchronous ingestion 
 
 **Useful pattern:** Query context for relevance only after authorization filtering; retain typed time and links to original evidence; separate profiles from question-specific retrieval; review inferences; show users what context was selected; define correction, expiration, hiding and deletion as distinct actions. Build a golden query set and score retrieved context before judging answer prose.
 
-**Fit and caution:** LKE already has canonical claims, accepted/rejected review, actor-awareness, source evidence, revision history, branches, a context manifest and backup/restore. A memory service must not become a second truth store. Evaluate the advertised local server against a lightweight LKE retrieval projection on the same test set. Verify Windows support, exact license, offline network traces, encrypted storage, exports, cache invalidation, forgetting/deletion, source provenance and cost before any adoption. A generated inference should never silently cross from character belief or story suggestion into canon.
+**Fit and caution:** Lorethra already has canonical claims, accepted/rejected review, actor-awareness, source evidence, revision history, branches, a context manifest and backup/restore. A memory service must not become a second truth store. Evaluate the advertised local server against a lightweight Lorethra retrieval projection on the same test set. Verify Windows support, exact license, offline network traces, encrypted storage, exports, cache invalidation, forgetting/deletion, source provenance and cost before any adoption. A generated inference should never silently cross from character belief or story suggestion into canon.
 
 ## MNO RPG Engine (Perchance)
 
@@ -42,9 +42,9 @@ The navigation separates **Worlds** from **Adventures**. World setup describes s
 
 Settings disclose useful product boundaries. MNO offers Perchance AI, OpenAI, DeepSeek, OpenRouter and Ollama (local) for text, and Perchance AI, OpenAI and OpenRouter for images. It warns that the default text model has a small context window. Image controls include a global guidance-scale slider. The UI says data lives in browser storage and can be cleared by the browser. Its backup screen reports storage, lets users download a full backup, and offers explicit merge and replace-all restore. The backup includes the creator code; the UI warns that importing it also restores identity. Identity recovery can use that creator code.
 
-The welcome panel advertises skill checks, stats, trackers, map and NPCs, but this review did not start an adventure. We cannot assert that checks are deterministic or that tracker updates persist correctly. The cited features are design references for optional mechanics; LKE should use its own deterministic evaluator and reviewed, revisioned state deltas if it adds them.
+The welcome panel advertises skill checks, stats, trackers, map and NPCs, but this review did not start an adventure. We cannot assert that checks are deterministic or that tracker updates persist correctly. The cited features are design references for optional mechanics; Lorethra should use its own deterministic evaluator and reviewed, revisioned state deltas if it adds them.
 
-**Useful pattern:** Make world/template identity distinct from session/adventure state; provide direct resume, import and export; show the local data boundary and backup policy; offer model choice and disclose context limits; show searchable and filterable library cards. LKE already has full database backup and isolated workspaces, so the gap is a friendly world/adventure workflow and portable world package, not basic persistence.
+**Useful pattern:** Make world/template identity distinct from session/adventure state; provide direct resume, import and export; show the local data boundary and backup policy; offer model choice and disclose context limits; show searchable and filterable library cards. Lorethra already has full database backup and isolated workspaces, so the gap is a friendly world/adventure workflow and portable world package, not basic persistence.
 
 **Fit and caution:** Keep community publishing deferred. A local catalog can borrow search, tags and separate session lists without public accounts, popularity counts or user-generated executable instructions. Never package a creator secret as ordinary backup data without explaining recovery implications and providing protected handling.
 

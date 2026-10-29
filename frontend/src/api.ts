@@ -383,7 +383,7 @@ async function resolveRuntime(): Promise<RuntimeConfig> {
     await new Promise((resolve) => window.setTimeout(resolve, 200));
   }
   runtime = null;
-  throw new Error("The local LKE service did not start. Restart the app and try again.");
+  throw new Error("The local Lorethra service did not start. Restart the app and try again.");
 }
 
 export class ApiError extends Error {

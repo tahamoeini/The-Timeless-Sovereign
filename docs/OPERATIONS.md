@@ -22,7 +22,7 @@ In the desktop app, use **Back up** in the top bar to download a complete `.lkeb
 
 Use **Rebuild search** to recreate the entity and source full-text indexes from canonical SQLite records. This operation is authenticated, transactionally replaces only the two FTS projections, and does not create a workspace revision or alter canonical rows. If canonical SQLite tables or integrity checks fail, stop writes and restore a verified backup instead; the projection rebuild cannot repair canonical database corruption.
 
-Create a backup while LKE is running:
+Create a backup while Lorethra is running:
 
 ```powershell
 lke-backup create "$env:LOCALAPPDATA\LKE\knowledge.sqlite3" "D:\Backups\workspace-2026-10-17.lkebackup"
@@ -34,7 +34,7 @@ Restore to a new database path with the offline CLI:
 lke-backup restore "D:\Backups\workspace-2026-10-17.lkebackup" "D:\LKE-Restore\knowledge.sqlite3"
 ```
 
-For the offline CLI, close LKE before replacing its active database. Restore refuses an existing destination unless `--overwrite` is explicitly supplied. Keep backups on a separate device or protected location; a backup beside the database does not protect against device loss. Migration rollback and a clean-machine recovery drill remain release checks.
+For the offline CLI, close Lorethra before replacing its active database. Restore refuses an existing destination unless `--overwrite` is explicitly supplied. Keep backups on a separate device or protected location; a backup beside the database does not protect against device loss. Migration rollback and a clean-machine recovery drill remain release checks.
 
 ## Troubleshooting and recovery
 

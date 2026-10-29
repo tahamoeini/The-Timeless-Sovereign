@@ -17,7 +17,7 @@ The canonical model is general-purpose. `canon` is a story-specific authority co
 | Belief / Knowledge | What an actor knows, believes, denies, or lacks | Actor- and awareness-order-scoped |
 | Rule | Constraint on a subject, predicate, and value | Branch-scoped, reviewed, hard or soft; evaluator reports satisfied, violated, or unknown |
 | Revision / Branch | Versioned change and isolated alternate path | Append-only history; explicit promotion |
-| Conversation / Turn | LKE story exchange and ordering | Branch-scoped; local generation provenance |
+| Conversation / Turn | Lorethra story exchange and ordering | Branch-scoped; local generation provenance |
 | StoryWorld / WorldVersion | Reusable world identity and immutable, reviewed setting snapshot | Workspace-scoped; new edits append a version |
 | StoryAdventure | Named play session pinned to one world version and one branch snapshot | Branch-scoped; sessions from one world remain isolated |
 | RPGSheet / Check | Character stats, bounded trackers, location, and deterministic d20 record | Adventure-branch scoped; check math is canonical and immutable |

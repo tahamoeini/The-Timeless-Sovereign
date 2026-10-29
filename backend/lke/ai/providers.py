@@ -198,7 +198,7 @@ def _model_names(base_url: str, api_key: str | None = None) -> list[str]:
 
 
 class _CodexAppServer:
-    """One ephemeral, read-only Codex app-server turn; story state stays in LKE."""
+    """One ephemeral, read-only Codex app-server turn; story state stays in Lorethra."""
 
     def __init__(self, env: dict[str, str], timeout_seconds: float = 300) -> None:
         self.env = env

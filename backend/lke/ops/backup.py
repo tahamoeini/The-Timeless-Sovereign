@@ -210,7 +210,7 @@ def _validate_sqlite(path: Path, manifest_schema_version: int) -> None:
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
             if not _REQUIRED_TABLES <= tables:
-                raise BackupError("Restored database is missing required LKE tables")
+                raise BackupError("Restored database is missing required Lorethra tables")
             row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
             schema_version = int(row[0] or 0)
             if schema_version != manifest_schema_version:
@@ -230,7 +230,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create or restore an LKE workspace backup")
+    parser = argparse.ArgumentParser(description="Create or restore a Lorethra workspace backup")
     commands = parser.add_subparsers(dest="operation", required=True)
     create = commands.add_parser("create", help="create a manifest-checked backup")
     create.add_argument("database", type=Path)

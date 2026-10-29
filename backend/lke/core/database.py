@@ -1,4 +1,4 @@
-"""SQLite connection and versioned schema for the canonical LKE store."""
+"""SQLite connection and versioned schema for Lorethra's canonical store."""
 
 from __future__ import annotations
 

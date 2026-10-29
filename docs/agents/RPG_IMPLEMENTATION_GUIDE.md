@@ -4,7 +4,7 @@ Use this guide when extending the user-approved Story Studio RPG plan. It is rep
 
 ## Read before changing code
 
-Read `AGENTS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `docs/STORY_STUDIO_ENHANCEMENT_PLAN.md`, `docs/contracts/DATA_MODEL.md`, `docs/contracts/COMMAND_CONTRACTS.md`, `docs/contracts/NARRATIVE_RULES.md`, `docs/ACCEPTANCE_MATRIX.md`, and this guide. Keep the local-first, single-user Windows product and existing LKE workflows intact.
+Read `AGENTS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `docs/STORY_STUDIO_ENHANCEMENT_PLAN.md`, `docs/contracts/DATA_MODEL.md`, `docs/contracts/COMMAND_CONTRACTS.md`, `docs/contracts/NARRATIVE_RULES.md`, `docs/ACCEPTANCE_MATRIX.md`, and this guide. Keep the local-first, single-user Windows product and existing Lorethra workflows intact.
 
 ## Product path
 

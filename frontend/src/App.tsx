@@ -307,7 +307,7 @@ export default function App() {
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
-      link.download = `lke-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.lkebackup`;
+      link.download = `lorethra-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.lkebackup`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1431,7 +1431,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     const fileUrl = URL.createObjectURL(file);
     const link = document.createElement("a");
     link.href = fileUrl;
-    link.download = `lke-context-${branchFilePart}-r${context.base_revision}.json`;
+    link.download = `lorethra-context-${branchFilePart}-r${context.base_revision}.json`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
     setContextExportNotice("Context package saved. Review its facts and exclusions before sharing it.");
@@ -1444,7 +1444,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     const fileUrl = URL.createObjectURL(file);
     const link = document.createElement("a");
     link.href = fileUrl;
-    link.download = `lke-story-${conversation.conversation_id.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}.json`;
+    link.download = `lorethra-story-${conversation.conversation_id.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}.json`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
   }

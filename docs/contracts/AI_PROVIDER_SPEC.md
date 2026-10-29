@@ -1,6 +1,6 @@
 # AI Provider Specification
 
-Providers implement a narrow adapter and never own LKE data. The default product path is local Ollama; cloud or external providers are opt-in and require explicit consent for the exact context being sent.
+Providers implement a narrow adapter and never own Lorethra data. The default product path is local Ollama; cloud or external providers are opt-in and require explicit consent for the exact context being sent.
 
 ## Capability record
 

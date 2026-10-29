@@ -1,1 +1,1 @@
-"""Offline maintenance operations for local LKE workspaces."""
+"""Offline maintenance operations for local Lorethra workspaces."""
