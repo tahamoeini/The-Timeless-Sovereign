@@ -1,0 +1,3 @@
+[console_scripts]
+lke-api = lke.api.app:main
+lke-backup = lke.ops.backup:main

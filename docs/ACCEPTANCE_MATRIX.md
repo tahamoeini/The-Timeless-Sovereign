@@ -57,6 +57,8 @@ After the continuity changes, a separate focused run of 46 in-memory continuity,
 
 2026-10-29 continuation: 51 focused in-memory continuity, memory-retrieval, provider, gateway and branch-promotion tests passed. New gateway fixtures verify that changing, deleting or superseding a source turn prevents acceptance of its pending RPG proposal without altering the sheet or revision, and that rejection remains possible; an edited source also prevents acceptance of its pending memory. New proposals and memories reject inactive source turns. These checks do not reconstruct already accepted state after a historical edit, and they are not API, browser or live-model evidence.
 
+World-package continuation: 53 focused in-memory tests passed across package, continuity, retrieval, provider, gateway and branch-promotion modules; the frontend TypeScript check also passed. Package fixtures exercise version-preserving export/import to a separate workspace, preview collision reporting, idempotent replay, target-ID conflicts, unsupported formats, noncontiguous versions, oversized content, and credential-like fields. The UI and API paths are implemented but have not yet been exercised in a browser or across devices. Adventure packages and explicit world replacement remain open.
+
 Entity F1, relation precision, evidence grounding, retrieval Recall@K, temporal accuracy, context efficiency, narrative continuity, human review cost, import performance, and recovery performance require a fixed bilingual evaluation corpus and rubric. Numeric targets are intentionally unset until a measured baseline exists.
 
 ## Definition of Done

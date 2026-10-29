@@ -54,7 +54,9 @@ Re-running extraction records new proposed candidates and does not overwrite an 
 
 `promote_branch` is an explicit fast-forward from a direct child into its parent. The request names the exact source head revision and uses the parent's current expected revision. Promotion is allowed only when the parent still equals the child's recorded starting revision and the child contains changes. AI actors cannot promote. The gateway copies the branch-scoped canonical snapshot in dependency order, remaps child-created or updated revision markers to the single parent promotion revision, rebuilds the parent entity-search projection, and writes one parent revision, audit event, outbox item, and idempotency result in the same transaction. Immutable journal, scenario, evidence, and extraction history is inserted without rewriting existing parent history. The child and its revision history remain intact; the audit payload identifies the source branch and promoted revision range. There is no automatic conflict merge.
 
-Delete, generalized merge, richer event/scene deltas, NPC profile and simulation commands, map/travel commands, memory lifecycle commands, package import/export commands, and publishing commands are not implemented yet.
+`import_story_world` validates a bounded `lke.world.v1` package, requires a new world ID, and atomically copies its contiguous version sequence into the main-branch library. The audit command records the package and source workspace/world IDs; imported versions receive the destination revision. The export and preview endpoints are read-only. Packages contain world content, which may include private notes; they do not export provider settings, but arbitrary user-authored text should be reviewed before sharing. World replacement and adventure packages are not implemented.
+
+Story-turn edits, memories, NPC profiles, map locations, travel, local image attachments, and opt-in NPC simulation also have gateway commands. Historical state reconstruction after edits, generalized merge, richer event/scene deltas, and full publishing workflows remain incomplete; consult the acceptance matrix for current evidence.
 
 ## Failure behavior
 

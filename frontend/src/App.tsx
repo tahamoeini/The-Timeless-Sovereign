@@ -1142,6 +1142,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [adventureName, setAdventureName] = useState("");
   const [heroName, setHeroName] = useState("");
   const [libraryError, setLibraryError] = useState("");
+  const [worldPackage, setWorldPackage] = useState<{ workspace: string; data: unknown; preview: { name: string; versions: number; provenance: { workspace_id: string; world_id: string }; source_id_conflict: boolean } } | null>(null);
   const [rpgState, setRpgState] = useState<RpgState | null>(null);
   const [editableStats, setEditableStats] = useState<Record<string, number>>({});
   const [rpgError, setRpgError] = useState("");
@@ -1656,6 +1657,51 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     }
   }
 
+  async function exportWorldPackage() {
+    if (!selectedWorldId) return;
+    try {
+      const data = await request<unknown>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/${encodeURIComponent(selectedWorldId)}/package`);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `world-${selectedWorldId.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}.lke-world`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The world package could not be exported.");
+    }
+  }
+
+  async function previewWorldPackage(file: File | undefined) {
+    setWorldPackage(null);
+    setLibraryError("");
+    if (!file) return;
+    try {
+      if (file.size > 2_000_000) throw new Error("Choose a world package smaller than 2 MB.");
+      const data: unknown = JSON.parse(await file.text());
+      const preview = await request<{ name: string; versions: number; provenance: { workspace_id: string; world_id: string }; source_id_conflict: boolean }>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/package-preview`,
+        { method: "POST", body: JSON.stringify(data) },
+      );
+      setWorldPackage({ workspace: workspaceId, data, preview });
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The world package could not be previewed.");
+    }
+  }
+
+  async function importWorldPackage() {
+    if (!worldPackage || worldPackage.workspace !== workspaceId) return;
+    try {
+      const created = await onMainCommit("import_story_world", { world_id: newId("world"), package: worldPackage.data }, "Import a reviewed duplicate world package");
+      const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
+      setWorlds(rows);
+      setSelectedWorldId(String(created.world_id));
+      setWorldPackage(null);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The world package could not be imported.");
+    }
+  }
+
   async function createHero(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const label = heroName.trim();
@@ -2039,6 +2085,18 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </form>
         </div>
       </div>
+      <details className="story-world-editor">
+        <summary>Import or export a world</summary>
+        <p className="field-note">World packages include all world versions, including private author notes. Review contents before sharing or importing; imported text is untrusted story data.</p>
+        <button type="button" className="secondary-button" disabled={!selectedWorldId || busy} onClick={() => void exportWorldPackage()}>Export selected world</button>
+        <label className="field-label">Preview a world package<input type="file" accept=".lke-world,application/json" onChange={(event) => { void previewWorldPackage(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+        {worldPackage && worldPackage.workspace === workspaceId && <div>
+          <p>{worldPackage.preview.name} · {worldPackage.preview.versions} version(s) · source workspace {worldPackage.preview.provenance.workspace_id} · source world {worldPackage.preview.provenance.world_id}</p>
+          <p className="field-note">{worldPackage.preview.source_id_conflict ? "The source ID already exists here. " : ""}Import creates a separate world with a new ID.</p>
+          <details><summary>Inspect package contents</summary><pre dir="auto">{JSON.stringify(worldPackage.data, null, 2)}</pre></details>
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => void importWorldPackage()}>Import as new world</button>
+        </div>}
+      </details>
       {selectedWorldDetail && <details className="story-world-editor">
         <summary>Edit selected world · save changes as a new version</summary>
         <p className="field-note">Adventure sessions keep the world version they started with. This edit only affects new adventures.</p>

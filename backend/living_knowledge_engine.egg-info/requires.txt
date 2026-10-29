@@ -1,0 +1,11 @@
+fastapi<1,>=0.115
+uvicorn<1,>=0.32
+
+[documents]
+docling<3,>=2
+
+[package]
+pyinstaller<7,>=6
+
+[test]
+httpx<1,>=0.27

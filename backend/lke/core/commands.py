@@ -238,13 +238,15 @@ def validate_world_package(package: Any) -> dict[str, Any]:
     """Validate a bounded, portable world history without mutating the database."""
     if not isinstance(package, dict) or package.get("protocol") != "lke.world.v1":
         raise ValidationError("Unsupported world package format or version")
+    if set(package) != {"protocol", "provenance", "versions"}:
+        raise ValidationError("World package contains unsupported fields")
     try:
         if len(_json(package).encode("utf-8")) > 2_000_000:
             raise ValidationError("World package is limited to 2 MB")
     except (TypeError, ValueError, RecursionError) as error:
         raise ValidationError("World package must contain valid JSON") from error
     provenance = package.get("provenance")
-    if not isinstance(provenance, dict):
+    if not isinstance(provenance, dict) or set(provenance) != {"workspace_id", "world_id"}:
         raise ValidationError("World package provenance is required")
     source_workspace = _required_text(provenance.get("workspace_id"), "source workspace_id", 100)
     source_world = _required_text(provenance.get("world_id"), "source world_id", 100)
@@ -255,6 +257,8 @@ def validate_world_package(package: Any) -> dict[str, Any]:
     for number, item in enumerate(versions, 1):
         if not isinstance(item, dict) or type(item.get("version")) is not int or item["version"] != number:
             raise ValidationError("World package versions must be contiguous and start at 1")
+        if set(item) != {"version", "name", "description", "template_key", "content"}:
+            raise ValidationError("World package version contains unsupported fields")
         description = item.get("description", "")
         if not isinstance(description, str) or len(description.strip()) > 4000:
             raise ValidationError("World description must be text of at most 4000 characters")
@@ -3031,7 +3035,8 @@ class CommandGateway:
         return validate_world_package({
             "protocol": "lke.world.v1",
             "provenance": {"workspace_id": workspace_id, "world_id": world_id},
-            "versions": list(reversed(world["versions"])),
+            "versions": [{key: item[key] for key in ("version", "name", "description", "template_key", "content")}
+                         for item in reversed(world["versions"])],
         })
 
     def preview_world_package(self, workspace_id: str, package: Any) -> dict[str, Any]:
