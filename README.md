@@ -38,13 +38,21 @@ See [Tauri's prerequisites](https://v2.tauri.app/start/prerequisites/) for the
 required Linux packages and Rust. From the project root, a typical WSL setup is:
 
 ```bash
-npm install
+npm ci --include=optional
 python3 -m venv .venv-linux
 . .venv-linux/bin/activate
 python -m pip install -e '.[package]'
 bash scripts/build-sidecar.sh
 npm run tauri
 ```
+
+`npm ci` installs the native optional packages for the current operating system.
+This checkout may also be used from Windows, so its `node_modules` directory can
+contain Windows binaries when WSL starts. `npm install` can then report that the
+tree is up to date while the Linux Tauri binding is missing. When switching
+between Windows and WSL in this same checkout, run `npm ci --include=optional`
+in the active environment each time; this replaces the shared `node_modules`
+tree for that operating system. Keep `package-lock.json` unchanged.
 
 The Linux/WSL desktop flow still needs a fresh end-to-end run; the configured
 bundle targets are Windows installers. Native npm packages depend on the OS
