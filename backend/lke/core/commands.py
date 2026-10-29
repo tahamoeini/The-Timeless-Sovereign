@@ -2087,7 +2087,7 @@ class CommandGateway:
             if action not in {"edit", "delete"}:
                 raise ValidationError("story turn action must be edit or delete")
             turn = connection.execute(
-                "SELECT role,content,provider,model,context_manifest_id,context_manifest_json,context_revision FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=?",
+                "SELECT role,turn_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=?",
                 (workspace_id, branch_id, conversation_id, turn_id),
             ).fetchone()
             if not turn:
@@ -2129,6 +2129,12 @@ class CommandGateway:
             raw_superseded = payload.get("superseded_turn_ids", [])
             if not isinstance(raw_superseded, list) or len(raw_superseded) > 500:
                 raise ValidationError("superseded_turn_ids must be a list of at most 500 turns")
+            # The stored transcript defines which downstream turns this edit invalidates.
+            # Never rely on a client-supplied list to preserve conversation continuity.
+            raw_superseded = [row["turn_id"] for row in connection.execute(
+                "SELECT turn_id FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_order>? ORDER BY turn_order",
+                (workspace_id, branch_id, conversation_id, turn["turn_order"]),
+            ).fetchall()]
             for superseded_id in raw_superseded:
                 superseded_id = _required_text(superseded_id, "superseded turn id", 100)
                 if superseded_id == turn_id:

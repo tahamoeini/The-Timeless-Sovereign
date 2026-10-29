@@ -667,11 +667,10 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(error)) from error
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="Story retry was stopped before it could be saved")
-        later_turn_ids = [turn["turn_id"] for turn in turns[target_index + 1:] if turn["status"] == "active"]
         result = gateway.execute(
             workspace_id=workspace_id, branch_id=body.branch_id, idempotency_key=body.idempotency_key,
             expected_revision=context["base_revision"], command_type="edit_story_turn",
-            payload={**stable_payload, "content": assistant_content, "superseded_turn_ids": later_turn_ids,
+            payload={**stable_payload, "content": assistant_content,
                      "context_manifest_id": context["manifest_id"], "context_manifest": context,
                      "context_revision": context["base_revision"]},
             actor="user", reason=reason,

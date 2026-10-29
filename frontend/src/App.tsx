@@ -1587,11 +1587,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
 
   async function saveTurnEdit(turn: StoryConversation["turns"][number]) {
     if (!conversation || !editedTurnText.trim()) return;
-    const laterIds = conversation.turns.filter((item) => item.turn_order > turn.turn_order && item.status === "active").map((item) => item.turn_id);
     try {
       await onCommit("edit_story_turn", {
         conversation_id: conversation.conversation_id, turn_id: turn.turn_id, action: "edit",
-        content: editedTurnText.trim(), ...(turn.role === "user" ? { superseded_turn_ids: laterIds } : {}),
+        content: editedTurnText.trim(),
       }, "Edit a saved story turn and preserve its prior versions");
       setEditingTurnId("");
       setEditedTurnText("");
@@ -1603,10 +1602,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
 
   async function deleteStoryTurn(turn: StoryConversation["turns"][number]) {
     if (!conversation || !window.confirm("Hide this turn from the active story? Its history will remain available.")) return;
-    const laterIds = conversation.turns.filter((item) => item.turn_order > turn.turn_order && item.status === "active").map((item) => item.turn_id);
     try {
       await onCommit("edit_story_turn", {
-        conversation_id: conversation.conversation_id, turn_id: turn.turn_id, action: "delete", superseded_turn_ids: laterIds,
+        conversation_id: conversation.conversation_id, turn_id: turn.turn_id, action: "delete",
       }, "Hide a story turn while retaining its full edit history");
       await selectConversation(conversation.conversation_id);
     } catch (deleteError) {

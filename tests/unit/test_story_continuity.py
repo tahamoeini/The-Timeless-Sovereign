@@ -69,6 +69,21 @@ class StoryContinuityTests(unittest.TestCase):
         self.assertEqual(revised["turns"][1]["content"], "The gate is closed.")
         self.assertEqual(self.gateway.current_revision(self.workspace_id, "adventure"), changed["revision"])
 
+    def test_editing_any_turn_supersedes_all_later_turns_from_canonical_order(self):
+        first = self.append_turn("ordered-one", self.revision, "Enter the hall", "A torch burns.", order=1)
+        second = self.append_turn("ordered-two", first["revision"], "Open the door", "Footsteps echo.", order=2)
+        third = self.append_turn("ordered-three", second["revision"], "Call out", "Someone answers.", order=3)
+        turns = self.gateway.get_conversation(self.workspace_id, "adventure", "conversation")["turns"]
+        target = turns[3]
+        changed = self.command("edit-middle-assistant", third["revision"], "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": target["turn_id"],
+            "action": "edit", "content": "The corridor is empty.",
+        }, branch="adventure")
+        revised = self.gateway.get_conversation(self.workspace_id, "adventure", "conversation")["turns"]
+        self.assertEqual([turn["status"] for turn in revised], ["active", "active", "active", "active", "superseded", "superseded"])
+        self.assertEqual(revised[3]["content"], "The corridor is empty.")
+        self.assertEqual(changed["superseded_count"], 2)
+
     def test_source_changes_prevent_proposal_acceptance_but_allow_rejection(self):
         revision = self.revision
         for action in ("edit", "delete", "supersede"):
