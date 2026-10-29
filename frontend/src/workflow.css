@@ -1192,8 +1192,11 @@
 .story-library-filter-grid select{width:100%;min-width:0;min-height:40px;padding:0 10px;border:1px solid #35433f;border-radius:7px;background:#111719;color:var(--text);font-size:12px}
 .story-library-clear{grid-column:1/-1;justify-self:end;min-height:38px;font-size:12px}
 .story-adventure-list{gap:9px;margin-top:15px}
+.story-adventure-list-heading{gap:12px;flex-wrap:wrap}
+.story-adventure-list-heading>div{display:grid;gap:3px;min-width:0}
 .story-adventure-list-heading strong{font-size:13px}
 .story-adventure-list-heading small{font-size:11px}
+.story-new-adventure{min-height:40px;padding:8px 13px;font-size:12px;white-space:nowrap}
 .story-most-recent{min-height:66px;padding:12px 14px}
 .story-most-recent strong{font-size:12px}
 .story-most-recent small{font-size:11px;line-height:1.45}
@@ -1202,6 +1205,9 @@
 .story-library-card-main strong{font-size:13px;line-height:1.4}
 .story-library-card-main small{font-size:11px;line-height:1.5;overflow-wrap:anywhere}
 .story-adventure-card .story-card-actions,.story-world-library-list article .story-card-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex:0 0 auto;flex-wrap:wrap}
+.story-more-adventures{border:1px solid #2e3c38;border-radius:9px;background:#141b1c}
+.story-more-adventures>summary{min-height:42px;padding:11px 13px;cursor:pointer;color:#b9c9c0;font-size:12px;font-weight:600}
+.story-more-adventures-list{display:grid;gap:9px;padding:0 9px 9px}
 .story-card-actions>.secondary-button{min-height:38px;padding:8px 12px;font-size:12px}
 .story-card-menu{position:relative}
 .story-card-menu>summary{display:flex;align-items:center;min-height:38px;padding:7px 11px;border:1px solid #35433f;border-radius:7px;background:#18201f;color:#c1d0c8;cursor:pointer;font-size:12px;list-style-position:inside}
@@ -1221,6 +1227,8 @@
 .story-library-empty .empty-hint{margin:7px 0 0;font-size:12px;line-height:1.55}
 .story-library-empty .quiet-button{min-height:36px;font-size:12px}
 @media(max-width:650px){
+  .story-adventure-list-heading{align-items:stretch}
+  .story-new-adventure{width:100%}
   .story-adventure-card,.story-world-library-list article{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch;gap:10px}
   .story-adventure-card .story-card-actions,.story-world-library-list article .story-card-actions{width:100%;justify-content:flex-start}
   .story-card-menu-panel{left:0;right:auto}

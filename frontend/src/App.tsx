@@ -1174,6 +1174,8 @@ const STORY_WORLD_TEMPLATES = {
   blank: { label: "Blank", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 } }, starting_location: "" } },
 } as const;
 
+const STORY_LIBRARY_PREVIEW_COUNT = 8;
+
 function emptyStoryAbility(index: number): StoryAbilityDefinition {
   return {
     ability_id: `ability_${index}`, name: "", description: "", category: "", source: "",
@@ -2953,6 +2955,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setStoryWorldStatusFilter("active");
     setStoryLibrarySort("recent");
   };
+  const openAdventureSetup = () => {
+    setSetupStep(1);
+    setSetupExpanded(true);
+    document.getElementById("story-adventure-setup")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   const mostRecentAdventure = mainAdventures
     .filter((item) => !item.archived_at && item.status === "active")
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
@@ -2960,6 +2967,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     && visibleAdventures.some((item) => item.adventure_id === mostRecentAdventure.adventure_id)
     ? mostRecentAdventure
     : null;
+  const visibleAdventureRows = visibleAdventures.filter((item) => item.adventure_id !== visibleMostRecentAdventure?.adventure_id);
+  const adventurePreviewRows = visibleAdventureRows.slice(0, STORY_LIBRARY_PREVIEW_COUNT);
+  const additionalAdventureRows = visibleAdventureRows.slice(STORY_LIBRARY_PREVIEW_COUNT);
   const selectedSetupWorld = worlds.find((item) => item.world_id === selectedWorldId);
   const selectedSetupHero = mainCharacters.find((item) => item.entity_id === adventureHeroId);
   const selectedSetupContent = selectedWorldDetail?.world_id === selectedWorldId
@@ -2982,6 +2992,27 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       && (selectedSetupCreation.allow_below_baseline || adventureAllocation[stat.key] >= stat.baseline))
     && adventurePointsRemaining >= 0
     && (selectedSetupCreation.allow_unspent_points || adventurePointsRemaining === 0);
+  const renderAdventureCard = (item: StoryAdventure) => <article className="story-adventure-card" key={item.adventure_id}>
+    <div className="story-library-card-main"><strong>{item.name}</strong><small>{item.world_name} · world v{item.world_version} · {item.actor_label} · {item.turn_count} turns · {item.status}{item.archived_at ? " · archived" : ""}</small></div>
+    {renamingAdventureId === item.adventure_id ? <form className="story-card-rename" onSubmit={(event) => { event.preventDefault(); void updateAdventureLibrary(item, { name: renamingAdventureName.trim() }); }}>
+      <input aria-label={`New name for ${item.name}`} maxLength={200} required value={renamingAdventureName} onChange={(event) => setRenamingAdventureName(event.target.value)} />
+      <button className="secondary-button" type="submit" disabled={busy || !renamingAdventureName.trim()}>Save</button>
+      <button className="quiet-button" type="button" onClick={() => setRenamingAdventureId("")}>Cancel</button>
+    </form> : <div className="story-card-actions">
+      <button className="secondary-button" type="button" disabled={busy || !!item.archived_at} onClick={() => onSelectBranch(item.branch_id)}>{item.archived_at ? "Archived" : "Resume"}</button>
+      <details className="story-card-menu">
+        <summary aria-label={`More actions for ${item.name}`}>More</summary>
+        <div className="story-card-menu-panel">
+          <button className="quiet-button" type="button" disabled={busy} onClick={() => { setRenamingAdventureId(item.adventure_id); setRenamingAdventureName(item.name); }}>Rename adventure</button>
+          <label className="story-card-status-field">Adventure status<select aria-label={`Status for ${item.name}`} value={item.status} disabled={busy || !!item.archived_at} onChange={(event) => void updateAdventureLibrary(item, { status: event.target.value as StoryAdventure["status"] })}>
+            <option value="active">Active</option><option value="paused">Paused</option><option value="complete">Complete</option>
+          </select></label>
+          <button className="quiet-button" type="button" disabled={busy} onClick={() => void duplicateAdventure(item)}>Duplicate adventure</button>
+          <button className="quiet-button" type="button" disabled={busy} onClick={() => void updateAdventureLibrary(item, { archived: !item.archived_at })}>{item.archived_at ? "Restore adventure" : "Archive adventure"}</button>
+        </div>
+      </details>
+    </div>}
+  </article>;
   const creationKeys = creationStatDefinitions.map((stat) => stat.key.trim().toLocaleLowerCase());
   const creationAbilityIds = creationAbilities.map((ability) => ability.ability_id.trim());
   const creationAbilitiesValid = creationAbilities.length <= 50
@@ -3050,29 +3081,21 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </details>
       </div>
       <div className="story-adventure-list">
-        <div className="story-adventure-list-heading"><strong>Continue playing</strong><small role="status" aria-live="polite">{visibleAdventures.length === mainAdventures.length ? `${mainAdventures.length} saved` : `Showing ${visibleAdventures.length} of ${mainAdventures.length} adventures`}</small></div>
+        <div className="story-adventure-list-heading">
+          <div><strong>{mainAdventures.length ? "Continue playing" : "Start your first adventure"}</strong>
+            <small role="status" aria-live="polite">{visibleAdventures.length === mainAdventures.length ? `${mainAdventures.length} saved` : `Showing ${visibleAdventures.length} of ${mainAdventures.length} adventures`}</small></div>
+          <button className="primary-button story-new-adventure" type="button" disabled={busy} aria-controls="story-adventure-setup" aria-expanded={setupExpanded} onClick={openAdventureSetup}>
+            {mainAdventures.length ? "New adventure" : "Create first adventure"}
+          </button>
+        </div>
         {visibleMostRecentAdventure && <div className="story-most-recent"><div><strong>Pick up where you left off</strong><small>{visibleMostRecentAdventure.name} · {visibleMostRecentAdventure.world_name} v{visibleMostRecentAdventure.world_version} · {visibleMostRecentAdventure.actor_label}</small></div><button className="secondary-button" type="button" disabled={busy} onClick={() => onSelectBranch(visibleMostRecentAdventure.branch_id)}>Resume</button></div>}
-        {visibleAdventures.length ? visibleAdventures.map((item) => <article className="story-adventure-card" key={item.adventure_id}>
-          <div className="story-library-card-main"><strong>{item.name}</strong><small>{item.world_name} · world v{item.world_version} · {item.actor_label} · {item.turn_count} turns · {item.status}{item.archived_at ? " · archived" : ""}</small></div>
-          {renamingAdventureId === item.adventure_id ? <form className="story-card-rename" onSubmit={(event) => { event.preventDefault(); void updateAdventureLibrary(item, { name: renamingAdventureName.trim() }); }}>
-            <input aria-label={`New name for ${item.name}`} maxLength={200} required value={renamingAdventureName} onChange={(event) => setRenamingAdventureName(event.target.value)} />
-            <button className="secondary-button" type="submit" disabled={busy || !renamingAdventureName.trim()}>Save</button>
-            <button className="quiet-button" type="button" onClick={() => setRenamingAdventureId("")}>Cancel</button>
-          </form> : <div className="story-card-actions">
-            <button className="secondary-button" type="button" disabled={busy || !!item.archived_at} onClick={() => onSelectBranch(item.branch_id)}>{item.archived_at ? "Archived" : "Resume"}</button>
-            <details className="story-card-menu">
-              <summary aria-label={`More actions for ${item.name}`}>More</summary>
-              <div className="story-card-menu-panel">
-                <button className="quiet-button" type="button" disabled={busy} onClick={() => { setRenamingAdventureId(item.adventure_id); setRenamingAdventureName(item.name); }}>Rename adventure</button>
-                <label className="story-card-status-field">Adventure status<select aria-label={`Status for ${item.name}`} value={item.status} disabled={busy || !!item.archived_at} onChange={(event) => void updateAdventureLibrary(item, { status: event.target.value as StoryAdventure["status"] })}>
-                  <option value="active">Active</option><option value="paused">Paused</option><option value="complete">Complete</option>
-                </select></label>
-                <button className="quiet-button" type="button" disabled={busy} onClick={() => void duplicateAdventure(item)}>Duplicate adventure</button>
-                <button className="quiet-button" type="button" disabled={busy} onClick={() => void updateAdventureLibrary(item, { archived: !item.archived_at })}>{item.archived_at ? "Restore adventure" : "Archive adventure"}</button>
-              </div>
-            </details>
-          </div>}
-        </article>) : <div className="story-library-empty"><p className="empty-hint">{mainAdventures.length ? "No adventures match this search and these filters." : "No adventures yet. Start one below, or import a world and adventure."}</p>{mainAdventures.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}
+        {visibleAdventures.length ? <>
+          {adventurePreviewRows.map(renderAdventureCard)}
+          {additionalAdventureRows.length > 0 && <details className="story-more-adventures">
+            <summary>Show {additionalAdventureRows.length} more adventure{additionalAdventureRows.length === 1 ? "" : "s"}</summary>
+            <div className="story-more-adventures-list">{additionalAdventureRows.map(renderAdventureCard)}</div>
+          </details>}
+        </> : <div className="story-library-empty"><p className="empty-hint">{mainAdventures.length ? "No adventures match this search and these filters." : "Choose a world and a hero. Each adventure keeps its own story and game state."}</p>{mainAdventures.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}
       </div>
       <details className="story-world-library">
         <summary>Browse worlds <small>{visibleWorlds.length} shown of {worlds.length}</small></summary>
@@ -3090,10 +3113,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </div>
         </article>) : <div className="story-library-empty"><p className="empty-hint">{worlds.length ? "No worlds match this search and these filters." : "Create or import a world to begin."}</p>{worlds.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}</div>
       </details>
-      <details className="story-world-editor story-hub-setup" open={setupExpanded} onToggle={(event) => setSetupExpanded(event.currentTarget.open)}>
+      <details id="story-adventure-setup" className="story-world-editor story-hub-setup" open={setupExpanded} onToggle={(event) => setSetupExpanded(event.currentTarget.open)}>
         <summary>Adventure setup · step {setupStep} of 4</summary>
         <ol className="story-setup-progress" aria-label="Adventure setup progress">
-          {(["World", "Hero", "Review", "Start"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
+          {(["World", "Hero", "Build", "Review"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
             <span>{index + 1}</span><small>{label}</small>
           </li>)}
         </ol>
@@ -3204,11 +3227,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <p className="field-note">Reusing a hero starts a new isolated adventure branch with a fresh sheet from the selected world. Other adventures, checks, and trackers are not copied.</p>
           <div className="wizard-actions">
             <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(1)}>Back</button>
-            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Review starting details <span>→</span></button>
+            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Build your hero <span>→</span></button>
           </div>
         </section>}
         {setupStep === 3 && <form className="story-hub-form story-start-adventure" onSubmit={(event) => void startAdventure(event)}>
-          <div className="story-hub-title"><span>03</span><div><strong>Review starting details and model</strong><small>Nothing is sent to a model during setup.</small></div></div>
+          <div className="story-hub-title"><span>03</span><div><strong>Build your hero and choose a story model</strong><small>Set starting attributes here. Setup does not send anything to a model.</small></div></div>
           {selectedSetupWorld && selectedSetupHero && <p className="story-start-summary">{selectedSetupHero.label} · {selectedSetupWorld.name} · pinned world version {selectedSetupWorld.latest_version}</p>}
             {selectedSetupCreation && <section className="character-creation-allocation" aria-labelledby="character-creation-heading">
               <div className="story-hub-title"><span>03</span><div><strong id="character-creation-heading">Allocate starting attributes</strong><small>World-defined baselines, limits, and point costs.</small></div></div>
@@ -3233,7 +3256,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                 <summary>Review final character sheet</summary>
                 <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {stat.baseline} baseline → {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
               </details>
-              {!adventureAllocationValid && <p className="field-note" role="status">{adventurePointsRemaining < 0 ? "This allocation exceeds the world’s point budget." : adventurePointsRemaining > 0 && !selectedSetupCreation.allow_unspent_points ? "Spend the remaining points before starting." : "Check the world’s stat bounds and allocation rules."}</p>}
+              <p className="field-note" role="status" aria-live="polite">{adventurePointsRemaining < 0
+                ? "This allocation exceeds the world’s point budget. Reduce an attribute before continuing."
+                : adventurePointsRemaining > 0 && selectedSetupCreation.allow_unspent_points
+                  ? `You may leave these ${adventurePointsRemaining} point${adventurePointsRemaining === 1 ? "" : "s"} unspent or use them before starting.`
+                  : adventurePointsRemaining > 0
+                    ? `Spend all ${adventurePointsRemaining} remaining point${adventurePointsRemaining === 1 ? "" : "s"} before continuing.`
+                    : "All creation points are allocated."}</p>
             </section>}
             <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={selectedSetupWorld?.name || "First adventure"} maxLength={200} /></label>
             <p className="story-start-summary" aria-live="polite">{selectedSetupWorld && selectedSetupHero
@@ -3268,7 +3297,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             </div>
         </form>}
         {setupStep === 4 && <section className="story-hub-form">
-          <div className="story-hub-title"><span>04</span><div><strong>Start this adventure</strong><small>Review the pinned world, hero, and model one last time.</small></div></div>
+          <div className="story-hub-title"><span>04</span><div><strong>Review and start this adventure</strong><small>Confirm the world, hero, and starting sheet before play.</small></div></div>
           <p className="story-start-summary" role="status">{selectedSetupWorld && selectedSetupHero
             ? `“${adventureName.trim() || selectedSetupWorld.name}” starts as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
             : "Choose a world and hero before starting."}</p>

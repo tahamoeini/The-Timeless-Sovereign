@@ -11,6 +11,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | feat(lorethra): expand RPG mechanics, continuity, and libraries | Application code, schema migrations, and focused backend/API tests |
 | docs: consolidate project guides and changelog | Current status, acceptance evidence, documentation map, contracts, UX decisions, and this changelog |
 | test(story): account for package image revalidation (`5df3b45`) | Updated world-cover validation coverage for the canonical update, stored package, and redacted public-export boundaries |
+| feat(story): streamline adventure discovery and setup | Add an always-visible adventure creation action, progressive disclosure for long libraries, clearer wizard steps, and live point-budget guidance |
 
 ### RPG authoring and deterministic play
 
@@ -35,6 +36,8 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - Added schema-v17 world/adventure archive timestamps and library indexes. Added world duplication, archive/restore, adventure rename/status/archive/restore, and a guard preventing new adventures from archived worlds.
 - Added optional local world covers, with JPEG/PNG/WebP validation and a 64 KiB limit. Pillow is now a runtime dependency so image bytes are decoded before storage.
 - Revised the library around persistent search, optional filters and sorting, result counts, empty-state reset, visible resume/use actions, and maintenance controls under “More”. Added responsive sizing and focus indicators for narrow desktop windows.
+- Put **New adventure** beside the library heading and make it open the first setup step. Keep the most recent adventure in its dedicated resume card instead of listing it twice; show the first eight other matches and place the remainder behind a count-labelled disclosure. Search and result counts continue to cover the full library.
+- Renamed the setup progress step to **Build**, aligned its heading and action with attribute allocation, clarified that setup sends no model request, and explain whether remaining points can be left unspent. The point-budget status is announced as it changes.
 
 ### Tests and validation in this branch
 
@@ -42,6 +45,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - Corrected the world-cover test to cover all three intended validations: the canonical world update, the stored package before export, and the redacted public package.
 - The current frontend production build passed TypeScript checking and Vite bundling.
 - A local browser check verified that searching a 32-adventure library returns the matching result and count. At a 700 × 900 viewport, compact navigation and library controls remained usable.
+- The current Story Studio browser check verified the header action opens setup, a 32-adventure library initially shows eight non-featured cards with the remainder disclosed, expansion exposes the rest, and a search still returns the correct one-of-32 result. The current TypeScript check passed. A local Vite build attempt was blocked by sandbox `spawn EPERM`; current-source Windows CI is the package/build evidence gate.
 - GitHub Actions Windows run 37 at commit `5df3b45` passed all 190 core and authenticated API tests in 12.610 seconds; the story-export privacy check and frontend type/build steps also passed. The local full-suite attempt was blocked by this sandbox's missing Pillow package and denied temporary-directory writes.
 - Full lifecycle browser acceptance, hostile-file UI checks, live provider behavior, current-source Windows packaging, clean-machine launch, and separate-device recovery remain open. See docs/PROJECT_STATUS.md and docs/ACCEPTANCE_MATRIX.md.
 
