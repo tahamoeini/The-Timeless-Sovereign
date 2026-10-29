@@ -1142,8 +1142,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [adventureName, setAdventureName] = useState("");
   const [heroName, setHeroName] = useState("");
   const [libraryError, setLibraryError] = useState("");
-  const [worldPackage, setWorldPackage] = useState<{ workspace: string; data: unknown; preview: { name: string; versions: number; provenance: { workspace_id: string; world_id: string }; source_id_conflict: boolean } } | null>(null);
-  const [adventurePackage, setAdventurePackage] = useState<{ workspace: string; data: unknown; preview: { name: string; world_version: number; turns: number; memories: number; characters: number; images: number; provenance: { workspace_id: string; branch_id: string; adventure_id: string }; matching_world_id: string | null; world_import_required: boolean; source_world_id_conflict: boolean; entity_id_conflicts: { entity_id: string; label: string; existing_label: string }[] } } | null>(null);
+  const [worldPackage, setWorldPackage] = useState<{ workspace: string; data: unknown; preview: { name: string; versions: number; provenance: { workspace_id: string; world_id: string }; source_id_conflict: boolean; source_format?: string; content_warning?: string | null; stat_count?: number; tracker_count?: number; lore_entry_count?: number; npc_template_count?: number; conversion_notes?: string[] } } | null>(null);
+  const [adventurePackage, setAdventurePackage] = useState<{ workspace: string; data: unknown; preview: { name: string; world_version: number; turns: number; memories: number; characters: number; images: number; provenance: { workspace_id: string; branch_id: string; adventure_id: string }; matching_world_id: string | null; world_import_required: boolean; source_world_id_conflict: boolean; entity_id_conflicts: { entity_id: string; label: string; existing_label: string }[]; source_format?: string; world_name?: string; message_count?: number; action_count?: number; npc_count?: number; image_count?: number; map_location_count?: number; memory_count?: number; context_excluded_message_count?: number; conversion_notes?: string[] } } | null>(null);
   const [rpgState, setRpgState] = useState<RpgState | null>(null);
   const [editableStats, setEditableStats] = useState<Record<string, number>>({});
   const [rpgError, setRpgError] = useState("");
@@ -1678,11 +1678,19 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     try {
       if (file.size > 2_000_000) throw new Error("Choose a world package smaller than 2 MB.");
       const data: unknown = JSON.parse(await file.text());
-      const preview = await request<{ name: string; versions: number; provenance: { workspace_id: string; world_id: string }; source_id_conflict: boolean }>(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/package-preview`,
-        { method: "POST", body: JSON.stringify(data) },
-      );
-      setWorldPackage({ workspace: workspaceId, data, preview });
+      if (file.name.toLocaleLowerCase().endsWith(".mno-world")) {
+        const converted = await request<{ package: unknown; preview: NonNullable<typeof worldPackage>["preview"] }>(
+          `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/mno-preview`,
+          { method: "POST", body: JSON.stringify({ source: data, filename: file.name }) },
+        );
+        setWorldPackage({ workspace: workspaceId, data: converted.package, preview: converted.preview });
+      } else {
+        const preview = await request<NonNullable<typeof worldPackage>["preview"]>(
+          `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/package-preview`,
+          { method: "POST", body: JSON.stringify(data) },
+        );
+        setWorldPackage({ workspace: workspaceId, data, preview });
+      }
     } catch (error) {
       setLibraryError(error instanceof Error ? error.message : "The world package could not be previewed.");
     }
@@ -1725,11 +1733,19 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     try {
       if (file.size > 10_000_000) throw new Error("Choose an adventure package smaller than 10 MB.");
       const data: unknown = JSON.parse(await file.text());
-      const preview = await request<NonNullable<typeof adventurePackage>["preview"]>(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/package-preview`,
-        { method: "POST", body: JSON.stringify(data) },
-      );
-      setAdventurePackage({ workspace: workspaceId, data, preview });
+      if (file.name.toLocaleLowerCase().endsWith(".mno-adv")) {
+        const converted = await request<{ package: unknown; preview: NonNullable<typeof adventurePackage>["preview"] }>(
+          `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/mno-preview`,
+          { method: "POST", body: JSON.stringify({ source: data, filename: file.name }) },
+        );
+        setAdventurePackage({ workspace: workspaceId, data: converted.package, preview: converted.preview });
+      } else {
+        const preview = await request<NonNullable<typeof adventurePackage>["preview"]>(
+          `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/package-preview`,
+          { method: "POST", body: JSON.stringify(data) },
+        );
+        setAdventurePackage({ workspace: workspaceId, data, preview });
+      }
     } catch (error) {
       setLibraryError(error instanceof Error ? error.message : "The adventure package could not be previewed.");
     }

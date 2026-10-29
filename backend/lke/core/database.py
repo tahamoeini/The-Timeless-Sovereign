@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 class Database:
@@ -85,6 +85,9 @@ class Database:
                 current = 12
             if current < 13:
                 self._apply_migration(13, _SCHEMA_V13)
+                current = 13
+            if current < 14:
+                self._apply_migration(14, _SCHEMA_V14)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -987,4 +990,21 @@ WHEN OLD.kind IS NOT NEW.kind OR OLD.content IS NOT NEW.content OR
      OLD.known_by_json IS NOT NEW.known_by_json OR
      OLD.created_revision IS NOT NEW.created_revision OR OLD.created_at IS NOT NEW.created_at
 BEGIN SELECT RAISE(ABORT, 'story memory versions are immutable'); END;
+"""
+
+
+_SCHEMA_V14 = """
+ALTER TABLE story_turns ADD COLUMN metadata_json TEXT
+    CHECK(metadata_json IS NULL OR json_valid(metadata_json));
+ALTER TABLE story_adventures ADD COLUMN source_archive_json TEXT
+    CHECK(source_archive_json IS NULL OR json_valid(source_archive_json));
+ALTER TABLE rpg_sheets ADD COLUMN map_region TEXT NOT NULL DEFAULT '';
+ALTER TABLE rpg_sheets ADD COLUMN map_x REAL;
+ALTER TABLE rpg_sheets ADD COLUMN map_y REAL;
+ALTER TABLE rpg_sheets ADD COLUMN map_scale TEXT NOT NULL DEFAULT 'regional';
+ALTER TABLE story_map_locations ADD COLUMN location_type TEXT NOT NULL DEFAULT 'place';
+ALTER TABLE story_map_locations ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE story_map_locations ADD COLUMN icon TEXT NOT NULL DEFAULT '';
+ALTER TABLE story_map_locations ADD COLUMN x REAL;
+ALTER TABLE story_map_locations ADD COLUMN y REAL;
 """

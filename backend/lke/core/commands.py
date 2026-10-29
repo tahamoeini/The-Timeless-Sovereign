@@ -215,23 +215,52 @@ def _validated_world_content(value: Any) -> dict[str, Any]:
         raise ValidationError("world content must be an object")
     try:
         serialized = _json(value)
-        if len(serialized.encode("utf-8")) > 100_000:
-            raise ValidationError("world content is limited to 100 KB")
-    except (TypeError, ValueError) as error:
+        if len(serialized.encode("utf-8")) > 1_500_000:
+            raise ValidationError("world content is limited to 1.5 MB")
+    except (TypeError, ValueError, RecursionError) as error:
         raise ValidationError("world content must contain JSON-compatible values") from error
 
-    def reject_secrets(node: Any) -> None:
+    credential_fields = {
+        "apikey", "openaiapikey", "authorization", "bearertoken", "accesstoken",
+        "refreshtoken", "clientsecret", "clientpassword", "password", "passwd",
+        "credential", "credentials", "providersecret", "secretkey",
+    }
+
+    def reject_credentials(node: Any) -> None:
         if isinstance(node, dict):
             for key, nested in node.items():
-                if any(marker in str(key).casefold() for marker in ("secret", "password", "api_key", "access_token")):
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                if normalized in credential_fields:
                     raise ValidationError("world content cannot contain provider credentials")
-                reject_secrets(nested)
+                reject_credentials(nested)
         elif isinstance(node, list):
             for nested in node:
-                reject_secrets(nested)
+                reject_credentials(nested)
 
-    reject_secrets(value)
+    reject_credentials(value)
     return value
+
+
+def _validated_import_archive(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"format", "version", "filename", "data"}:
+        raise ValidationError("Adventure source archive has an unsupported shape")
+    if value["format"] != "mno-adv" or type(value["version"]) is not int or value["version"] != 2:
+        raise ValidationError("Unsupported preserved source archive format")
+    filename = value["filename"]
+    if filename is not None and (not isinstance(filename, str) or len(filename) > 255 or any(char in filename for char in ("/", "\\", "\x00"))):
+        raise ValidationError("Source archive filename is invalid")
+    source = value["data"]
+    if not isinstance(source, dict):
+        raise ValidationError("Source archive data must be a JSON object")
+    try:
+        if len(_json(source).encode("utf-8")) > 10_000_000:
+            raise ValidationError("Adventure source archive is limited to 10 MB")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("Source archive must contain valid JSON") from error
+    _validated_world_content(source)
+    return {"format": "mno-adv", "version": 2, "filename": filename, "data": source}
 
 
 def validate_world_package(package: Any) -> dict[str, Any]:
@@ -330,13 +359,13 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         "exported_at": _package_time(provenance["exported_at"], "exported_at"),
     }
     world = validate_world_package(root["world"])
-    adventure = _package_object(
-        root["adventure"],
-        {"name", "world_version", "status", "completed_turns", "npc_simulation_enabled", "actor_entity_id", "entities",
-         "conversation", "sheet", "turns", "turn_edits", "checks", "proposals", "memories", "threads",
-         "npcs", "assets", "locations"},
-        "Adventure data",
-    )
+    adventure_fields = {"name", "world_version", "status", "completed_turns", "npc_simulation_enabled", "actor_entity_id", "entities",
+                        "conversation", "sheet", "turns", "turn_edits", "checks", "proposals", "memories", "threads",
+                        "npcs", "assets", "locations"}
+    adventure = root["adventure"]
+    if not isinstance(adventure, dict) or set(adventure) not in (adventure_fields, adventure_fields | {"source_archive"}):
+        raise ValidationError("Adventure data contains unsupported or missing fields")
+    source_archive = _validated_import_archive(adventure.get("source_archive"))
     name = _required_text(adventure["name"], "adventure name", 200)
     world_version = adventure["world_version"]
     if type(world_version) is not int or not 1 <= world_version <= len(world["versions"]):
@@ -374,20 +403,42 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     }
     if not isinstance(clean_conversation["actor_is_user_controlled"], bool):
         raise ValidationError("actor_is_user_controlled must be a boolean")
-    sheet = _package_object(adventure["sheet"], {"stats", "trackers", "current_location"}, "Character sheet")
+    sheet_fields = {"stats", "trackers", "current_location"}
+    sheet = adventure["sheet"]
+    if not isinstance(sheet, dict) or set(sheet) not in (sheet_fields, sheet_fields | {"map_region", "map_x", "map_y", "map_scale"}):
+        raise ValidationError("Character sheet contains unsupported or missing fields")
+    map_region = sheet.get("map_region", "")
+    map_scale = sheet.get("map_scale", "regional")
+    map_x, map_y = sheet.get("map_x"), sheet.get("map_y")
+    if not isinstance(map_region, str) or len(map_region) > 200:
+        raise ValidationError("map_region must be text of at most 200 characters")
+    if not isinstance(map_scale, str) or not map_scale.strip() or len(map_scale) > 40:
+        raise ValidationError("map_scale must be non-empty text of at most 40 characters")
+    for coordinate in (map_x, map_y):
+        if coordinate is not None and (type(coordinate) not in (int, float) or abs(coordinate) > 1_000_000):
+            raise ValidationError("Map coordinates must be numbers between -1000000 and 1000000")
     clean_sheet = {
         "stats": _validated_stats(sheet["stats"]),
         "trackers": _validated_trackers(sheet["trackers"]),
         "current_location": sheet["current_location"],
+        "map_region": map_region,
+        "map_x": map_x,
+        "map_y": map_y,
+        "map_scale": map_scale.strip(),
     }
     if not isinstance(clean_sheet["current_location"], str) or len(clean_sheet["current_location"]) > 200:
         raise ValidationError("current_location must be text of at most 200 characters")
 
-    turns = _package_list(adventure["turns"], {"turn_id", "turn_order", "role", "narrative_order", "content", "provider", "model", "created_at"}, "turns")
+    turn_fields = {"turn_id", "turn_order", "role", "narrative_order", "content", "provider", "model", "created_at"}
+    turns = adventure["turns"]
+    if not isinstance(turns, list) or len(turns) > 10_000:
+        raise ValidationError("turns must be an array of at most 10000 records")
     clean_turns: list[dict[str, Any]] = []
     turn_ids: set[str] = set()
     turn_orders: set[int] = set()
     for turn in turns:
+        if not isinstance(turn, dict) or set(turn) not in (turn_fields, turn_fields | {"metadata"}):
+            raise ValidationError("Turn record contains unsupported or missing fields")
         turn_id = _required_text(turn["turn_id"], "turn_id", 100)
         order, narrative_order = turn["turn_order"], turn["narrative_order"]
         if turn_id in turn_ids or type(order) is not int or order < 0 or order in turn_orders:
@@ -398,15 +449,32 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         content = _required_text(turn["content"], "turn content", 200_000)
         provider = _package_optional_text(turn["provider"], "provider", 100)
         model = _package_optional_text(turn["model"], "model", 200)
+        metadata = turn.get("metadata")
+        if metadata is not None:
+            if not isinstance(metadata, dict) or len(_json(metadata).encode("utf-8")) > 20_000:
+                raise ValidationError("Turn metadata must be an object of at most 20 KB")
+            _validated_world_content(metadata)
+            if source_archive is None or metadata.get("source_format") != "mno-adv":
+                raise ValidationError("Imported turn metadata requires a preserved MNO adventure source")
+            source_role = metadata.get("source_role")
+            if source_role not in {"narrator", "npc", "action", "check", "thought", "meta"}:
+                raise ValidationError("Imported MNO turn has an unsupported source role")
+            if (role == "user") != (source_role == "action"):
+                raise ValidationError("Imported MNO role does not match the transcript turn role")
+            if metadata.get("context_excluded") is not (source_role in {"thought", "meta"}):
+                raise ValidationError("Imported inner thoughts and meta turns must stay out of model context")
         if role == "user" and (provider is not None or model is not None):
             raise ValidationError("User turns cannot contain provider metadata")
-        if role == "assistant" and (provider not in _ALLOWED_STORY_PROVIDERS or model is None):
+        if role == "assistant" and not (
+            provider is None and model is None and metadata is not None and metadata.get("source_format") == "mno-adv"
+        ) and (provider not in _ALLOWED_STORY_PROVIDERS or model is None):
             raise ValidationError("Assistant turns need supported provider metadata")
         clean_turns.append({
             "turn_id": turn_id, "turn_order": order, "role": role,
             "narrative_order": narrative_order, "content": content,
             "provider": provider,
             "model": model,
+            "metadata": metadata,
             "created_at": _package_time(turn["created_at"], "turn created_at"),
         })
         turn_ids.add(turn_id)
@@ -414,13 +482,8 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     clean_turns.sort(key=lambda turn: turn["turn_order"])
     if turn_orders and turn_orders != set(range(len(turn_orders))):
         raise ValidationError("turn_order values must be contiguous and start at zero")
-    if len(clean_turns) % 2 or any(
-        turn["role"] != ("user" if index % 2 == 0 else "assistant")
-        for index, turn in enumerate(clean_turns)
-    ):
-        raise ValidationError("Adventure turns must preserve complete user/assistant pairs")
-    if completed_turns != len(clean_turns) // 2:
-        raise ValidationError("completed_turns must match the saved conversation turns")
+    if completed_turns != sum(turn["role"] == "user" for turn in clean_turns):
+        raise ValidationError("completed_turns must match the saved player turns")
 
     edits = _package_list(adventure["turn_edits"], {"turn_id", "version", "content", "status", "provider", "model", "created_at"}, "turn_edits")
     clean_edits: list[dict[str, Any]] = []
@@ -600,11 +663,17 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
                              "created_at": _package_time(asset["created_at"], "asset created_at")})
         asset_ids.add(asset_id)
 
-    locations = _package_list(adventure["locations"], {"location_id", "name", "status", "source_proposal_id", "created_at"}, "locations", 1000)
+    location_fields = {"location_id", "name", "status", "source_proposal_id", "created_at"}
+    extended_location_fields = location_fields | {"location_type", "description", "icon", "x", "y"}
+    locations = adventure["locations"]
+    if not isinstance(locations, list) or len(locations) > 1000:
+        raise ValidationError("locations must be an array of at most 1000 records")
     clean_locations: list[dict[str, Any]] = []
     location_names: set[str] = set()
     location_ids: set[str] = set()
     for location in locations:
+        if not isinstance(location, dict) or set(location) not in (location_fields, extended_location_fields):
+            raise ValidationError("Map location contains unsupported or missing fields")
         location_id = _required_text(location["location_id"], "location_id", 100)
         clean_name = _required_text(location["name"], "location name", 200)
         name_key = clean_name.casefold()
@@ -616,9 +685,24 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
                 raise ValidationError("Map location proposal reference is missing")
         if name_key in location_names or location_id in location_ids:
             raise ValidationError("Map locations must have unique names and supported statuses")
+        location_type = location.get("location_type", "place")
+        description = location.get("description", "")
+        icon = location.get("icon", "")
+        x, y = location.get("x"), location.get("y")
+        if not isinstance(location_type, str) or not location_type.strip() or len(location_type) > 80:
+            raise ValidationError("Map location type must be non-empty text of at most 80 characters")
+        if not isinstance(description, str) or len(description) > 1000:
+            raise ValidationError("Map location description is limited to 1000 characters")
+        if not isinstance(icon, str) or len(icon) > 40:
+            raise ValidationError("Map location icon is limited to 40 characters")
+        for coordinate in (x, y):
+            if coordinate is not None and (type(coordinate) not in (int, float) or abs(coordinate) > 1_000_000):
+                raise ValidationError("Map coordinates must be numbers between -1000000 and 1000000")
         clean_locations.append({"location_id": location_id,
                                 "name": clean_name,
                                 "status": location_status, "source_proposal_id": source_proposal_id,
+                                "location_type": location_type.strip(), "description": description,
+                                "icon": icon, "x": x, "y": y,
                                 "created_at": _package_time(location["created_at"], "location created_at")})
         location_names.add(name_key)
         location_ids.add(location_id)
@@ -632,7 +716,8 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
                       "conversation": clean_conversation, "sheet": clean_sheet,
                       "turns": clean_turns, "turn_edits": clean_edits, "checks": clean_checks,
                       "proposals": clean_proposals, "memories": clean_memories, "threads": clean_threads,
-                      "npcs": clean_npcs, "assets": clean_assets, "locations": clean_locations},
+                      "npcs": clean_npcs, "assets": clean_assets, "locations": clean_locations,
+                      "source_archive": source_archive},
     }
 
 
@@ -804,25 +889,28 @@ def _import_adventure_records(
          int(conversation["actor_is_user_controlled"]), revision, revision, now, now),
     )
     connection.execute(
-        "INSERT INTO story_adventures(workspace_id,branch_id,adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO story_adventures(workspace_id,branch_id,adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled,source_archive_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (workspace_id, branch_id, adventure_id, world_id, world_version, conversation_id, data["name"],
          actor_entity_id, data["status"], revision, revision, now, now, data["completed_turns"],
-         int(data["npc_simulation_enabled"])),
+         int(data["npc_simulation_enabled"]),
+         _json(data["source_archive"]) if data["source_archive"] is not None else None),
     )
     sheet = data["sheet"]
     connection.execute(
-        "INSERT INTO rpg_sheets(workspace_id,branch_id,adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision) "
-        "VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO rpg_sheets(workspace_id,branch_id,adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision,map_region,map_x,map_y,map_scale) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (workspace_id, branch_id, adventure_id, conversation_id, _json(sheet["stats"]), _json(sheet["trackers"]),
-         sheet["current_location"], revision, revision),
+         sheet["current_location"], revision, revision, sheet["map_region"], sheet["map_x"],
+         sheet["map_y"], sheet["map_scale"]),
     )
 
     connection.executemany(
-        "INSERT INTO story_turns(workspace_id,branch_id,conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
+        "INSERT INTO story_turns(workspace_id,branch_id,conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at,metadata_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?)",
         [(workspace_id, branch_id, conversation_id, turn["turn_id"], turn["turn_order"], turn["role"],
-          turn["narrative_order"], turn["content"], turn["provider"], turn["model"], revision, turn["created_at"])
+          turn["narrative_order"], turn["content"], turn["provider"], turn["model"], revision,
+          turn["created_at"], _json(turn["metadata"]) if turn["metadata"] is not None else None)
          for turn in data["turns"]],
     )
     connection.executemany(
@@ -891,10 +979,11 @@ def _import_adventure_records(
          for asset in data["assets"]],
     )
     connection.executemany(
-        "INSERT INTO story_map_locations(workspace_id,branch_id,adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO story_map_locations(workspace_id,branch_id,adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at,location_type,description,icon,x,y) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(workspace_id, branch_id, adventure_id, location["location_id"], location["name"], location["status"],
-          location["source_proposal_id"], revision, revision, location["created_at"])
+          location["source_proposal_id"], revision, revision, location["created_at"], location["location_type"],
+          location["description"], location["icon"], location["x"], location["y"])
          for location in data["locations"]],
     )
 
@@ -947,15 +1036,15 @@ _BRANCH_SNAPSHOT_TABLES = (
     ("rules", "rule_id,name,description,rule_mode,severity,subject_entity_id,predicate,object_value,predicate_cardinality,review_status,created_revision"),
     ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
     ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
-    ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
-    ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled"),
-    ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision"),
+    ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at,metadata_json"),
+    ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled,source_archive_json"),
+    ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision,map_region,map_x,map_y,map_scale"),
     ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
     ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at"),
     ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at"),
     ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at"),
     ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at"),
-    ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at"),
+    ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at,location_type,description,icon,x,y"),
     ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at"),
     ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at"),
     ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
@@ -1052,15 +1141,15 @@ def _promote_branch_snapshot(
         ("entity_evidence", "entity_id,evidence_id,created_revision", None, (), ("created_revision",), "entity_id,evidence_id"),
         ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision", None, (), ("created_revision",), "belief_id"),
         ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at", "conversation_id", ("actor_entity_id", "title", "actor_is_user_controlled", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "conversation_id"),
-        ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id"),
-        ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled", "adventure_id", ("world_id", "world_version", "conversation_id", "name", "actor_entity_id", "status", "updated_revision", "updated_at", "completed_turns", "npc_simulation_enabled"), ("created_revision", "updated_revision"), "adventure_id"),
-        ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision", "adventure_id", ("conversation_id", "stats_json", "trackers_json", "current_location", "updated_revision"), ("created_revision", "updated_revision"), "adventure_id"),
+        ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at,metadata_json", None, (), ("created_revision",), "conversation_id,turn_id"),
+        ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled,source_archive_json", "adventure_id", ("world_id", "world_version", "conversation_id", "name", "actor_entity_id", "status", "updated_revision", "updated_at", "completed_turns", "npc_simulation_enabled", "source_archive_json"), ("created_revision", "updated_revision"), "adventure_id"),
+        ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision,map_region,map_x,map_y,map_scale", "adventure_id", ("conversation_id", "stats_json", "trackers_json", "current_location", "updated_revision", "map_region", "map_x", "map_y", "map_scale"), ("created_revision", "updated_revision"), "adventure_id"),
         ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at", None, (), ("created_revision",), "conversation_id,turn_id,version"),
         ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at", "adventure_id,memory_id,version", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "adventure_id,memory_id,version"),
         ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at", "adventure_id,thread_id", ("title", "detail", "status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,thread_id"),
         ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at", "adventure_id,npc_entity_id", ("aliases_json", "public_profile_json", "private_profile_json", "review_status", "updated_revision", "updated_at"), ("created_revision", "updated_revision"), "adventure_id,npc_entity_id"),
         ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at", None, (), ("created_revision",), "adventure_id,asset_id"),
-        ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at", "adventure_id,location_id", ("name", "status", "source_proposal_id", "reviewed_revision"), ("created_revision", "reviewed_revision"), "adventure_id,location_id"),
+        ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at,location_type,description,icon,x,y", "adventure_id,location_id", ("name", "status", "source_proposal_id", "reviewed_revision", "location_type", "description", "icon", "x", "y"), ("created_revision", "reviewed_revision"), "adventure_id,location_id"),
         ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at", None, (), ("created_revision",), "check_id"),
         ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at", "proposal_id", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "proposal_id"),
         ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
@@ -2614,9 +2703,11 @@ class CommandGateway:
                 sheet = None
                 trackers: dict[str, Any] = {}
                 location = ""
+                map_x = None
+                map_y = None
                 if sheet_changes:
                     sheet = connection.execute(
-                        "SELECT stats_json,trackers_json,current_location,updated_revision FROM rpg_sheets "
+                        "SELECT stats_json,trackers_json,current_location,updated_revision,map_x,map_y FROM rpg_sheets "
                         "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
                         (workspace_id, branch_id, proposal["adventure_id"]),
                     ).fetchone()
@@ -2626,6 +2717,7 @@ class CommandGateway:
                         raise ConflictError("RPG state proposal is stale because the character sheet changed after it was proposed")
                     trackers = json.loads(sheet["trackers_json"])
                     location = sheet["current_location"]
+                    map_x, map_y = sheet["map_x"], sheet["map_y"]
                 for change in changes:
                     if change["operation"] == "tracker_delta":
                         tracker = trackers.get(change["tracker_id"])
@@ -2638,16 +2730,18 @@ class CommandGateway:
                     elif change["operation"] == "set_location":
                         location = change["location"]
                         map_location = connection.execute(
-                            "SELECT location_id FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND name=? COLLATE NOCASE",
+                            "SELECT location_id,x,y FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND name=? COLLATE NOCASE",
                             (workspace_id, branch_id, proposal["adventure_id"], location),
                         ).fetchone()
                         if map_location:
+                            map_x, map_y = map_location["x"], map_location["y"]
                             connection.execute(
                                 "UPDATE story_map_locations SET status='approved',source_proposal_id=?,reviewed_revision=? "
                                 "WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND location_id=?",
                                 (proposal_id, revision, workspace_id, branch_id, proposal["adventure_id"], map_location["location_id"]),
                             )
                         else:
+                            map_x, map_y = None, None
                             connection.execute(
                                 "INSERT INTO story_map_locations(workspace_id,branch_id,adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at) "
                                 "VALUES(?,?,?,?,?,'approved',?,?,?,?)",
@@ -2691,9 +2785,9 @@ class CommandGateway:
                         )
                 if sheet is not None:
                     connection.execute(
-                        "UPDATE rpg_sheets SET trackers_json=?,current_location=?,updated_revision=? "
+                        "UPDATE rpg_sheets SET trackers_json=?,current_location=?,map_x=?,map_y=?,updated_revision=? "
                         "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
-                        (_json(trackers), location, revision, workspace_id, branch_id, proposal["adventure_id"]),
+                        (_json(trackers), location, map_x, map_y, revision, workspace_id, branch_id, proposal["adventure_id"]),
                     )
             connection.execute(
                 "UPDATE rpg_state_proposals SET review_status=?,reviewed_revision=? "
@@ -3015,14 +3109,15 @@ class CommandGateway:
             ).fetchone()
             locations = json.loads(world["content_json"]).get("locations", []) if world else []
             custom = connection.execute(
-                "SELECT 1 FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND name=? COLLATE NOCASE AND status='approved'",
+                "SELECT x,y FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND name=? COLLATE NOCASE AND status='approved'",
                 (workspace_id, branch_id, adventure_id, location),
             ).fetchone()
             if (not isinstance(locations, list) or not any(isinstance(value, str) and value.casefold() == location.casefold() for value in locations)) and not custom:
                 raise ValidationError("Travel is limited to locations in the pinned world version")
             connection.execute(
-                "UPDATE rpg_sheets SET current_location=?,updated_revision=? WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
-                (location, revision, workspace_id, branch_id, adventure_id),
+                "UPDATE rpg_sheets SET current_location=?,map_x=?,map_y=?,updated_revision=? WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (location, custom["x"] if custom else None, custom["y"] if custom else None,
+                 revision, workspace_id, branch_id, adventure_id),
             )
             connection.execute(
                 "UPDATE story_adventures SET updated_revision=?,updated_at=? WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
@@ -3706,7 +3801,7 @@ class CommandGateway:
     ) -> dict[str, Any]:
         with self.db.lock:
             adventure = self.db.connection.execute(
-                "SELECT adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,completed_turns,npc_simulation_enabled "
+                "SELECT adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,completed_turns,npc_simulation_enabled,source_archive_json "
                 "FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
                 (workspace_id, branch_id, adventure_id),
             ).fetchone()
@@ -3718,14 +3813,14 @@ class CommandGateway:
                 (workspace_id, branch_id, adventure["conversation_id"]),
             ).fetchone()
             sheet = self.db.connection.execute(
-                "SELECT stats_json,trackers_json,current_location FROM rpg_sheets "
+                "SELECT stats_json,trackers_json,current_location,map_region,map_x,map_y,map_scale FROM rpg_sheets "
                 "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
                 (workspace_id, branch_id, adventure_id),
             ).fetchone()
             if not conversation or not sheet:
                 raise ValidationError("Adventure is missing its conversation or character sheet")
             turns = self.db.connection.execute(
-                "SELECT turn_id,turn_order,role,narrative_order,content,provider,model,created_at "
+                "SELECT turn_id,turn_order,role,narrative_order,content,provider,model,created_at,metadata_json "
                 "FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? ORDER BY turn_order",
                 (workspace_id, branch_id, adventure["conversation_id"]),
             ).fetchall()
@@ -3765,7 +3860,7 @@ class CommandGateway:
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
             locations = self.db.connection.execute(
-                "SELECT location_id,name,status,source_proposal_id,created_at FROM story_map_locations "
+                "SELECT location_id,name,status,source_proposal_id,created_at,location_type,description,icon,x,y FROM story_map_locations "
                 "WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY location_id",
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
@@ -3835,11 +3930,15 @@ class CommandGateway:
                 "conversation": {"title": conversation["title"],
                                  "actor_is_user_controlled": bool(conversation["actor_is_user_controlled"])},
                 "sheet": {"stats": json.loads(sheet["stats_json"]), "trackers": json.loads(sheet["trackers_json"]),
-                          "current_location": sheet["current_location"]},
-                "turns": [dict(row) for row in turns], "turn_edits": [dict(row) for row in edits],
+                          "current_location": sheet["current_location"], "map_region": sheet["map_region"],
+                          "map_x": sheet["map_x"], "map_y": sheet["map_y"], "map_scale": sheet["map_scale"]},
+                "turns": [{**{key: row[key] for key in ("turn_id", "turn_order", "role", "narrative_order", "content", "provider", "model", "created_at")},
+                           "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else None}
+                          for row in turns], "turn_edits": [dict(row) for row in edits],
                 "checks": [dict(row) for row in checks], "proposals": proposal_data,
                 "memories": memory_data, "threads": [dict(row) for row in threads],
                 "npcs": npc_data, "assets": asset_data, "locations": [dict(row) for row in locations],
+                "source_archive": json.loads(adventure["source_archive_json"]) if adventure["source_archive_json"] else None,
             }
             source_world_id = adventure["world_id"]
             source_adventure_id = adventure["adventure_id"]
@@ -3965,7 +4064,7 @@ class CommandGateway:
             if not adventure:
                 raise NotFoundError("Adventure does not exist in this branch")
             sheet = self.db.connection.execute(
-                "SELECT stats_json,trackers_json,current_location,created_revision,updated_revision "
+                "SELECT stats_json,trackers_json,current_location,created_revision,updated_revision,map_region,map_x,map_y,map_scale "
                 "FROM rpg_sheets WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
                 (workspace_id, branch_id, adventure_id),
             ).fetchone()
@@ -4056,7 +4155,7 @@ class CommandGateway:
     def list_story_locations(self, workspace_id: str, branch_id: str, adventure_id: str) -> list[dict[str, Any]]:
         with self.db.lock:
             rows = self.db.connection.execute(
-                "SELECT location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at "
+                "SELECT location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at,location_type,description,icon,x,y "
                 "FROM story_map_locations WHERE workspace_id=? AND branch_id=? AND adventure_id=? ORDER BY name COLLATE NOCASE",
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
@@ -4139,7 +4238,7 @@ class CommandGateway:
                 raise NotFoundError("Story conversation does not exist in this branch")
             turns = self.db.connection.execute(
                 "SELECT turn_id,turn_order,role,narrative_order,content,provider,model,"
-                "context_manifest_id,context_manifest_json,context_revision,created_revision,created_at "
+                "context_manifest_id,context_manifest_json,context_revision,created_revision,created_at,metadata_json "
                 "FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? "
                 "ORDER BY turn_order",
                 (workspace_id, branch_id, conversation_id),
@@ -4159,6 +4258,8 @@ class CommandGateway:
             item = dict(turn)
             manifest_json = item.pop("context_manifest_json")
             item["context_manifest"] = json.loads(manifest_json) if manifest_json else None
+            metadata_json = item.pop("metadata_json")
+            item["metadata"] = json.loads(metadata_json) if metadata_json else None
             history = edits_by_turn.get(item["turn_id"], [])
             if history:
                 item["content"] = history[-1]["content"]
