@@ -30,7 +30,7 @@ class FakeOllama:
 
 class StoryProviderTests(unittest.TestCase):
     def test_provider_inventory_includes_codex_and_supported_cloud_and_local_options(self):
-        with patch("lke.ai.providers._model_names", return_value=["hf-local"]), patch.object(_CodexAppServer, "list_models", return_value=["codex-model"]):
+        with patch("lke.ai.providers._model_names", return_value=["hf-local"]), patch.object(_CodexAppServer, "list_models", return_value=["codex-model"]) as codex_discovery:
             registry = StoryProviderRegistry(FakeOllama(), {
                 "LKE_CODEX_APP_SERVER_EXECUTABLE": "codex",
                 "OPENAI_API_KEY": "test-only",
@@ -43,7 +43,8 @@ class StoryProviderTests(unittest.TestCase):
         self.assertEqual(providers["ollama"]["models"], ["qwen-local"])
         self.assertEqual(providers["huggingface_local"]["models"], ["hf-local"])
         self.assertTrue(providers["codex"]["available"])
-        self.assertEqual(providers["codex"]["models"], ["codex-model"])
+        self.assertEqual(providers["codex"]["models"], [])
+        codex_discovery.assert_not_called()
         self.assertEqual(providers["codex"]["default_model"], "auto")
         self.assertFalse(providers["codex"]["local"])
 
@@ -84,8 +85,34 @@ class StoryProviderTests(unittest.TestCase):
         registry = StoryProviderRegistry(FakeOllama(), {"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"})
         with patch("lke.ai.providers._model_names", return_value=[]), patch.object(registry.codex, "list_models", side_effect=StoryProviderError("unavailable")):
             provider = next(item for item in registry.list_providers() if item["id"] == "codex")
+            with self.assertRaises(StoryProviderError):
+                registry.discover_models("codex")
         self.assertEqual(provider["models"], [])
         self.assertEqual(provider["default_model"], "auto")
+
+    def test_remote_model_discovery_is_explicit_and_uses_configured_provider(self):
+        registry = StoryProviderRegistry(FakeOllama(), {"OPENAI_API_KEY": "test-openai", "ANTHROPIC_API_KEY": "test-claude"})
+        with patch("lke.ai.providers._request_json", return_value={"data": [{"id": "model-b"}, {"id": "model-a"}, {"id": "bad name"}]}) as fetch:
+            self.assertEqual(registry.discover_models("openai"), ["model-a", "model-b"])
+        self.assertEqual(fetch.call_args.args[0], "https://api.openai.com/v1/models")
+        self.assertEqual(fetch.call_args.kwargs["headers"]["Authorization"], "Bearer test-openai")
+        self.assertFalse(fetch.call_args.kwargs["follow_redirects"])
+
+        pages = [{"data": [{"id": "claude-a"}], "has_more": True, "last_id": "claude-a"},
+                 {"data": [{"id": "claude-b"}], "has_more": False}]
+        with patch("lke.ai.providers._request_json", side_effect=pages) as fetch:
+            self.assertEqual(registry.discover_models("claude"), ["claude-a", "claude-b"])
+        self.assertIn("after_id=claude-a", fetch.call_args.args[0])
+        self.assertEqual(fetch.call_args.kwargs["headers"]["x-api-key"], "test-claude")
+        self.assertFalse(fetch.call_args.kwargs["follow_redirects"])
+
+    def test_remote_discovery_rejects_missing_credentials_and_unsupported_providers(self):
+        registry = StoryProviderRegistry(FakeOllama(), {})
+        with patch("lke.ai.providers._request_json") as fetch:
+            for provider in ("openai", "claude", "huggingface"):
+                with self.subTest(provider=provider), self.assertRaises(StoryProviderError):
+                    registry.discover_models(provider)
+        fetch.assert_not_called()
 
     def test_local_hugging_face_url_is_loopback_v1_only(self):
         self.assertEqual(_local_hf_base_url({"LKE_HF_LOCAL_BASE_URL": "http://localhost:8000/v1/"}), "http://localhost:8000/v1")

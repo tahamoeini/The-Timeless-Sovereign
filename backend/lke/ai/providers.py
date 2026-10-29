@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from .ollama import OllamaClient, OllamaError
@@ -474,10 +474,6 @@ class StoryProviderRegistry:
         except StoryProviderError:
             hf_local_models, hf_local_available = [], False
         codex_available = bool(self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex"))
-        try:
-            codex_models = self.codex.list_models() if codex_available else []
-        except StoryProviderError:
-            codex_models = []
         return [
             {"id": "ollama", "label": "Ollama (local)", "local": True, "available": ollama_available,
              "models": ollama_models, "default_model": ollama_models[0] if ollama_models else "",
@@ -500,9 +496,51 @@ class StoryProviderRegistry:
              "setup": "Set HF_TOKEN in the environment and enter a supported model repository ID."},
             {"id": "codex", "label": "Codex app-server (signed-in account)", "local": False,
              "available": codex_available,
-             "models": codex_models, "default_model": self.env.get("LKE_CODEX_MODEL", "auto"),
+             "models": [], "default_model": self.env.get("LKE_CODEX_MODEL", "auto"),
              "setup": "Sign in to Codex and make the Codex CLI available on PATH. The model list is a catalog; actual access is confirmed when you generate."},
         ]
+
+    def discover_models(self, provider: str) -> list[str]:
+        """Contact a selected provider only on an explicit user request."""
+        if provider == "codex":
+            return self.codex.list_models()
+        if provider == "openai":
+            key = self.env.get("OPENAI_API_KEY", "")
+            if not key:
+                raise StoryProviderError("Set OPENAI_API_KEY before loading OpenAI models.")
+            value = _request_json("https://api.openai.com/v1/models", method="GET",
+                                  headers={"Authorization": f"Bearer {key}"}, timeout_seconds=10,
+                                  follow_redirects=False)
+            entries = value.get("data")
+            if not isinstance(entries, list):
+                raise StoryProviderError("OpenAI returned an invalid model catalog.")
+            return sorted({entry["id"] for entry in entries if isinstance(entry, dict)
+                           and isinstance(entry.get("id"), str) and _MODEL_NAME.fullmatch(entry["id"])})
+        if provider == "claude":
+            key = self.env.get("ANTHROPIC_API_KEY", "")
+            if not key:
+                raise StoryProviderError("Set ANTHROPIC_API_KEY before loading Claude models.")
+            models: list[str] = []
+            cursor = ""
+            for _ in range(10):
+                url = "https://api.anthropic.com/v1/models?limit=1000"
+                if cursor:
+                    url += "&after_id=" + quote(cursor, safe="")
+                value = _request_json(url, method="GET", headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                                      timeout_seconds=10, follow_redirects=False)
+                entries = value.get("data")
+                if not isinstance(entries, list):
+                    raise StoryProviderError("Claude returned an invalid model catalog.")
+                for entry in entries:
+                    name = entry.get("id") if isinstance(entry, dict) else None
+                    if isinstance(name, str) and _MODEL_NAME.fullmatch(name) and name not in models:
+                        models.append(name)
+                next_cursor = value.get("last_id")
+                if not value.get("has_more") or not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+                    break
+                cursor = next_cursor
+            return models
+        raise StoryProviderError("Model discovery is not available for this provider.")
 
     def generate(self, provider: str, model: str, messages: list[dict[str, str]]) -> str:
         if provider not in _PROVIDER_IDS:

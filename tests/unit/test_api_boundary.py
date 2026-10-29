@@ -73,6 +73,15 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/v1/health").status_code, 200)
         self.assertEqual(self.request("GET", "/api/v1/workspaces").status_code, 401)
 
+    def test_remote_model_discovery_requires_authentication_and_explicit_post(self) -> None:
+        with patch("lke.ai.providers.StoryProviderRegistry.discover_models", return_value=["model-a"]) as discover:
+            self.assertEqual(self.request("POST", "/api/v1/providers/story/openai/models").status_code, 401)
+            discover.assert_not_called()
+            response = self.request("POST", "/api/v1/providers/story/openai/models", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"models": ["model-a"]})
+        discover.assert_called_once_with("openai")
+
     def test_unknown_origin_is_rejected(self) -> None:
         response = self.request(
             "GET",

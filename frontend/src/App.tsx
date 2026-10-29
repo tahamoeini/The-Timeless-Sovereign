@@ -1121,6 +1121,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     try { return window.localStorage.getItem("lke.story.model") || ""; } catch { return ""; }
   });
   const [usingCustomModel, setUsingCustomModel] = useState(false);
+  const [modelDiscoveryBusy, setModelDiscoveryBusy] = useState(false);
+  const [modelDiscoveryError, setModelDiscoveryError] = useState("");
   const [title, setTitle] = useState("");
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -1183,6 +1185,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const generationAbort = useRef<AbortController | null>(null);
   const memoryScopeRef = useRef("");
   const storyMounted = useRef(true);
+  const storyProviderRef = useRef(providerId);
+  storyProviderRef.current = providerId;
   const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
   const storyProviderAvailable = selectedStoryProvider?.available ?? false;
   const models = selectedStoryProvider?.models ?? [];
@@ -1190,10 +1194,25 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const customModel = usingCustomModel || (!knownModel && Boolean(model)) || (!models.length && providerId !== "codex");
   function changeStoryProvider(nextId: StoryProvider["id"]) {
     const next = storyProviders.find((provider) => provider.id === nextId);
+    storyProviderRef.current = nextId;
     setProviderId(nextId);
     setUsingCustomModel(false);
+    setModelDiscoveryError("");
     setModel(next?.default_model || next?.models[0] || (nextId === "codex" ? "auto" : ""));
     setStoryError("");
+    if (nextId === "codex" && next?.available && !next.models.length) void loadProviderModels(nextId);
+  }
+  async function loadProviderModels(requestedProvider: StoryProvider["id"] = providerId) {
+    setModelDiscoveryError("");
+    setModelDiscoveryBusy(true);
+    try {
+      const response = await request<{ models: string[] }>(`/api/v1/providers/story/${encodeURIComponent(requestedProvider)}/models`, { method: "POST" });
+      if (storyMounted.current) setStoryProviders((providers) => providers.map((provider) => provider.id === requestedProvider ? { ...provider, models: response.models } : provider));
+    } catch (error) {
+      if (storyMounted.current && storyProviderRef.current === requestedProvider) setModelDiscoveryError(error instanceof Error ? error.message : "Models could not be loaded.");
+    } finally {
+      if (storyMounted.current) setModelDiscoveryBusy(false);
+    }
   }
   useEffect(() => {
     storyMounted.current = true;
@@ -2408,6 +2427,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </select></label>
               {customModel && <label className="field-label">Custom model ID<input aria-label="Custom model ID" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} disabled={generating || memoryQuerying} placeholder="Provider model ID" /></label>}
             </div>
+            {(providerId === "openai" || providerId === "claude" || providerId === "codex") && storyProviderAvailable && <div>
+              <button className="secondary-button" type="button" disabled={modelDiscoveryBusy || generating || memoryQuerying} onClick={() => void loadProviderModels()}>{modelDiscoveryBusy ? "Loading models…" : "Load available models"}</button>
+              <small className="provider-note">{providerId === "codex" ? "Reads the Codex model catalog without sending story text; availability can depend on your account." : "Requests the selected provider's model catalog using your configured API key. Some listed models may not support story text."}</small>
+              {modelDiscoveryError && <p className="inline-error" role="alert">{modelDiscoveryError}</p>}
+            </div>}
             <details><summary>Advanced story options</summary><label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label></details>
             <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
             {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "This provider is configured for local inference." : "The prompt, recent story, and authorized context are sent to this provider. API and account charges or data terms may apply."}</p>}

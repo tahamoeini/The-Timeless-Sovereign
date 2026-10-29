@@ -300,6 +300,13 @@ def create_app(
     def story_providers_status():
         return {"providers": story_provider_registry.list_providers()}
 
+    @app.post("/api/v1/providers/story/{provider}/models")
+    def discover_story_models(provider: str):
+        try:
+            return {"models": story_provider_registry.discover_models(provider)}
+        except StoryProviderError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
     @app.post("/api/v1/workspaces", status_code=201)
     def create_workspace(body: WorkspaceCreate):
         return gateway.create_workspace(body.name, body.workspace_id)
