@@ -67,6 +67,7 @@ class ApiBoundaryTests(unittest.TestCase):
         return asyncio.run(send())
 
     def test_health_is_public_but_data_requires_authentication(self) -> None:
+        self.assertEqual(self.app.title, "Lorethra")
         self.assertEqual(self.request("GET", "/api/v1/health").status_code, 200)
         self.assertEqual(self.request("GET", "/api/v1/workspaces").status_code, 401)
 

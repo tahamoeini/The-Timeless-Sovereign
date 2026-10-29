@@ -1,4 +1,4 @@
-# LKE Documentation
+# Lorethra Documentation
 
 - [Story Studio enhancement plan](STORY_STUDIO_ENHANCEMENT_PLAN.md): user-approved, dated competitor review, implementation priorities and acceptance criteria (implementation in progress).
 - [RPG implementation guide](agents/RPG_IMPLEMENTATION_GUIDE.md): current implementation boundary, canonical write rules, work sequence and evidence gates for coding agents.

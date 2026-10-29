@@ -1,8 +1,8 @@
 [package]
 name = "lke-desktop"
 version = "0.1.0"
-description = "Living Knowledge Engine desktop shell"
-authors = ["LKE Contributors"]
+description = "Lorethra desktop shell"
+authors = ["Lorethra Contributors"]
 edition = "2021"
 
 [build-dependencies]

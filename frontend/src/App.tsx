@@ -343,12 +343,12 @@ export default function App() {
     const file = input.files?.[0];
     if (!file) return;
     if (!/\.lkebackup$/i.test(file.name)) {
-      setNotice({ tone: "error", text: "Choose an LKE .lkebackup file." });
+      setNotice({ tone: "error", text: "Choose a Lorethra .lkebackup file." });
       input.value = "";
       return;
     }
     const confirmed = window.confirm(
-      "Restoring replaces every workspace in this LKE installation with the selected backup. This cannot be undone from LKE. Download a backup of the current data first if you want to keep it. Continue?",
+      "Restoring replaces every workspace in this Lorethra installation with the selected backup. This cannot be undone from Lorethra. Download a backup of the current data first if you want to keep it. Continue?",
     );
     if (!confirmed) {
       input.value = "";

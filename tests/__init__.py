@@ -1,1 +1,1 @@
-"""LKE test suite."""
+"""Lorethra test suite."""

@@ -1,1 +1,1 @@
-"""Python backend for Living Knowledge Engine."""
+"""Python backend for Lorethra."""

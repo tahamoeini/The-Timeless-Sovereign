@@ -4,7 +4,7 @@ Date: 2026-10-23. Status: approved for implementation by the user; implementatio
 
 ## Recommendation
 
-Build an RPG-first authoring and play experience on the existing LKE core. The main path is create or choose a world, build a protagonist, then play or resume an isolated adventure. Establish world/adventure lifecycle and the deterministic RPG loop before adding deeper continuity and optional simulation; add illustrated publishing after play is stable. Do not replace canonical storage with a memory vendor or make video generation a release dependency. Finish existing integrity and desktop acceptance gates alongside this work.
+Build an RPG-first authoring and play experience on the existing Lorethra core. The main path is create or choose a world, build a protagonist, then play or resume an isolated adventure. Establish world/adventure lifecycle and the deterministic RPG loop before adding deeper continuity and optional simulation; add illustrated publishing after play is stable. Do not replace canonical storage with a memory vendor or make video generation a release dependency. Finish existing integrity and desktop acceptance gates alongside this work.
 
 ## Implementation update
 

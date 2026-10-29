@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Main LKE window with access to its registered application commands.","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Main Lorethra window with access to its registered application commands.","local":true,"windows":["main"],"permissions":["core:default"]}}

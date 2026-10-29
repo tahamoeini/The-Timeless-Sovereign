@@ -65,7 +65,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![get_api_config])
         .build(tauri::generate_context!())
-        .expect("failed to build LKE desktop application");
+        .expect("failed to build Lorethra desktop application");
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {

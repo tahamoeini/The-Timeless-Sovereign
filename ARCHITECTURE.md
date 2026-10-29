@@ -2,7 +2,7 @@
 
 **Baseline:** LKE Final Product & Architecture Plan v1.1, 17 October 2026.
 
-LKE is a Windows-first, local-first, single-user modular monolith with ports and adapters. It ships as one desktop application, backed by a Python API sidecar and a canonical SQLite database. Modules have explicit write ownership and versioned contracts; directory separation alone is not a module boundary.
+Lorethra is a Windows-first, local-first, single-user modular monolith with ports and adapters. It ships as one desktop application, backed by a Python API sidecar and a canonical SQLite database. Modules have explicit write ownership and versioned contracts; directory separation alone is not a module boundary.
 
 ```text
 Desktop shell (Tauri 2) + React/TypeScript

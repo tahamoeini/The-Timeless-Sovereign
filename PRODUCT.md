@@ -2,7 +2,7 @@
 
 ## Product
 
-Living Knowledge Engine (LKE) is a local-first knowledge and memory workspace. Its first complete experience is Story Studio; the same canonical core also supports Knowledge Explorer, Journal & Memory, and Decision & Scenario Lab.
+Lorethra is a local-first knowledge and memory workspace. Its first complete experience is Story Studio; the same canonical core also supports Knowledge Explorer, Journal & Memory, and Decision & Scenario Lab.
 
 ## v0.1 outcome
 
