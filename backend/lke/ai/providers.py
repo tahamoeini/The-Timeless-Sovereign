@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -204,6 +205,102 @@ class _CodexAppServer:
         self.env = env
         self.timeout_seconds = timeout_seconds
 
+    def list_models(self) -> list[str]:
+        """Read the local app-server picker catalog without sending story content."""
+        executable = self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")
+        if not executable:
+            return []
+        child_env = dict(self.env)
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
+            child_env.pop(key, None)
+        try:
+            with tempfile.TemporaryDirectory(prefix="lke-codex-models-") as scratch:
+                process = subprocess.Popen(
+                    [executable, "app-server", "--listen", "stdio://"], cwd=scratch,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env,
+                )
+                lines: queue.Queue[str | None] = queue.Queue()
+
+                def read_lines() -> None:
+                    try:
+                        assert process.stdout is not None
+                        for line in process.stdout:
+                            lines.put(line)
+                    finally:
+                        lines.put(None)
+
+                threading.Thread(target=read_lines, daemon=True).start()
+                deadline = time.monotonic() + min(self.timeout_seconds, 10)
+
+                def send(message: dict[str, Any]) -> None:
+                    if process.stdin is None:
+                        raise StoryProviderError("Codex model discovery closed its input stream.")
+                    process.stdin.write(json.dumps(message) + "\n")
+                    process.stdin.flush()
+
+                def receive(request_id: int) -> dict[str, Any]:
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise StoryProviderError("Codex model discovery timed out.")
+                        try:
+                            line = lines.get(timeout=remaining)
+                        except queue.Empty as error:
+                            raise StoryProviderError("Codex model discovery timed out.") from error
+                        if line is None:
+                            raise StoryProviderError("Codex model discovery stopped unexpectedly.")
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(event, dict) and event.get("id") == request_id:
+                            if "error" in event or not isinstance(event.get("result"), dict):
+                                raise StoryProviderError("Codex model discovery was rejected.")
+                            return event["result"]
+                        if isinstance(event, dict) and "id" in event and "method" in event:
+                            send({"id": event["id"], "error": {"code": -32000, "message": "Story Studio does not approve tools."}})
+
+                try:
+                    send({"id": 1, "method": "initialize", "params": {"clientInfo": {
+                        "name": "living_knowledge_engine", "title": "Story Studio", "version": "0.1.0"}}})
+                    receive(1)
+                    send({"method": "initialized", "params": {}})
+                    models: list[str] = []
+                    cursor: str | None = None
+                    for page in range(10):
+                        params: dict[str, Any] = {"limit": 100, "includeHidden": False}
+                        if cursor:
+                            params["cursor"] = cursor
+                        send({"id": page + 2, "method": "model/list", "params": params})
+                        result = receive(page + 2)
+                        entries = result.get("data", [])
+                        if not isinstance(entries, list):
+                            raise StoryProviderError("Codex returned an invalid model catalog.")
+                        for entry in entries:
+                            if not isinstance(entry, dict) or entry.get("hidden") is True:
+                                continue
+                            name = entry.get("model", entry.get("id"))
+                            if isinstance(name, str) and _MODEL_NAME.fullmatch(name) and name not in models:
+                                models.append(name)
+                        next_cursor = result.get("nextCursor")
+                        if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+                            break
+                        cursor = next_cursor
+                    return models
+                finally:
+                    if process.stdin is not None:
+                        process.stdin.close()
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=2)
+        except (OSError, ValueError) as error:
+            raise StoryProviderError("Codex model discovery could not start.") from error
+
     def generate(self, model: str, messages: list[dict[str, str]]) -> str:
         executable = self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")
         if not executable:
@@ -370,6 +467,11 @@ class StoryProviderRegistry:
             hf_local_available = True
         except StoryProviderError:
             hf_local_models, hf_local_available = [], False
+        codex_available = bool(self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex"))
+        try:
+            codex_models = self.codex.list_models() if codex_available else []
+        except StoryProviderError:
+            codex_models = []
         return [
             {"id": "ollama", "label": "Ollama (local)", "local": True, "available": ollama_available,
              "models": ollama_models, "default_model": ollama_models[0] if ollama_models else "",
@@ -391,9 +493,9 @@ class StoryProviderRegistry:
              "default_model": self.env.get("LKE_HF_MODEL", ""),
              "setup": "Set HF_TOKEN in the environment and enter a supported model repository ID."},
             {"id": "codex", "label": "Codex app-server (signed-in account)", "local": False,
-             "available": bool(self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")),
-             "models": [], "default_model": self.env.get("LKE_CODEX_MODEL", "auto"),
-             "setup": "Sign in to Codex and make the Codex CLI available on PATH. Story context is processed by the selected Codex model."},
+             "available": codex_available,
+             "models": codex_models, "default_model": self.env.get("LKE_CODEX_MODEL", "auto"),
+             "setup": "Sign in to Codex and make the Codex CLI available on PATH. The model list is a catalog; actual access is confirmed when you generate."},
         ]
 
     def generate(self, provider: str, model: str, messages: list[dict[str, str]]) -> str:

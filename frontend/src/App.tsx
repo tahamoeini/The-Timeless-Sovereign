@@ -1120,6 +1120,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [model, setModel] = useState(() => {
     try { return window.localStorage.getItem("lke.story.model") || ""; } catch { return ""; }
   });
+  const [usingCustomModel, setUsingCustomModel] = useState(false);
   const [title, setTitle] = useState("");
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -1152,6 +1153,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [rpgError, setRpgError] = useState("");
   const [checkStat, setCheckStat] = useState("");
   const [checkTarget, setCheckTarget] = useState(12);
+  const [customCheckTarget, setCustomCheckTarget] = useState(false);
   const [proposalOperation, setProposalOperation] = useState<"tracker_delta" | "set_location">("tracker_delta");
   const [proposalTracker, setProposalTracker] = useState("health");
   const [proposalDelta, setProposalDelta] = useState(-1);
@@ -1184,9 +1186,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
   const storyProviderAvailable = selectedStoryProvider?.available ?? false;
   const models = selectedStoryProvider?.models ?? [];
+  const knownModel = models.includes(model) || (providerId === "codex" && model === "auto");
+  const customModel = usingCustomModel || (!knownModel && Boolean(model)) || (!models.length && providerId !== "codex");
   function changeStoryProvider(nextId: StoryProvider["id"]) {
     const next = storyProviders.find((provider) => provider.id === nextId);
     setProviderId(nextId);
+    setUsingCustomModel(false);
     setModel(next?.default_model || next?.models[0] || (nextId === "codex" ? "auto" : ""));
     setStoryError("");
   }
@@ -2392,14 +2397,22 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                 {storyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}{provider.local ? " · local" : " · online"}</option>)}
                 {!storyProviders.length && <option value="ollama">Ollama · local</option>}
               </select></label>
-              <label className="field-label">Model<input aria-label="Model" list="story-provider-models" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} disabled={generating || memoryQuerying} placeholder={providerId === "codex" ? "auto or a Codex model" : "Model name"} /></label>
-              <datalist id="story-provider-models">{models.map((name) => <option key={name} value={name} />)}</datalist>
+              <label className="field-label">Model<select aria-label="Model" value={customModel ? "__custom__" : model} disabled={generating || memoryQuerying} onChange={(event) => {
+                if (event.target.value === "__custom__") { setUsingCustomModel(true); setModel(""); }
+                else { setUsingCustomModel(false); setModel(event.target.value); }
+              }}>
+                {!model && !customModel && <option value="">Choose a model</option>}
+                {providerId === "codex" && <option value="auto">Codex default (automatic)</option>}
+                {models.filter((name) => name !== "auto").map((name) => <option key={name} value={name}>{name}</option>)}
+                <option value="__custom__">Enter a model ID manually</option>
+              </select></label>
+              {customModel && <label className="field-label">Custom model ID<input aria-label="Custom model ID" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} disabled={generating || memoryQuerying} placeholder="Provider model ID" /></label>}
             </div>
-            <label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label>
+            <details><summary>Advanced story options</summary><label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label></details>
             <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
             {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "This provider is configured for local inference." : "The prompt, recent story, and authorized context are sent to this provider. API and account charges or data terms may apply."}</p>}
             {selectedStoryProvider && !storyProviderAvailable && <p className="provider-note">This provider is not available yet. Check its setup above, then reload the workspace.</p>}
-            {storyProviderAvailable && !model.trim() && <p className="provider-note">Enter a model name to continue. Installed local models appear as suggestions.</p>}
+            {storyProviderAvailable && !model.trim() && <p className="provider-note">Choose a listed model or enter a custom model ID to continue.</p>}
             <button className="primary-button full-button" disabled={generating || busy || !storyProviderAvailable || !model.trim() || !prompt.trim()}>{generating ? "Writing story…" : `Continue story${selectedStoryProvider ? ` with ${selectedStoryProvider.label}` : ""}`} <span>✳</span></button>
             {generating && <button className="secondary-button full-button stop-generation" type="button" onClick={stopStoryGeneration}>Stop generation</button>}
           </form>
@@ -2418,7 +2431,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <div className="story-hub-title"><span>🎲</span><div><strong>Roll a check</strong><small>d20 + stat modifier against a visible target.</small></div></div>
             <div className="rpg-check-fields">
               <label className="field-label">Stat<select value={checkStat || Object.keys(rpgState.sheet.stats)[0] || ""} onChange={(event) => setCheckStat(event.target.value)}>{Object.keys(rpgState.sheet.stats).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
-              <label className="field-label">Target<input type="number" min={1} max={100} value={checkTarget} onChange={(event) => setCheckTarget(Number(event.target.value))} /></label>
+              <label className="field-label">Difficulty<select value={customCheckTarget ? "custom" : String(checkTarget)} onChange={(event) => {
+                const custom = event.target.value === "custom";
+                setCustomCheckTarget(custom);
+                if (!custom) setCheckTarget(Number(event.target.value));
+              }}><option value="8">Easy · 8</option><option value="12">Standard · 12</option><option value="16">Hard · 16</option><option value="20">Very hard · 20</option><option value="custom">Custom target</option></select></label>
+              {customCheckTarget && <label className="field-label">Custom target<input type="number" min={1} max={100} value={checkTarget} onChange={(event) => setCheckTarget(Number(event.target.value))} /></label>}
             </div>
             <button className="secondary-button full-button" disabled={busy || generating || !Object.keys(rpgState.sheet.stats).length}>Roll d20</button>
           </form>

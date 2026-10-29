@@ -1,11 +1,14 @@
 """Provider routing uses explicit destinations and never needs real credentials in tests."""
 
+import io
+import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from lke.ai.providers import (
     StoryProviderError,
     StoryProviderRegistry,
+    _CodexAppServer,
     _anthropic_messages,
     _local_hf_base_url,
     _openai_responses,
@@ -25,7 +28,7 @@ class FakeOllama:
 
 class StoryProviderTests(unittest.TestCase):
     def test_provider_inventory_includes_codex_and_supported_cloud_and_local_options(self):
-        with patch("lke.ai.providers._model_names", return_value=["hf-local"]):
+        with patch("lke.ai.providers._model_names", return_value=["hf-local"]), patch.object(_CodexAppServer, "list_models", return_value=["codex-model"]):
             registry = StoryProviderRegistry(FakeOllama(), {
                 "LKE_CODEX_APP_SERVER_EXECUTABLE": "codex",
                 "OPENAI_API_KEY": "test-only",
@@ -38,8 +41,40 @@ class StoryProviderTests(unittest.TestCase):
         self.assertEqual(providers["ollama"]["models"], ["qwen-local"])
         self.assertEqual(providers["huggingface_local"]["models"], ["hf-local"])
         self.assertTrue(providers["codex"]["available"])
+        self.assertEqual(providers["codex"]["models"], ["codex-model"])
         self.assertEqual(providers["codex"]["default_model"], "auto")
         self.assertFalse(providers["codex"]["local"])
+
+    def test_codex_model_catalog_paginates_and_excludes_hidden_or_invalid_models(self):
+        class CapturingInput(io.StringIO):
+            def close(self):
+                self.sent = self.getvalue()
+                super().close()
+
+        writer = CapturingInput()
+        responses = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": [{"model": "model-a"}, {"model": "hidden-model", "hidden": True}, {"model": "invalid model"}], "nextCursor": "page-two"}},
+            {"id": 3, "result": {"data": [{"model": "model-b"}, {"model": "model-a"}], "nextCursor": None}},
+        ]
+        process = Mock(stdin=writer, stdout=io.StringIO("".join(json.dumps(item) + "\n" for item in responses)))
+        process.poll.return_value = None
+        with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch("lke.ai.providers.subprocess.Popen", return_value=process) as start:
+            directory.return_value.__enter__.return_value = "scratch"
+            models = _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex", "OPENAI_API_KEY": "secret"}).list_models()
+        self.assertEqual(models, ["model-a", "model-b"])
+        sent = [json.loads(line) for line in writer.sent.splitlines()]
+        self.assertEqual(sent[2]["method"], "model/list")
+        self.assertEqual(sent[3]["params"]["cursor"], "page-two")
+        self.assertNotIn("OPENAI_API_KEY", start.call_args.kwargs["env"])
+        process.terminate.assert_called_once()
+
+    def test_codex_catalog_failure_keeps_automatic_default_available(self):
+        registry = StoryProviderRegistry(FakeOllama(), {"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"})
+        with patch("lke.ai.providers._model_names", return_value=[]), patch.object(registry.codex, "list_models", side_effect=StoryProviderError("unavailable")):
+            provider = next(item for item in registry.list_providers() if item["id"] == "codex")
+        self.assertEqual(provider["models"], [])
+        self.assertEqual(provider["default_model"], "auto")
 
     def test_local_hugging_face_url_is_loopback_v1_only(self):
         self.assertEqual(_local_hf_base_url({"LKE_HF_LOCAL_BASE_URL": "http://localhost:8000/v1/"}), "http://localhost:8000/v1")
