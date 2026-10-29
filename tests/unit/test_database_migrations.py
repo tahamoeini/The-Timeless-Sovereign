@@ -23,14 +23,23 @@ class DatabaseMigrationTests(unittest.TestCase):
             ("rpg_sheets", "map_x"),
             ("rpg_sheets", "map_y"),
             ("rpg_sheets", "map_scale"),
+            ("rpg_sheets", "abilities_json"),
+            ("rpg_sheets", "skills_json"),
+            ("rpg_sheets", "experience_json"),
         ):
             columns = {row[1] for row in database.connection.execute(f"PRAGMA table_info({table})").fetchall()}
             if column in columns:
                 database.connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-        for table in ("story_map_locations", "story_assets", "story_npc_profiles", "story_threads", "story_memories", "story_turn_edits"):
+        for table in ("rpg_mechanic_checks", "story_map_locations", "story_assets", "story_npc_profiles", "story_threads", "story_memories", "story_turn_edits"):
             database.connection.execute(f"DROP TABLE IF EXISTS {table}")
         database.connection.execute("ALTER TABLE story_adventures DROP COLUMN npc_simulation_enabled")
         database.connection.execute("ALTER TABLE story_adventures DROP COLUMN completed_turns")
+
+    def _drop_story_library_extensions(self, database):
+        database.connection.execute("DROP INDEX IF EXISTS story_worlds_library_idx")
+        database.connection.execute("DROP INDEX IF EXISTS story_adventures_library_archive_idx")
+        database.connection.execute("ALTER TABLE story_worlds DROP COLUMN archived_at")
+        database.connection.execute("ALTER TABLE story_adventures DROP COLUMN archived_at")
 
     def _drop_scenarios(self, database):
         for table in (
@@ -79,6 +88,15 @@ class DatabaseMigrationTests(unittest.TestCase):
                 table: {row[1] for row in upgraded.connection.execute(f"PRAGMA table_info({table})").fetchall()}
                 for table in ("story_turns", "story_adventures", "rpg_sheets", "story_map_locations")
             }
+            v16_tables = {
+                row[0] for row in upgraded.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            v17_library_columns = {
+                table: {row[1] for row in upgraded.connection.execute(f"PRAGMA table_info({table})").fetchall()}
+                for table in ("story_worlds", "story_adventures")
+            }
             archive_trigger = upgraded.connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='story_adventure_source_archive_immutable'"
             ).fetchone()
@@ -89,6 +107,10 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertTrue({"metadata_json"} <= v14_columns["story_turns"])
         self.assertTrue({"source_archive_json"} <= v14_columns["story_adventures"])
         self.assertTrue({"map_region", "map_x", "map_y", "map_scale"} <= v14_columns["rpg_sheets"])
+        self.assertTrue({"skills_json", "experience_json"} <= v14_columns["rpg_sheets"])
+        self.assertIn("rpg_mechanic_checks", v16_tables)
+        self.assertTrue({"archived_at"} <= v17_library_columns["story_worlds"])
+        self.assertTrue({"archived_at"} <= v17_library_columns["story_adventures"])
         self.assertTrue({"location_type", "description", "icon", "x", "y"} <= v14_columns["story_map_locations"])
         self.assertIsNotNone(archive_trigger)
 
@@ -258,6 +280,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             )
             database.connection.execute("ALTER TABLE story_world_versions DROP COLUMN name")
             self._drop_story_extensions(database)
+            self._drop_story_library_extensions(database)
             database.connection.execute("DELETE FROM schema_migrations WHERE version>9")
             database.close()
 

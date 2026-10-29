@@ -54,8 +54,26 @@ This file records decisions made against the LKE v1.1 baseline. Unverified choic
 
 **Decision:** export an actor-aware context manifest as a versioned local JSON file containing the workspace, branch, source revision, included facts, and exclusions. Do not send it to an external provider from this flow.
 
-**Reason:** this makes the current context portable while preserving user control over whether and where to share it. Versioned transcript import is implemented as a local archive that stays separate from canon and story turns. External provider authentication and per-message redaction remain unimplemented integrations.
+**Reason:** this makes the current context portable while preserving user control over whether and where to share it. Versioned transcript import is implemented as a local archive that stays separate from canon and story turns. External story requests now require provider-matched consent at the API and remove non-public claims, author notes, private profiles, unshared memories, and unclassified lore/thread context. Consent preferences are stored per provider in the client and can be revoked. Cancellation events now reach provider adapters; active HTTP responses are closed and Codex's ephemeral process is terminated. Verify live behavior because hosted providers may continue processing or bill after Lorethra closes a request.
+
+## ADR-010 — World-pinned point-buy character creation
+
+**Decision:** a world version may define an optional typed character-creation contract for attribute budgets, per-stat baseline/bounds/cost, unspent points, and below-baseline refunds. The adventure-start UI previews the resulting sheet, and the command gateway validates that sheet against the exact world version before branch creation. Trackers and extraordinary abilities remain separate data.
+
+**Reason:** character creation needs flexible world-specific mechanics without granting a client or model authority to bypass bounds or point totals. Pinning the rules to the immutable world version keeps imported/replayed adventures deterministic. Legacy worlds without the optional contract keep their existing start behavior.
+
+## ADR-011 — Explicit world-pinned exceptional abilities
+
+**Decision:** store extraordinary abilities in immutable world-version definitions and keep their adventure activation state separate from attributes and trackers. Definitions describe activation, effects, explicit costs/cooldowns, duration/range, interactions with ordinary magic, demonstrated capabilities, confirmed limitations, and unresolved aspects. The gateway enforces only costs and cooldowns the definition explicitly declares; an ability with no stated cost or cooldown has neither. Ability activation does not implicitly require d20, mana, or level checks.
+
+**Reason:** imported and authored settings must preserve exceptional capabilities without translating them into assumptions from a familiar RPG system. Pinning definitions to the adventure's world revision and revisioning activation state keeps behavior portable, auditable, and historically reconstructable.
+
+## ADR-012 — World-pinned configurable game mechanics
+
+**Decision:** an immutable world version may define deterministic d20 or bounded custom dice, narrative-only or hybrid resolution, difficulty and encounter lists, skills/proficiency, and manual/automatic/hybrid experience. The adventure copies its starting skills and XP state and resolves checks only against the pinned profile. The API generates rolls; gateway code validates and calculates results. Models can narrate a saved result but cannot choose rolls, alter arithmetic, award XP, or modify skills.
+
+**Reason:** worlds can use different mechanics without changing the legacy d20 default or affecting adventures already in progress. Persisting rule snapshots beside immutable check records keeps history and portable packages interpretable after later world revisions.
 
 ## Deferred decisions
 
-The exact document parser, embedding model, GraphRAG integration, external OpenAI/Codex path, minimum hardware, agent safe-apply policy, and final backup container remain open until their evaluation criteria and packaging tests are run. See [the integration register](docs/INTEGRATION_REGISTER.md).
+The exact document parser, embedding model, graph-retrieval framework, minimum hardware, agent safe-apply policy, and final backup container remain open until their evaluation criteria, Windows packaging, offline behavior, licensing, and recovery effects are reviewed. Optional dependencies must remain replaceable and cannot own canonical data. Current platform priorities and release gaps are tracked in [Project status](docs/PROJECT_STATUS.md).

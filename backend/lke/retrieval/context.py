@@ -98,6 +98,7 @@ class ContextCompiler:
                 "predicate": claim["predicate"],
                 "object": claim["object_value"],
                 "epistemic_status": claim["epistemic_status"],
+                "visibility": claim["visibility"],
                 "actor_stance": latest_stances[0] if len(latest_stances) == 1 else "contested",
                 "narrative_order": claim["narrative_order"],
                 "awareness_order": latest_order,

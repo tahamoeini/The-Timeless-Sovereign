@@ -6,13 +6,14 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 import unittest
 from unittest.mock import patch
 
 import httpx
 
 from lke.ai import OllamaError
-from lke.api.app import create_app
+from lke.api.app import _external_provider_context, create_app
 from lke.core import Database
 
 
@@ -29,17 +30,22 @@ class FakeOllama:
             }],
         }
         self.structured_callback = None
+        self.generation_callback = None
 
     def list_models(self) -> list[str]:
         return ["test-model"]
 
-    def generate(self, model: str, messages: list[dict[str, str]]) -> str:
+    def generate(self, model: str, messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None) -> str:
         self.calls.append((model, messages))
+        if self.generation_callback:
+            return self.generation_callback(model, messages, cancel_event)
         if self.failure:
             raise OllamaError("Ollama is not responding on this device.")
         return "Aria waits for the user's next choice."
 
-    def generate_json(self, model: str, messages: list[dict[str, str]]) -> dict[str, object]:
+    def generate_json(
+        self, model: str, messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None,
+    ) -> dict[str, object]:
         self.structured_calls.append((model, messages))
         if self.failure:
             raise OllamaError("Ollama is not responding on this device.")
@@ -72,6 +78,22 @@ class ApiBoundaryTests(unittest.TestCase):
     def test_health_is_public_but_data_requires_authentication(self) -> None:
         self.assertEqual(self.request("GET", "/api/v1/health").status_code, 200)
         self.assertEqual(self.request("GET", "/api/v1/workspaces").status_code, 401)
+
+    def test_chunked_request_body_without_content_length_is_still_bounded(self) -> None:
+        async def send() -> httpx.Response:
+            async def oversized_body():
+                yield b" " * (11 * 1024 * 1024 + 1)
+
+            transport = httpx.ASGITransport(app=self.app, client=("127.0.0.1", 8000))
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                return await client.post(
+                    "/api/v1/workspaces/destination/story/adventures/package-preview",
+                    headers=self.headers, content=oversized_body(),
+                )
+
+        response = asyncio.run(send())
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertEqual(response.json(), {"detail": "Request body is too large"})
 
     def test_remote_model_discovery_requires_authentication_and_explicit_post(self) -> None:
         with patch("lke.ai.providers.StoryProviderRegistry.discover_models", return_value=["model-a"]) as discover:
@@ -409,6 +431,7 @@ class ApiBoundaryTests(unittest.TestCase):
         narrative_order: int = 1,
         epistemic_status: str = "known",
         review_status: str = "accepted",
+        visibility: str = "public",
     ) -> int:
         created = self.request(
             "POST", "/api/v1/workspaces/story-api/commands", headers=self.headers,
@@ -418,7 +441,7 @@ class ApiBoundaryTests(unittest.TestCase):
                 "payload": {
                     "claim_id": claim_id, "subject_entity_id": "aria", "predicate": "remembers",
                     "object_value": object_value, "epistemic_status": epistemic_status,
-                    "review_status": review_status, "narrative_order": narrative_order,
+                    "review_status": review_status, "visibility": visibility, "narrative_order": narrative_order,
                 },
             },
         )
@@ -440,12 +463,16 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(created.status_code, 200, created.text)
         return created.json()["revision"]
 
-    def query_temporal_memory(self, revision: int, *, order: int = 2, model: str | None = "test-model") -> httpx.Response:
+    def query_temporal_memory(
+        self, revision: int, *, order: int = 2, model: str | None = "test-model",
+        provider: str = "ollama", external_provider_consent: str | None = None,
+    ) -> httpx.Response:
         return self.request(
             "POST", "/api/v1/workspaces/story-api/temporal-query", headers=self.headers,
             json={
                 "branch_id": "main", "actor_entity_id": "aria", "expected_revision": revision,
-                "as_of_narrative_order": order, "model": model,
+                "as_of_narrative_order": order, "model": model, "provider": provider,
+                "external_provider_consent": external_provider_consent,
                 "question": "What does Aria remember about the archive?",
             },
         )
@@ -595,6 +622,32 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(current.json()["revision"], revision)
 
+    def test_external_temporal_query_requires_consent_and_sends_only_public_facts(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "public-memory", "the public bronze key")
+        revision = self.add_temporal_belief(revision, "public-memory")
+        revision = self.add_temporal_claim(
+            revision, "private-memory", "Aria's private escape route", visibility="actor_scoped",
+        )
+        revision = self.add_temporal_belief(revision, "private-memory")
+        with patch(
+            "lke.ai.providers.StoryProviderRegistry.generate_json",
+            return_value={"status": "answered", "answer": "The bronze key.", "claim_ids": ["public-memory"]},
+        ) as generate:
+            denied = self.query_temporal_memory(revision, provider="openai")
+            allowed = self.query_temporal_memory(
+                revision, provider="openai", external_provider_consent="openai",
+            )
+
+        self.assertEqual(denied.status_code, 422, denied.text)
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        generate.assert_called_once()
+        messages = generate.call_args.args[2]
+        encoded_request = "\n".join(message["content"] for message in messages)
+        self.assertIn("the public bronze key", encoded_request)
+        self.assertNotIn("Aria's private escape route", encoded_request)
+        self.assertEqual([item["claim_id"] for item in allowed.json()["citations"]], ["public-memory"])
+
     def test_story_turn_uses_actor_context_and_is_idempotent(self) -> None:
         revision = self.create_story_conversation()
         body = {
@@ -624,6 +677,110 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request(
             "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
         ).json()["revision"], revision + 1)
+
+    def test_aborting_story_request_cancels_provider_work_before_any_commit(self) -> None:
+        revision = self.create_story_conversation()
+        provider_started = threading.Event()
+        provider_stopped = threading.Event()
+
+        def wait_for_cancel(model, messages, cancel_event):
+            provider_started.set()
+            if cancel_event is None or not cancel_event.wait(5):
+                raise AssertionError("The API did not signal provider cancellation")
+            provider_stopped.set()
+            raise OllamaError("Generation was stopped")
+
+        self.ollama.generation_callback = wait_for_cancel
+        body = {
+            "branch_id": "main", "conversation_id": "story-1", "expected_revision": revision,
+            "idempotency_key": "cancel-story-turn", "model": "test-model", "prompt": "Continue the scene.",
+            "narrative_order": 0,
+        }
+
+        async def abort_request() -> None:
+            transport = httpx.ASGITransport(app=self.app, client=("127.0.0.1", 8000))
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                request_task = asyncio.create_task(client.post(
+                    "/api/v1/workspaces/story-api/story/generate", headers=self.headers, json=body,
+                ))
+                if not await asyncio.to_thread(provider_started.wait, 2):
+                    self.fail("Provider generation did not start")
+                request_task.cancel()
+                try:
+                    await request_task
+                except asyncio.CancelledError:
+                    pass
+                self.assertTrue(await asyncio.to_thread(provider_stopped.wait, 3))
+
+        asyncio.run(abort_request())
+        gateway = self.app.state.gateway
+        self.assertEqual(gateway.current_revision("story-api", "main"), revision)
+        self.assertEqual(gateway.get_conversation("story-api", "main", "story-1")["turns"], [])
+
+    def test_external_story_generation_requires_matching_consent_and_excludes_private_facts(self) -> None:
+        revision = self.create_story_conversation()
+        revision = self.add_temporal_claim(revision, "public-fact", "the public bronze seal")
+        revision = self.add_temporal_belief(revision, "public-fact")
+        revision = self.add_temporal_claim(
+            revision, "actor-fact", "Aria's private route", visibility="actor_scoped",
+        )
+        revision = self.add_temporal_belief(revision, "actor-fact")
+        body = {
+            "branch_id": "main", "conversation_id": "story-1", "expected_revision": revision,
+            "idempotency_key": "external-consent-turn", "provider": "openai", "model": "gpt-test",
+            "prompt": "Continue the scene.", "narrative_order": 2,
+        }
+        with patch("lke.ai.providers.StoryProviderRegistry.generate", return_value="The seal glints.") as generate:
+            denied = self.request(
+                "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers, json=body,
+            )
+            wrong_provider = self.request(
+                "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers,
+                json={**body, "external_provider_consent": "claude"},
+            )
+            allowed = self.request(
+                "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers,
+                json={**body, "external_provider_consent": "openai"},
+            )
+
+        self.assertEqual(denied.status_code, 422, denied.text)
+        self.assertEqual(wrong_provider.status_code, 422, wrong_provider.text)
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        generate.assert_called_once()
+        messages = generate.call_args.args[2]
+        encoded_request = "\n".join(message["content"] for message in messages)
+        self.assertIn("the public bronze seal", encoded_request)
+        self.assertNotIn("Aria's private route", encoded_request)
+        self.assertIn("external_provider_private_scope", str(allowed.json()["conversation"]["turns"][1]["context_manifest"]["excluded"]))
+
+    def test_external_context_removes_author_private_and_unshared_story_notes(self) -> None:
+        context = {
+            "included": [{"claim_id": "public", "visibility": "public"},
+                         {"claim_id": "private", "visibility": "actor_scoped"}],
+            "excluded": [],
+            "story": {
+                "author_notes": [{"content": "hidden author clue"}],
+                "hero_profile": {"secret": "private character note"},
+                "world_reference": {"content": "hidden lorebook entry"},
+                "open_threads": [{"detail": "unclassified private thread"}],
+                "excluded_memories": [{"content": "private memory"}],
+                "memories": [
+                    {"knowledge_scope": "shared", "review_status": "accepted", "content": "shared clue"},
+                    {"knowledge_scope": "actors", "review_status": "accepted", "content": "actor-only clue"},
+                    {"knowledge_scope": "shared", "review_status": "proposed", "content": "unreviewed clue"},
+                ],
+            },
+        }
+        remote = _external_provider_context(context)
+        encoded = json.dumps(remote, ensure_ascii=False)
+        self.assertEqual([item["claim_id"] for item in remote["included"]], ["public"])
+        self.assertIn("shared clue", encoded)
+        self.assertNotIn("hidden author clue", encoded)
+        self.assertNotIn("private character note", encoded)
+        self.assertNotIn("hidden lorebook entry", encoded)
+        self.assertNotIn("unclassified private thread", encoded)
+        self.assertNotIn("actor-only clue", encoded)
+        self.assertNotIn("unreviewed clue", encoded)
 
     def test_provider_failure_does_not_record_a_partial_turn(self) -> None:
         self.ollama.failure = True

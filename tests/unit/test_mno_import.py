@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
+import io
 import sqlite3
 import unittest
 
 import httpx
+from PIL import Image
 
 from lke.api.app import _story_adventure_context, _story_context_turns, create_app
 from lke.core import CommandGateway, Database
@@ -16,7 +19,9 @@ from lke.core.errors import ValidationError
 from lke.importers.mno import convert_mno_adventure, convert_mno_world
 
 
-PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgp0ZXN0"
+_png = io.BytesIO()
+Image.new("RGB", (2, 2), (20, 90, 60)).save(_png, format="PNG")
+PNG_DATA_URL = f"data:image/png;base64,{base64.b64encode(_png.getvalue()).decode('ascii')}"
 
 
 def sample_world() -> dict:
@@ -204,7 +209,7 @@ class MnoImportTests(unittest.TestCase):
                 ("mno-import", "mno-adventure-copy", "mno-adventure-copy"),
             )
         exported = self.request(
-            "GET", "/api/v1/workspaces/mno-import/story/adventures/mno-adventure-copy/package?branch_id=mno-adventure-copy",
+            "GET", "/api/v1/workspaces/mno-import/story/adventures/mno-adventure-copy/package?branch_id=mno-adventure-copy&export_mode=full_private_archive&confirm_private=true",
             headers=self.headers,
         )
         self.assertEqual(exported.status_code, 200, exported.text)

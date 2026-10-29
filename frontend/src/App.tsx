@@ -1,10 +1,81 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { buildStoryExport } from "./storyExport";
-import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAdventure, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryMapLocation, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
+import { allocatedCreationPoints, randomizeCharacterAllocation } from "./storyCreation";
+import type { CharacterCreationStat } from "./storyCreation";
+import { defaultStoryMechanics, readStoryMechanics, StoryMechanicsEditor } from "./storyMechanics";
+import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAbilityDefinition, StoryAdventure, StoryAdventureExportMode, StoryAdventureExportPreview, StoryAdventureExportSelection, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryHistoryPreview, StoryMapLocation, StoryMechanicsProfile, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
+const EXTERNAL_STORY_PROVIDERS: StoryProvider["id"][] = ["openai", "claude", "codex", "huggingface"];
+type StoryWorldCover = { mime_type: "image/jpeg" | "image/png" | "image/webp"; data_base64: string; alt_text: string };
+
+function readStoryWorldCover(value: unknown): StoryWorldCover | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const cover = value as Partial<StoryWorldCover>;
+  return ["image/jpeg", "image/png", "image/webp"].includes(cover.mime_type || "") && typeof cover.data_base64 === "string"
+    && typeof cover.alt_text === "string"
+    ? cover as StoryWorldCover
+    : null;
+}
+
+function storyWorldCoverUrl(cover: StoryWorldCover): string {
+  return `data:${cover.mime_type};base64,${cover.data_base64}`;
+}
+
+function readBlobAsBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("The cover image could not be read."));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const separator = result.indexOf(",");
+      if (separator < 0) reject(new Error("The cover image could not be encoded."));
+      else resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function encodeStoryWorldCover(file: File): Promise<StoryWorldCover> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    let scale = Math.min(1, 960 / bitmap.width, 540 / bitmap.height);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser cannot prepare a cover image.");
+    for (let resize = 0; resize < 9; resize += 1) {
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      context.fillStyle = "#17201d";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.82, 0.7, 0.58, 0.46]) {
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+        if (blob && blob.size <= 65_536) {
+          const altText = file.name.replace(/\.[^.]+$/, "").slice(0, 300);
+          return { mime_type: "image/jpeg", data_base64: await readBlobAsBase64(blob), alt_text: altText };
+        }
+      }
+      scale *= 0.78;
+    }
+    throw new Error("Choose a simpler image; world covers are limited to 64 KiB after compression.");
+  } finally {
+    bitmap.close();
+  }
+}
+
+function uniqueLibraryCopyName(sourceName: string, existingNames: string[]): string {
+  const used = new Set(existingNames.map((name) => name.trim().toLocaleLowerCase()));
+  let copyNumber = 1;
+  while (true) {
+    const suffix = copyNumber === 1 ? " (copy)" : ` (copy ${copyNumber})`;
+    const candidate = `${sourceName.trim().slice(0, 200 - suffix.length)}${suffix}`;
+    if (!used.has(candidate.toLocaleLowerCase())) return candidate;
+    copyNumber += 1;
+  }
+}
 
 const NAV: { id: Page; title: string; icon: string; sub: string }[] = [
   { id: "story", title: "Story Studio", icon: "✳", sub: "Worlds and characters" },
@@ -133,6 +204,28 @@ export default function App() {
       return result;
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "The change could not be saved." });
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commitBranchCommand = async (targetBranchId: string, commandType: string, payload: Record<string, unknown>, reason: string): Promise<Record<string, unknown>> => {
+    if (!workspaceId) throw new Error("Create or select a workspace first.");
+    if (busy) throw new Error("Another workspace change is already in progress.");
+    const branchRevision = branches.find((item) => item.branch_id === targetBranchId)?.head_revision;
+    if (branchRevision === undefined) throw new Error("Refresh the workspace before changing this adventure.");
+    setBusy(true);
+    try {
+      const result = await request<Record<string, unknown>>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/commands`, {
+        method: "POST",
+        body: JSON.stringify({ branch_id: targetBranchId, expected_revision: branchRevision, idempotency_key: newId("branch-cmd"), command_type: commandType, payload, reason }),
+      });
+      await refresh(workspaceId, branchId);
+      setNotice({ tone: "success", text: "Adventure library changes saved." });
+      return result;
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The adventure could not be updated." });
       throw error;
     } finally {
       setBusy(false);
@@ -515,7 +608,7 @@ export default function App() {
               workspaceId={workspaceId} branchId={branchId} revision={revision} entities={entities} relations={relations} claims={visibleClaims} sources={sources} busy={busy} query={query} setQuery={setQuery}
               addEntity={addEntity} addRelation={addRelation} addClaim={addClaim} importText={importText} review={review} onExtract={extractSource} onCommit={commitDomainCommand}
             />}
-            {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onSelectBranch={setBranchId} onCommit={commitStoryCommand} onMainCommit={commitMainCommand} onCreateAdventure={createStoryAdventure} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
+          {page === "story" && <StoryPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} entities={entities} claims={claims} workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onNavigate={setPage} onSelectBranch={setBranchId} onCommit={commitStoryCommand} onCommitBranch={commitBranchCommand} onMainCommit={commitMainCommand} onCreateAdventure={createStoryAdventure} onRevisionChange={(value) => { revisionRef.current = value; setRevision(value); }} onRefresh={() => refresh()} />}
             {page === "journal" && <JournalPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} revision={revision} sources={sources} importText={importText} busy={busy} onCommit={commitDomainCommand} />}
             {page === "scenario" && <ScenarioPage key={JSON.stringify([dataEpoch, workspaceId, branchId])} workspaceId={workspaceId} branchId={branchId} branches={branches} revision={revision} entities={entities} relations={relations} claims={claims} sources={sources} busy={busy} onBranch={createScenario} onPromote={promoteScenarioBranch} onCommit={commitDomainCommand} onReviewRule={reviewRule} onReviewAssumption={reviewScenarioAssumption} />}
           </>}
@@ -1081,7 +1174,83 @@ const STORY_WORLD_TEMPLATES = {
   blank: { label: "Blank", content: { stats: { might: 0, agility: 0, insight: 0, presence: 0 }, trackers: { health: { value: 10, max: 10 } }, starting_location: "" } },
 } as const;
 
-function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, onNavigate, onSelectBranch, onCommit, onMainCommit, onCreateAdventure, onRevisionChange, onRefresh }: {
+function emptyStoryAbility(index: number): StoryAbilityDefinition {
+  return {
+    ability_id: `ability_${index}`, name: "", description: "", category: "", source: "",
+    activation: "", deactivation: "", effects: [], costs: [], cooldown_turns: null,
+    duration: null, range: null, magic_interactions: [], demonstrated_capabilities: [],
+    confirmed_limitations: [], unresolved_aspects: [],
+  };
+}
+
+function abilityTextList(value: string): string[] {
+  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function abilityCostList(value: string): Array<{ resource: string; amount: number }> {
+  if (!value.trim()) return [];
+  return value.split(/\r?\n/).map((line) => {
+    const [resource = "", amount = ""] = line.split("=");
+    return { resource: resource.trim(), amount: /^\d+$/.test(amount.trim()) ? Number(amount.trim()) : Number.NaN };
+  });
+}
+
+function trackerDefinitionsText(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  return Object.entries(value).map(([name, tracker]) => {
+    if (!tracker || typeof tracker !== "object" || !Number.isInteger((tracker as { value?: unknown }).value)
+      || !Number.isInteger((tracker as { max?: unknown }).max)) return "";
+    const current = (tracker as { value: number }).value;
+    const maximum = (tracker as { max: number }).max;
+    return `${name}=${current}/${maximum}`;
+  }).filter(Boolean).join("\n");
+}
+
+function parseTrackerDefinitions(value: string): Record<string, { value: number; max: number }> | null {
+  const trackers: Record<string, { value: number; max: number }> = {};
+  const names = new Set<string>();
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 30) return null;
+  for (const line of lines) {
+    const match = /^(.+?)\s*=\s*(\d+)\s*\/\s*(\d+)$/.exec(line);
+    if (!match) return null;
+    const name = match[1].trim();
+    const current = Number(match[2]);
+    const maximum = Number(match[3]);
+    const key = name.toLocaleLowerCase();
+    if (!name || name.length > 60 || names.has(key) || maximum > 100_000 || current > maximum) return null;
+    names.add(key);
+    trackers[name] = { value: current, max: maximum };
+  }
+  return trackers;
+}
+
+type StoryCharacterCreation = {
+  point_budget: number;
+  allow_unspent_points: boolean;
+  allow_below_baseline: boolean;
+  stats: Record<string, Pick<CharacterCreationStat, "label" | "minimum" | "maximum" | "point_cost">>;
+};
+
+function defaultCharacterCreationStats(templateKey: string): CharacterCreationStat[] {
+  const template = STORY_WORLD_TEMPLATES[templateKey as keyof typeof STORY_WORLD_TEMPLATES] || STORY_WORLD_TEMPLATES.fantasy;
+  return Object.entries(template.content.stats).map(([key, baseline]) => ({
+    key, label: key.replaceAll("_", " ").replace(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase()),
+    baseline, minimum: baseline, maximum: 5, point_cost: 1,
+  }));
+}
+
+function characterCreationFromContent(content: Record<string, unknown>): StoryCharacterCreation | null {
+  const value = content.character_creation;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const creation = value as Partial<StoryCharacterCreation>;
+  if (!Number.isInteger(creation.point_budget) || typeof creation.allow_unspent_points !== "boolean"
+    || typeof creation.allow_below_baseline !== "boolean" || !creation.stats || typeof creation.stats !== "object"
+    || Array.isArray(creation.stats)) return null;
+  return creation as StoryCharacterCreation;
+}
+
+function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, onNavigate, onSelectBranch, onCommit, onCommitBranch, onMainCommit, onCreateAdventure, onRevisionChange, onRefresh }: {
   entities: Entity[];
   claims: Claim[];
   workspaceId: string;
@@ -1091,6 +1260,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   onNavigate: (page: Page) => void;
   onSelectBranch: (branchId: string) => void;
   onCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<Record<string, unknown>>;
+  onCommitBranch: (branchId: string, command: string, payload: Record<string, unknown>, reason: string) => Promise<Record<string, unknown>>;
   onMainCommit: (command: string, payload: Record<string, unknown>, reason: string) => Promise<Record<string, unknown>>;
   onCreateAdventure: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
   onRevisionChange: (revision: number) => void;
@@ -1111,6 +1281,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [conversationId, setConversationId] = useState("");
   const [conversation, setConversation] = useState<StoryConversation | null>(null);
   const [storyProviders, setStoryProviders] = useState<StoryProvider[]>([]);
+  const [externalProviderConsents, setExternalProviderConsents] = useState<StoryProvider["id"][]>(() => {
+    try {
+      const saved: unknown = JSON.parse(window.localStorage.getItem("lke.external-provider-consents") || "[]");
+      return Array.isArray(saved) ? saved.filter((provider): provider is StoryProvider["id"] => EXTERNAL_STORY_PROVIDERS.includes(provider)) : [];
+    } catch { return []; }
+  });
   const [providerId, setProviderId] = useState<StoryProvider["id"]>(() => {
     try {
       const saved = window.localStorage.getItem("lke.story.provider");
@@ -1132,8 +1308,18 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [worlds, setWorlds] = useState<StoryWorld[]>([]);
   const [adventures, setAdventures] = useState<StoryAdventure[]>([]);
   const [storyLibraryQuery, setStoryLibraryQuery] = useState("");
-  const [storyLibrarySort, setStoryLibrarySort] = useState<"recent" | "name">("recent");
+  const [storyLibraryFiltersOpen, setStoryLibraryFiltersOpen] = useState(false);
+  const [storyLibrarySort, setStoryLibrarySort] = useState<"recent" | "name" | "created">("recent");
+  const [storyAdventureStatusFilter, setStoryAdventureStatusFilter] = useState<"all" | "active" | "paused" | "complete" | "archived">("all");
+  const [storyWorldFilter, setStoryWorldFilter] = useState("all");
+  const [storyHeroFilter, setStoryHeroFilter] = useState("all");
+  const [storyWorldStatusFilter, setStoryWorldStatusFilter] = useState<"active" | "archived" | "all">("active");
+  const [renamingAdventureId, setRenamingAdventureId] = useState("");
+  const [renamingAdventureName, setRenamingAdventureName] = useState("");
   const [setupExpanded, setSetupExpanded] = useState(true);
+  const [setupStep, setSetupStep] = useState<1 | 2 | 3 | 4>(1);
+  const [showWorldCreation, setShowWorldCreation] = useState(false);
+  const [showHeroCreation, setShowHeroCreation] = useState(false);
   const [mainCharacters, setMainCharacters] = useState<Entity[]>([]);
   const [adventureHeroId, setAdventureHeroId] = useState("");
   const [selectedWorldId, setSelectedWorldId] = useState("");
@@ -1141,21 +1327,50 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [editWorldLocations, setEditWorldLocations] = useState("");
   const [worldName, setWorldName] = useState("");
   const [worldPremise, setWorldPremise] = useState("");
+  const [worldCover, setWorldCover] = useState<StoryWorldCover | null>(null);
+  const [editWorldCover, setEditWorldCover] = useState<StoryWorldCover | null>(null);
+  const [coverPreparing, setCoverPreparing] = useState(false);
   const [editWorldName, setEditWorldName] = useState("");
   const [editWorldDescription, setEditWorldDescription] = useState("");
   const [editWorldPremise, setEditWorldPremise] = useState("");
   const [worldTemplate, setWorldTemplate] = useState("fantasy");
+  const [creationPointBudget, setCreationPointBudget] = useState(10);
+  const [creationAllowUnspentPoints, setCreationAllowUnspentPoints] = useState(false);
+  const [creationAllowBelowBaseline, setCreationAllowBelowBaseline] = useState(false);
+  const [creationStatDefinitions, setCreationStatDefinitions] = useState<CharacterCreationStat[]>(() => defaultCharacterCreationStats("fantasy"));
+  const [creationAbilities, setCreationAbilities] = useState<StoryAbilityDefinition[]>([]);
+  const [creationMechanics, setCreationMechanics] = useState<StoryMechanicsProfile>(() => defaultStoryMechanics());
+  const [creationTrackerText, setCreationTrackerText] = useState(() => trackerDefinitionsText(STORY_WORLD_TEMPLATES.fantasy.content.trackers));
+  const [editMechanics, setEditMechanics] = useState<StoryMechanicsProfile>(() => defaultStoryMechanics());
+  const [editTrackerText, setEditTrackerText] = useState("");
+  const [creationError, setCreationError] = useState("");
+  const [adventureAllocation, setAdventureAllocation] = useState<Record<string, number>>({});
+  const [adventureAllocationMessage, setAdventureAllocationMessage] = useState("");
   const [adventureName, setAdventureName] = useState("");
   const [heroName, setHeroName] = useState("");
   const [libraryError, setLibraryError] = useState("");
   const [worldPackage, setWorldPackage] = useState<{ workspace: string; data: unknown; preview: { name: string; versions: number; provenance: { workspace_id: string; world_id: string }; source_id_conflict: boolean; source_format?: string; content_warning?: string | null; stat_count?: number; tracker_count?: number; lore_entry_count?: number; npc_template_count?: number; conversion_notes?: string[] } } | null>(null);
+  const [worldExportMode, setWorldExportMode] = useState<"public_world" | "full_private_archive">("public_world");
+  const [worldExportReview, setWorldExportReview] = useState<{
+    workspaceId: string; worldId: string; revision: number; mode: "public_world" | "full_private_archive";
+    preview: StoryAdventureExportPreview;
+  } | null>(null);
   const [adventurePackage, setAdventurePackage] = useState<{ workspace: string; data: unknown; preview: { name: string; world_version: number; turns: number; memories: number; characters: number; images: number; provenance: { workspace_id: string; branch_id: string; adventure_id: string }; matching_world_id: string | null; world_import_required: boolean; source_world_id_conflict: boolean; entity_id_conflicts: { entity_id: string; label: string; existing_label: string }[]; source_format?: string; world_name?: string; message_count?: number; action_count?: number; npc_count?: number; image_count?: number; map_location_count?: number; memory_count?: number; context_excluded_message_count?: number; conversion_notes?: string[] } } | null>(null);
+  const [adventureExportMode, setAdventureExportMode] = useState<StoryAdventureExportMode>("shareable_adventure");
+  const [adventureExportSections, setAdventureExportSections] = useState<string[]>(["turn_ids", "check_ids", "mechanic_check_ids", "proposal_ids", "memory_ids", "thread_ids", "npc_entity_ids", "asset_ids", "location_ids"]);
+  const [adventureExportReview, setAdventureExportReview] = useState<{
+    workspaceId: string; branchId: string; adventureId: string; revision: number; mode: StoryAdventureExportMode;
+    selection: StoryAdventureExportSelection | undefined; preview: StoryAdventureExportPreview;
+  } | null>(null);
   const [rpgState, setRpgState] = useState<RpgState | null>(null);
   const [editableStats, setEditableStats] = useState<Record<string, number>>({});
   const [rpgError, setRpgError] = useState("");
   const [checkStat, setCheckStat] = useState("");
-  const [checkTarget, setCheckTarget] = useState(12);
-  const [customCheckTarget, setCustomCheckTarget] = useState(false);
+  const [checkSkill, setCheckSkill] = useState("");
+  const [checkEncounter, setCheckEncounter] = useState("combat");
+  const [checkDifficulty, setCheckDifficulty] = useState("standard");
+  const [editableSkills, setEditableSkills] = useState<Record<string, number>>({});
+  const [experienceAward, setExperienceAward] = useState(1);
   const [proposalOperation, setProposalOperation] = useState<"tracker_delta" | "set_location">("tracker_delta");
   const [proposalTracker, setProposalTracker] = useState("health");
   const [proposalDelta, setProposalDelta] = useState(-1);
@@ -1190,6 +1405,26 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
   const storyProviderAvailable = selectedStoryProvider?.available ?? false;
   const models = selectedStoryProvider?.models ?? [];
+  function ensureExternalProviderConsent(requestedProvider: StoryProvider["id"]): boolean {
+    if (!EXTERNAL_STORY_PROVIDERS.includes(requestedProvider) || externalProviderConsents.includes(requestedProvider)) return true;
+    const selectedProvider = storyProviders.find((provider) => provider.id === requestedProvider);
+    const providerLabel = selectedProvider?.label || requestedProvider;
+    const accepted = window.confirm(
+      `Send this request to ${providerLabel}? This sends your prompt, recent active story turns, approved public world and RPG details, public character-known facts, shared reviewed memories, and approved public NPC profiles. Author-only notes, private NPC profiles, actor-scoped facts, and non-shared memories are removed before the request. The provider may process or retain submitted data under its terms, and account charges may apply. Continue to save consent for ${providerLabel} on this device? You can revoke it here at any time.`,
+    );
+    if (!accepted) return false;
+    const next = externalProviderConsents.includes(requestedProvider)
+      ? externalProviderConsents
+      : [...externalProviderConsents, requestedProvider];
+    setExternalProviderConsents(next);
+    try { window.localStorage.setItem("lke.external-provider-consents", JSON.stringify(next)); } catch { /* Per-request API consent remains required. */ }
+    return true;
+  }
+  function revokeExternalProviderConsent(requestedProvider: StoryProvider["id"]) {
+    const next = externalProviderConsents.filter((provider) => provider !== requestedProvider);
+    setExternalProviderConsents(next);
+    try { window.localStorage.setItem("lke.external-provider-consents", JSON.stringify(next)); } catch { /* Backend still requires explicit consent on each request. */ }
+  }
   const knownModel = models.includes(model) || (providerId === "codex" && model === "auto");
   const customModel = usingCustomModel || (!knownModel && Boolean(model)) || (!models.length && providerId !== "codex");
   function changeStoryProvider(nextId: StoryProvider["id"]) {
@@ -1200,7 +1435,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setModelDiscoveryError("");
     setModel(next?.default_model || next?.models[0] || (nextId === "codex" ? "auto" : ""));
     setStoryError("");
-    if (nextId === "codex" && next?.available && !next.models.length) void loadProviderModels(nextId);
   }
   async function loadProviderModels(requestedProvider: StoryProvider["id"] = providerId) {
     setModelDiscoveryError("");
@@ -1234,9 +1468,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       if (!active) return;
       setWorlds(worldRows);
       setAdventures(adventureRows);
+      const activeWorldRows = worldRows.filter((item) => !item.archived_at);
       setSetupExpanded(!adventureRows.some((item) => item.parent_branch_id === "main"));
+      setSetupStep(1);
+      setShowWorldCreation(activeWorldRows.length === 0);
       setMainCharacters(characterRows.filter((item) => ["character", "person"].includes(item.entity_type)));
-      setSelectedWorldId((current) => worldRows.some((item) => item.world_id === current) ? current : worldRows[0]?.world_id || "");
+      setShowHeroCreation(!characterRows.some((item) => ["character", "person"].includes(item.entity_type)));
+      setSelectedWorldId((current) => activeWorldRows.some((item) => item.world_id === current) ? current : activeWorldRows[0]?.world_id || "");
       setAdventureHeroId((current) => characterRows.some((item) => item.entity_id === current) ? current : characterRows.find((item) => ["character", "person"].includes(item.entity_type))?.entity_id || "");
     }).catch((loadError) => {
       if (active) setLibraryError(loadError instanceof Error ? loadError.message : "The world library could not be loaded.");
@@ -1246,6 +1484,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   useEffect(() => {
     if (!selectedWorldId) {
       setSelectedWorldDetail(null);
+      setAdventureAllocation({});
       return;
     }
     let active = true;
@@ -1255,10 +1494,24 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       if (!active) return;
       const updatedLatest = detail.versions.find((item) => item.version === detail.latest_version);
       setSelectedWorldDetail(detail);
+      const creation = updatedLatest ? characterCreationFromContent(updatedLatest.content) : null;
+      const baselines = updatedLatest?.content.stats && typeof updatedLatest.content.stats === "object" && !Array.isArray(updatedLatest.content.stats)
+        ? updatedLatest.content.stats as Record<string, number>
+        : {};
+      setAdventureAllocation(creation
+        ? Object.fromEntries(Object.keys(creation.stats).map((key) => [key, baselines[key]]))
+        : {});
+      setAdventureAllocationMessage("");
       setEditWorldName(detail.name);
       setEditWorldDescription(updatedLatest?.description || "");
       setEditWorldPremise(typeof updatedLatest?.content.public_lore === "string" ? updatedLatest.content.public_lore : "");
+      setEditWorldCover(readStoryWorldCover(updatedLatest?.content.cover_image));
       setEditWorldLocations(Array.isArray(updatedLatest?.content.locations) ? updatedLatest.content.locations.filter((value): value is string => typeof value === "string").join("\n") : "");
+      setEditTrackerText(trackerDefinitionsText(updatedLatest?.content.trackers));
+      setEditMechanics(readStoryMechanics(
+        updatedLatest?.content.game_mechanics,
+        updatedLatest?.template_key === "narrative" ? "narrative_only" : "d20",
+      ));
     }).catch((loadError) => {
       if (active) setLibraryError(loadError instanceof Error ? loadError.message : "The selected world could not be opened.");
     });
@@ -1277,6 +1530,21 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       .catch((loadError) => { if (active) setRpgError(loadError instanceof Error ? loadError.message : "Adventure state could not be loaded."); });
     return () => { active = false; };
   }, [activeAdventure?.adventure_id, branchId, revision, workspaceId]);
+  useEffect(() => {
+    if (rpgState?.sheet) setEditableSkills(rpgState.sheet.skills);
+    else setEditableSkills({});
+  }, [rpgState?.sheet?.updated_revision, activeAdventure?.adventure_id]);
+  useEffect(() => {
+    const mechanics = rpgState?.mechanics;
+    const sheet = rpgState?.sheet;
+    if (!mechanics || !sheet) return;
+    setCheckSkill((current) => mechanics.skills.some((skill) => skill.skill_id === current) ? current : "");
+    setCheckStat((current) => Object.hasOwn(sheet.stats, current) ? current : Object.keys(sheet.stats)[0] || "");
+    setCheckEncounter((current) => mechanics.encounter_types.some((item) => item.encounter_type === current)
+      ? current : mechanics.encounter_types[0]?.encounter_type || "");
+    setCheckDifficulty((current) => mechanics.difficulties.some((item) => item.difficulty_id === current)
+      ? current : mechanics.difficulties[0]?.difficulty_id || "");
+  }, [rpgState, branchId, workspaceId]);
   useEffect(() => {
     if (!activeAdventure) {
       setStudioData(null);
@@ -1317,6 +1585,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (rpgState?.sheet) setEditableStats(rpgState.sheet.stats);
   }, [activeAdventure?.adventure_id, rpgState?.sheet?.updated_revision]);
   const selectedActor = conversation?.actor_entity_id || (characters.some((item) => item.entity_id === actor) ? actor : characters[0]?.entity_id || "");
+  const activeCharacterCreation = activeWorldContent ? characterCreationFromContent(activeWorldContent) : null;
+  const activeStatLabel = (key: string) => activeCharacterCreation?.stats[key]?.label || key;
   const memoryScope = JSON.stringify([workspaceId, branchId, selectedActor, order, model, revision]);
   memoryScopeRef.current = memoryScope;
 
@@ -1405,6 +1675,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   async function queryCharacterMemory(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (memoryQuerying || generating || busy || !selectedActor || !memoryQuestion.trim()) return;
+    if (!ensureExternalProviderConsent(providerId)) {
+      setMemoryQueryError("No memory data was sent. Your question is still here; choose a local provider or approve this provider first.");
+      return;
+    }
     const requestId = ++memoryQueryRequest.current;
     const requestScope = memoryScopeRef.current;
     setMemoryQuerying(true);
@@ -1421,6 +1695,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             expected_revision: revision,
             as_of_narrative_order: order,
             provider: providerId,
+            external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null,
             model: model || null,
             question: memoryQuestion.trim(),
           }),
@@ -1523,6 +1798,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   async function generateStoryTurn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!conversation || generating || busy || !model || !storyProviderAvailable) return;
+    if (!ensureExternalProviderConsent(providerId)) {
+      setStoryError("No story data was sent. Your direction is still here; choose a local provider or approve this provider first.");
+      return;
+    }
     const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, prompt, order]);
     if (pendingStoryRequest.current?.fingerprint !== fingerprint) {
       pendingStoryRequest.current = {
@@ -1533,6 +1812,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           expected_revision: revision,
           idempotency_key: newId("story-turn"),
           provider: providerId,
+          external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null,
           model,
           prompt,
           narrative_order: order,
@@ -1588,8 +1868,63 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     generationAbort.current?.abort();
   }
 
+  async function confirmStoryTurnChange(turn: StoryConversation["turns"][number], action: "edit" | "delete") {
+    if (!conversation) return false;
+    if (!activeAdventure) {
+      return window.confirm(
+        `${action === "delete" ? "Hide" : "Edit"} this turn? Later active turns will be superseded, and the full history will remain available.`,
+      );
+    }
+    const query = new URLSearchParams({
+      branch_id: branchId,
+      conversation_id: conversation.conversation_id,
+      turn_id: turn.turn_id,
+      action,
+    });
+    const preview = await request<StoryHistoryPreview>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/history-preview?${query}`,
+    );
+    const lines = [
+      `${action === "delete" ? "Hide" : "Change"} this turn and replace or hide ${preview.turns_to_replace_or_hide} active turn${preview.turns_to_replace_or_hide === 1 ? "" : "s"}? Earlier versions remain in history.`,
+    ];
+    if (!preview.state_reconstructed) {
+      lines.push("The saved RPG history is incomplete, so the preview cannot calculate the resulting character sheet.");
+    } else if (preview.before && preview.after) {
+      const trackerChanges = Object.keys({ ...preview.before.trackers, ...preview.after.trackers })
+        .filter((key) => preview.before?.trackers[key]?.value !== preview.after?.trackers[key]?.value)
+        .map((key) => `${key}: ${preview.before?.trackers[key]?.value ?? "?"} → ${preview.after?.trackers[key]?.value ?? "?"}`);
+      const statChanges = Object.keys({ ...preview.before.stats, ...preview.after.stats })
+        .filter((key) => preview.before?.stats[key] !== preview.after?.stats[key])
+        .map((key) => `${key}: ${preview.before?.stats[key] ?? "?"} → ${preview.after?.stats[key] ?? "?"}`);
+      if (trackerChanges.length || statChanges.length) {
+        lines.push(`Character state: ${[...trackerChanges, ...statChanges].join(", ")}`);
+      }
+      if (preview.before.current_location !== preview.after.current_location) {
+        lines.push(`Location: ${preview.before.current_location || "Unknown"} → ${preview.after.current_location || "Unknown"}`);
+      }
+    }
+    if (preview.changed_npc_profiles.length) {
+      lines.push(`${preview.changed_npc_profiles.length} NPC profile${preview.changed_npc_profiles.length === 1 ? "" : "s"} will be reconstructed from the remaining history.`);
+    }
+    if (preview.invalidated_proposals.length) {
+      const effects = preview.invalidated_proposals.flatMap((proposal) => proposal.effects);
+      lines.push(`${preview.invalidated_proposals.length} accepted state change${preview.invalidated_proposals.length === 1 ? "" : "s"} tied to the affected turns will be removed from current RPG state${effects.length ? ` (${effects.join(", ")})` : ""}.`);
+    }
+    return window.confirm(lines.join("\n\n"));
+  }
+
   async function retryStoryTurn(turn: StoryConversation["turns"][number]) {
     if (!conversation || !activeAdventure || generating || busy || turn.role !== "assistant") return;
+    if (!ensureExternalProviderConsent(providerId)) {
+      setStoryError("No story data was sent. The saved turn is unchanged; choose a local provider or approve this provider first.");
+      return;
+    }
+    try {
+      if (!(await confirmStoryTurnChange(turn, "edit"))) return;
+    } catch (previewError) {
+      setStoryError(previewError instanceof Error ? previewError.message : "The history impact could not be previewed.");
+      return;
+    }
     const controller = new AbortController();
     generationAbort.current = controller;
     setGenerating(true);
@@ -1598,7 +1933,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const result = await request<StoryGenerationResult>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/retry`,
         { method: "POST", signal: controller.signal,
-          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, model }) },
+          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model }) },
       );
       setConversation(result.conversation);
       onRevisionChange(result.revision);
@@ -1617,6 +1952,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   async function saveTurnEdit(turn: StoryConversation["turns"][number]) {
     if (!conversation || !editedTurnText.trim()) return;
     try {
+      if (!(await confirmStoryTurnChange(turn, "edit"))) return;
       await onCommit("edit_story_turn", {
         conversation_id: conversation.conversation_id, turn_id: turn.turn_id, action: "edit",
         content: editedTurnText.trim(),
@@ -1630,8 +1966,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
 
   async function deleteStoryTurn(turn: StoryConversation["turns"][number]) {
-    if (!conversation || !window.confirm("Hide this turn from the active story? Its history will remain available.")) return;
+    if (!conversation) return;
     try {
+      if (!(await confirmStoryTurnChange(turn, "delete"))) return;
       await onCommit("edit_story_turn", {
         conversation_id: conversation.conversation_id, turn_id: turn.turn_id, action: "delete",
       }, "Hide a story turn while retaining its full edit history");
@@ -1659,10 +1996,198 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     }
   }
 
+  function updateCreationStat(index: number, changes: Partial<CharacterCreationStat>) {
+    const current = creationStatDefinitions[index];
+    if (!current) return;
+    setCreationStatDefinitions((definitions) => definitions.map((stat, itemIndex) => itemIndex === index ? { ...stat, ...changes } : stat));
+    if (typeof changes.key === "string" && changes.key !== current.key) {
+      setCreationMechanics((mechanics) => ({
+        ...mechanics,
+        skills: mechanics.skills.map((skill) => skill.attribute?.toLocaleLowerCase() === current.key.toLocaleLowerCase()
+          ? { ...skill, attribute: changes.key! }
+          : skill),
+      }));
+    }
+    setCreationError("");
+  }
+
+  function addCreationStat() {
+    if (creationStatDefinitions.length >= 20) return;
+    let suffix = creationStatDefinitions.length + 1;
+    let key = `attribute_${suffix}`;
+    while (creationStatDefinitions.some((stat) => stat.key.toLocaleLowerCase() === key.toLocaleLowerCase())) {
+      suffix += 1;
+      key = `attribute_${suffix}`;
+    }
+    const stat = { key, label: `Attribute ${suffix}`, baseline: 0, minimum: 0, maximum: 5, point_cost: 1 };
+    setCreationStatDefinitions((definitions) => [...definitions, stat]);
+  }
+
+  function removeCreationStat(index: number) {
+    if (creationStatDefinitions.length <= 1) return;
+    const removed = creationStatDefinitions[index];
+    if (!removed) return;
+    const remaining = creationStatDefinitions.filter((_, itemIndex) => itemIndex !== index);
+    const fallback = remaining[0]?.key ?? null;
+    setCreationStatDefinitions(remaining);
+    setCreationMechanics((mechanics) => ({
+      ...mechanics,
+      skills: mechanics.skills.map((skill) => skill.attribute?.toLocaleLowerCase() === removed.key.toLocaleLowerCase()
+        ? { ...skill, attribute: fallback }
+        : skill),
+    }));
+    setCreationError("");
+  }
+
+  function updateCreationAbility(index: number, changes: Partial<StoryAbilityDefinition>) {
+    setCreationAbilities((abilities) => abilities.map((ability, itemIndex) =>
+      itemIndex === index ? { ...ability, ...changes } : ability));
+    setCreationError("");
+  }
+
+  function addCreationAbility() {
+    if (creationAbilities.length >= 50) return;
+    let suffix = creationAbilities.length + 1;
+    while (creationAbilities.some((ability) => ability.ability_id === `ability_${suffix}`)) suffix += 1;
+    setCreationAbilities((abilities) => [...abilities, emptyStoryAbility(suffix)]);
+  }
+
+  function removeCreationAbility(index: number) {
+    setCreationAbilities((abilities) => abilities.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function resetAdventureAllocation() {
+    setAdventureAllocation(Object.fromEntries(selectedSetupStatDefinitions.map((stat) => [stat.key, stat.baseline])));
+    setAdventureAllocationMessage("Allocation reset to the world baselines.");
+  }
+
+  function randomizeAdventureAllocation() {
+    if (!selectedSetupCreation) return;
+    const randomized = randomizeCharacterAllocation(
+      selectedSetupStatDefinitions,
+      selectedSetupCreation.point_budget,
+      selectedSetupCreation.allow_unspent_points,
+    );
+    if (!randomized) {
+      setAdventureAllocationMessage("No allocation can spend this exact budget with the current stat costs and maximums.");
+      return;
+    }
+    setAdventureAllocation(randomized);
+    setAdventureAllocationMessage("A valid allocation was randomized. Review it before starting.");
+  }
+
+  async function refreshStoryLibrary(): Promise<{ worlds: StoryWorld[]; adventures: StoryAdventure[] }> {
+    const [worldRows, adventureRows] = await Promise.all([
+      request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`),
+      request<StoryAdventure[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures`),
+    ]);
+    setWorlds(worldRows);
+    setAdventures(adventureRows);
+    return { worlds: worldRows, adventures: adventureRows };
+  }
+
+  async function prepareWorldCover(file: File | undefined, edit: boolean) {
+    if (!file) return;
+    setCoverPreparing(true);
+    setLibraryError("");
+    try {
+      const cover = await encodeStoryWorldCover(file);
+      if (edit) setEditWorldCover(cover);
+      else setWorldCover(cover);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The cover image could not be prepared.");
+    } finally {
+      setCoverPreparing(false);
+    }
+  }
+
+  async function setWorldArchived(world: StoryWorld, archived: boolean) {
+    setLibraryError("");
+    try {
+      await onMainCommit("set_story_world_archived", { world_id: world.world_id, archived }, archived ? "Archive a story world" : "Restore a story world");
+      const library = await refreshStoryLibrary();
+      const activeWorldRows = library.worlds.filter((item) => !item.archived_at);
+      if (archived && selectedWorldId === world.world_id) {
+        setSelectedWorldId(activeWorldRows[0]?.world_id || "");
+        setShowWorldCreation(activeWorldRows.length === 0);
+      }
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The world could not be updated.");
+    }
+  }
+
+  async function duplicateWorld(world: StoryWorld) {
+    setLibraryError("");
+    try {
+      const created = await onMainCommit("duplicate_story_world", {
+        source_world_id: world.world_id,
+        world_id: newId("world"),
+        name: uniqueLibraryCopyName(world.name, worlds.map((item) => item.name)),
+      }, `Duplicate world ${world.name} as a separate library entry`);
+      await refreshStoryLibrary();
+      setSelectedWorldId(String(created.world_id || ""));
+      setSetupStep(1);
+      setSetupExpanded(true);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The world could not be duplicated.");
+    }
+  }
+
+  async function updateAdventureLibrary(item: StoryAdventure, updates: { name?: string; status?: StoryAdventure["status"]; archived?: boolean }) {
+    setLibraryError("");
+    try {
+      await onCommitBranch(item.branch_id, "set_story_adventure_library_state", {
+        adventure_id: item.adventure_id, ...updates,
+      }, "Update adventure library details");
+      await refreshStoryLibrary();
+      if (updates.name && item.branch_id === branchId) await loadConversations(conversationId);
+      setRenamingAdventureId("");
+      setRenamingAdventureName("");
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The adventure could not be updated.");
+    }
+  }
+
+  async function duplicateAdventure(item: StoryAdventure) {
+    setLibraryError("");
+    try {
+      const packageData = await request<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(item.adventure_id)}/package?branch_id=${encodeURIComponent(item.branch_id)}&export_mode=full_private_archive&confirm_private=true`,
+      );
+      const mainRevision = await request<{ revision: number }>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/revision?branch_id=main`,
+      );
+      const duplicateId = newId("adventure");
+      await request<Record<string, unknown>>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/package-import`,
+        { method: "POST", body: JSON.stringify({
+          expected_revision: mainRevision.revision,
+          idempotency_key: newId("duplicate-adventure"),
+          adventure_id: duplicateId,
+          name: uniqueLibraryCopyName(item.name, mainAdventures.map((adventure) => adventure.name)),
+          package: packageData,
+        }) },
+      );
+      await refreshStoryLibrary();
+      onSelectBranch(duplicateId);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "The adventure could not be duplicated.");
+    }
+  }
+
   async function createWorld(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = worldName.trim();
     if (!name) return;
+    if (!creationWorldValid) {
+      setCreationError("Check the stat names, baseline bounds, point costs, and allocation before saving this world.");
+      return;
+    }
+    const trackers = parseTrackerDefinitions(creationTrackerText);
+    if (!trackers) {
+      setCreationError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
+      return;
+    }
     const template = STORY_WORLD_TEMPLATES[worldTemplate as keyof typeof STORY_WORLD_TEMPLATES];
     setLibraryError("");
     try {
@@ -1671,23 +2196,80 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         name,
         description: worldPremise.trim(),
         template_key: worldTemplate,
-        content: { ...template.content, public_lore: worldPremise.trim(), locations: typeof template.content.starting_location === "string" && template.content.starting_location ? [template.content.starting_location] : [] },
+        content: {
+          ...template.content,
+          cover_image: worldCover,
+          trackers,
+          game_mechanics: creationMechanics,
+          stats: Object.fromEntries(creationStatDefinitions.map((stat) => [stat.key.trim(), stat.baseline])),
+          abilities: creationAbilities.map((ability) => ({
+            ...ability,
+            ability_id: ability.ability_id.trim(), name: ability.name.trim(), description: ability.description.trim(),
+            category: ability.category.trim(), source: ability.source.trim(), activation: ability.activation.trim(),
+            deactivation: ability.deactivation.trim(),
+            effects: ability.effects.map((item) => item.trim()).filter(Boolean),
+            costs: ability.costs.map((cost) => ({ resource: cost.resource.trim(), amount: cost.amount })),
+            magic_interactions: ability.magic_interactions.map((item) => item.trim()).filter(Boolean),
+            demonstrated_capabilities: ability.demonstrated_capabilities.map((item) => item.trim()).filter(Boolean),
+            confirmed_limitations: ability.confirmed_limitations.map((item) => item.trim()).filter(Boolean),
+            unresolved_aspects: ability.unresolved_aspects.map((item) => item.trim()).filter(Boolean),
+            duration: ability.duration?.trim() || null,
+            range: ability.range?.trim() || null,
+          })),
+          character_creation: {
+            point_budget: creationPointBudget,
+            allow_unspent_points: creationAllowUnspentPoints,
+            allow_below_baseline: creationAllowBelowBaseline,
+            stats: Object.fromEntries(creationStatDefinitions.map((stat) => [stat.key.trim(), {
+              label: stat.label.trim(), minimum: stat.minimum, maximum: stat.maximum, point_cost: stat.point_cost,
+            }])),
+          },
+          public_lore: worldPremise.trim(),
+          locations: typeof template.content.starting_location === "string" && template.content.starting_location ? [template.content.starting_location] : [],
+        },
       }, "Create a story world from a local template");
       setWorldName("");
       setWorldPremise("");
+      setWorldCover(null);
       const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
       setWorlds(rows);
       const createdId = String(created.world_id || "");
       if (createdId) setSelectedWorldId(createdId);
+      setShowWorldCreation(false);
+      setSetupStep(2);
     } catch (createError) {
       setLibraryError(createError instanceof Error ? createError.message : "The world could not be created.");
     }
   }
 
-  async function exportWorldPackage() {
+  async function previewWorldExport() {
     if (!selectedWorldId) return;
+    setLibraryError("");
     try {
-      const data = await request<unknown>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/${encodeURIComponent(selectedWorldId)}/package`);
+      const preview = await request<StoryAdventureExportPreview>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/${encodeURIComponent(selectedWorldId)}/package-preview?export_mode=${encodeURIComponent(worldExportMode)}`,
+      );
+      setWorldExportReview({ workspaceId, worldId: selectedWorldId, revision, mode: worldExportMode, preview });
+    } catch (error) {
+      setWorldExportReview(null);
+      setLibraryError(error instanceof Error ? error.message : "The world export could not be previewed.");
+    }
+  }
+
+  async function exportWorldPackage() {
+    if (!selectedWorldId || !worldExportReview) return;
+    if (worldExportReview.workspaceId !== workspaceId || worldExportReview.worldId !== selectedWorldId
+      || worldExportReview.revision !== revision || worldExportReview.mode !== worldExportMode) {
+      setWorldExportReview(null);
+      setLibraryError("The selected world changed. Preview the export again before downloading.");
+      return;
+    }
+    if (worldExportReview.preview.requires_private_confirmation
+      && !window.confirm(`This world export contains unclassified content: ${JSON.stringify(worldExportReview.preview.sensitive)}. Download the full private archive?`)) return;
+    try {
+      const data = await request<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/${encodeURIComponent(selectedWorldId)}/package?export_mode=${encodeURIComponent(worldExportMode)}&confirm_private=${worldExportReview.preview.requires_private_confirmation}`,
+      );
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }));
       const link = document.createElement("a");
       link.href = url;
@@ -1737,16 +2319,69 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     }
   }
 
-  async function exportAdventurePackage() {
+  function buildSelectedAdventureExport(): StoryAdventureExportSelection {
+    const selection: StoryAdventureExportSelection = {};
+    if (adventureExportSections.includes("turn_ids")) selection.turn_ids = (conversation?.turns || []).map((turn) => turn.turn_id);
+    if (adventureExportSections.includes("check_ids")) selection.check_ids = (rpgState?.checks || []).map((check) => check.check_id);
+    if (adventureExportSections.includes("mechanic_check_ids")) selection.mechanic_check_ids = (rpgState?.mechanic_checks || []).map((check) => check.check_id);
+    if (adventureExportSections.includes("proposal_ids")) selection.proposal_ids = (rpgState?.proposals || []).map((proposal) => proposal.proposal_id);
+    if (adventureExportSections.includes("memory_ids")) selection.memory_ids = (studioData?.memories.memories || []).map((memory) => memory.memory_id);
+    if (adventureExportSections.includes("thread_ids")) selection.thread_ids = (studioData?.memories.threads || []).map((thread) => thread.thread_id);
+    if (adventureExportSections.includes("npc_entity_ids")) selection.npc_entity_ids = (studioData?.npcs || []).map((npc) => npc.npc_entity_id);
+    if (adventureExportSections.includes("asset_ids")) selection.asset_ids = (studioData?.assets || []).map((asset) => asset.asset_id);
+    if (adventureExportSections.includes("location_ids")) selection.location_ids = (studioData?.locations || []).map((location) => location.location_id);
+    return selection;
+  }
+
+  async function previewAdventureExport() {
     if (!activeAdventure) return;
+    setLibraryError("");
+    const selection = adventureExportMode === "selected_content" ? buildSelectedAdventureExport() : undefined;
+    try {
+      const preview = await request<StoryAdventureExportPreview>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/package-export-preview`,
+        { method: "POST", body: JSON.stringify({ branch_id: branchId, export_mode: adventureExportMode, selection }) },
+      );
+      setAdventureExportReview({ workspaceId, branchId, adventureId: activeAdventure.adventure_id, revision,
+        mode: adventureExportMode, selection, preview });
+    } catch (error) {
+      setAdventureExportReview(null);
+      setLibraryError(error instanceof Error ? error.message : "The adventure export could not be previewed.");
+    }
+  }
+
+  async function exportAdventurePackage() {
+    if (!activeAdventure || !adventureExportReview) return;
+    const selection = adventureExportMode === "selected_content" ? buildSelectedAdventureExport() : undefined;
+    const scopeMatches = adventureExportReview.workspaceId === workspaceId
+      && adventureExportReview.branchId === branchId
+      && adventureExportReview.adventureId === activeAdventure.adventure_id
+      && adventureExportReview.revision === revision
+      && adventureExportReview.mode === adventureExportMode
+      && JSON.stringify(adventureExportReview.selection || null) === JSON.stringify(selection || null);
+    if (!scopeMatches) {
+      setAdventureExportReview(null);
+      setLibraryError("The adventure or selected content changed. Preview the export again before downloading.");
+      return;
+    }
+    const sensitive = adventureExportReview.preview.sensitive || {};
+    const containsPrivate = adventureExportReview.preview.requires_private_confirmation;
+    if (containsPrivate && !window.confirm(
+      `This export contains private material: ${JSON.stringify(sensitive)}. Download the reviewed private archive?`,
+    )) return;
+    setLibraryError("");
     try {
       const data = await request<unknown>(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/package?branch_id=${encodeURIComponent(branchId)}`,
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/package-export`,
+        { method: "POST", body: JSON.stringify({ branch_id: branchId, export_mode: adventureExportMode,
+          confirm_private: containsPrivate, selection }) },
       );
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }));
       const link = document.createElement("a");
       link.href = url;
-      link.download = `adventure-${activeAdventure.adventure_id.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}.lke-adventure`;
+      const extension = adventureExportMode === "public_world" ? "lke-world" : "lke-adventure";
+      const label = adventureExportMode === "public_world" ? activeAdventure.world_id : activeAdventure.adventure_id;
+      link.download = `${extension === "lke-world" ? "world" : "adventure"}-${label.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}.${extension}`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) {
@@ -1819,6 +2454,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const createdId = String(created.entity_id || "");
       setAdventureHeroId(createdId || characters[0]?.entity_id || "");
       setActor(createdId || characters[0]?.entity_id || "");
+      setShowHeroCreation(false);
+      setSetupStep(3);
     } catch (createError) {
       setLibraryError(createError instanceof Error ? createError.message : "The protagonist could not be created.");
     }
@@ -1829,6 +2466,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (!selectedWorldDetail) return;
     const latest = selectedWorldDetail.versions.find((item) => item.version === selectedWorldDetail.latest_version);
     if (!latest) return;
+    const trackers = parseTrackerDefinitions(editTrackerText);
+    if (!trackers) {
+      setLibraryError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
+      return;
+    }
     try {
       await onMainCommit("revise_story_world", {
         world_id: selectedWorldDetail.world_id,
@@ -1836,7 +2478,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         name: editWorldName.trim(),
         description: editWorldDescription.trim(),
         template_key: latest.template_key,
-        content: { ...latest.content, public_lore: editWorldPremise.trim(), locations: editWorldLocations.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).slice(0, 100) },
+        content: { ...latest.content, cover_image: editWorldCover, trackers, game_mechanics: editMechanics,
+          public_lore: editWorldPremise.trim(), locations: editWorldLocations.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).slice(0, 100) },
       }, "Save a new immutable version of the story world");
       const rows = await request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`);
       setWorlds(rows);
@@ -1848,7 +2491,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setEditWorldName(detail.name);
       setEditWorldDescription(refreshedVersion?.description || "");
       setEditWorldPremise(typeof refreshedVersion?.content.public_lore === "string" ? refreshedVersion.content.public_lore : "");
+      setEditWorldCover(readStoryWorldCover(refreshedVersion?.content.cover_image));
       setEditWorldLocations(Array.isArray(refreshedVersion?.content.locations) ? refreshedVersion.content.locations.filter((value): value is string => typeof value === "string").join("\n") : "");
+      setEditTrackerText(trackerDefinitionsText(refreshedVersion?.content.trackers));
+      setEditMechanics(readStoryMechanics(
+        refreshedVersion?.content.game_mechanics,
+        refreshedVersion?.template_key === "narrative" ? "narrative_only" : "d20",
+      ));
     } catch (editError) {
       setLibraryError(editError instanceof Error ? editError.message : "The world revision could not be saved.");
     }
@@ -1861,7 +2510,15 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setLibraryError("Choose a world and protagonist before starting an adventure.");
       return;
     }
+    if (selectedSetupCreation && !adventureAllocationValid) {
+      setLibraryError("Finish a valid character allocation for this world's creation rules before starting.");
+      return;
+    }
     setLibraryError("");
+    if (setupStep === 3) {
+      setSetupStep(4);
+      return;
+    }
     try {
       await onCreateAdventure({
         idempotency_key: newId("start-adventure"),
@@ -1872,23 +2529,33 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         name: adventureName.trim() || world.name,
         actor_entity_id: adventureHeroId,
         actor_is_user_controlled: true,
+        ...(selectedSetupCreation ? { stats: adventureAllocation } : {}),
       });
+      setSetupStep(1);
+      setSetupExpanded(false);
     } catch (createError) {
       setLibraryError(createError instanceof Error ? createError.message : "The adventure could not be started.");
     }
   }
 
-  async function rollD20(event: FormEvent<HTMLFormElement>) {
+  async function rollMechanicsCheck(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const statName = checkStat || (rpgState?.sheet ? Object.keys(rpgState.sheet.stats)[0] : "");
-    if (!activeAdventure || !statName) return;
+    if (!activeAdventure || !rpgState?.sheet || rpgState.mechanics.mode === "narrative_only") return;
+    const skill = rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill);
+    const statName = skill?.attribute || checkStat || (rpgState.mechanics.dice.include_attribute ? Object.keys(rpgState.sheet.stats)[0] : "");
+    const encounterType = rpgState.mechanics.encounter_types.some((item) => item.encounter_type === checkEncounter)
+      ? checkEncounter : rpgState.mechanics.encounter_types[0]?.encounter_type;
+    const difficultyId = rpgState.mechanics.difficulties.some((item) => item.difficulty_id === checkDifficulty)
+      ? checkDifficulty : rpgState.mechanics.difficulties[0]?.difficulty_id;
+    if (!encounterType || !difficultyId || (!statName && !skill && rpgState.mechanics.dice.include_attribute)) return;
     setRpgError("");
     try {
       const rolled = await request<{ revision: number; state: RpgState }>(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/checks`,
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures/${encodeURIComponent(activeAdventure.adventure_id)}/mechanic-checks`,
         {
           method: "POST",
-          body: JSON.stringify({ branch_id: branchId, expected_revision: revision, idempotency_key: newId("d20"), stat_name: statName, target: checkTarget }),
+          body: JSON.stringify({ branch_id: branchId, expected_revision: revision, idempotency_key: newId("mechanic-check"),
+            encounter_type: encounterType, difficulty_id: difficultyId, stat_name: statName || null, skill_id: skill?.skill_id || null }),
         },
       );
       setRpgState(rolled.state);
@@ -1946,6 +2613,38 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       await onCommit("update_rpg_sheet", { adventure_id: activeAdventure.adventure_id, stats: editableStats }, "Update player-reviewed RPG stat modifiers");
     } catch (saveError) {
       setRpgError(saveError instanceof Error ? saveError.message : "Character stats could not be saved.");
+    }
+  }
+
+  async function saveRpgSkills(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeAdventure) return;
+    try {
+      await onCommit("update_story_skills", { adventure_id: activeAdventure.adventure_id, skill_ranks: editableSkills }, "Update player-reviewed skill ranks");
+    } catch (saveError) {
+      setRpgError(saveError instanceof Error ? saveError.message : "Character skills could not be saved.");
+    }
+  }
+
+  async function awardExperience(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeAdventure || !Number.isInteger(experienceAward) || experienceAward < 1) return;
+    try {
+      await onCommit("award_story_experience", { adventure_id: activeAdventure.adventure_id, amount: experienceAward }, "Award player-reviewed character experience");
+    } catch (awardError) {
+      setRpgError(awardError instanceof Error ? awardError.message : "Experience could not be awarded.");
+    }
+  }
+
+  async function setAbilityActive(abilityId: string, active: boolean) {
+    if (!activeAdventure) return;
+    try {
+      await onCommit("set_story_ability_active", {
+        adventure_id: activeAdventure.adventure_id, ability_id: abilityId, active,
+      }, `${active ? "Activate" : "Deactivate"} the player-selected exceptional ability`);
+      setRpgError("");
+    } catch (abilityError) {
+      setRpgError(abilityError instanceof Error ? abilityError.message : "Ability state could not be changed.");
     }
   }
 
@@ -2190,7 +2889,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     : [];
   const pinnedLocations = Array.isArray(activeWorldContent?.locations)
     ? activeWorldContent.locations.filter((place): place is string => typeof place === "string") : [];
-  const adventureLocations = studioData?.locations.filter((location) => location.status === "approved") || [];
+  const adventureLocations = studioData?.locations.filter((location) => (location.effective_status ?? location.status) === "approved") || [];
   const mapLocationsByName = new Map<string, StoryMapLocation>();
   for (const name of pinnedLocations) mapLocationsByName.set(name.toLocaleLowerCase(), {
     location_id: name, name, status: "approved", source_proposal_id: null, created_revision: 0,
@@ -2217,19 +2916,104 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     };
   };
   const mainAdventures = adventures.filter((item) => item.parent_branch_id === "main");
+  const availableWorlds = worlds.filter((item) => !item.archived_at);
   const libraryQuery = storyLibraryQuery.trim().toLocaleLowerCase();
   const visibleAdventures = mainAdventures
     .filter((item) => !libraryQuery || `${item.name} ${item.world_name} ${item.actor_label}`.toLocaleLowerCase().includes(libraryQuery))
+    .filter((item) => storyAdventureStatusFilter === "all"
+      || (storyAdventureStatusFilter === "archived" ? !!item.archived_at : !item.archived_at && item.status === storyAdventureStatusFilter))
+    .filter((item) => storyWorldFilter === "all" || item.world_id === storyWorldFilter)
+    .filter((item) => storyHeroFilter === "all" || item.actor_entity_id === storyHeroFilter)
     .sort((left, right) => storyLibrarySort === "name"
       ? left.name.localeCompare(right.name)
-      : right.updated_at.localeCompare(left.updated_at));
+      : storyLibrarySort === "created"
+        ? right.created_at.localeCompare(left.created_at)
+        : right.updated_at.localeCompare(left.updated_at));
   const visibleWorlds = worlds
     .filter((item) => !libraryQuery || `${item.name} ${item.description} ${item.template_key}`.toLocaleLowerCase().includes(libraryQuery))
+    .filter((item) => storyWorldStatusFilter === "all"
+      || (storyWorldStatusFilter === "archived" ? !!item.archived_at : !item.archived_at))
     .sort((left, right) => storyLibrarySort === "name"
       ? left.name.localeCompare(right.name)
-      : right.updated_at.localeCompare(left.updated_at));
+      : storyLibrarySort === "created"
+        ? right.created_at.localeCompare(left.created_at)
+        : right.updated_at.localeCompare(left.updated_at));
+  const activeStoryLibraryFilterCount = [
+    storyWorldFilter !== "all",
+    storyHeroFilter !== "all",
+    storyAdventureStatusFilter !== "all",
+    storyWorldStatusFilter !== "active",
+  ].filter(Boolean).length;
+  const hasStoryLibraryRefinements = !!libraryQuery || activeStoryLibraryFilterCount > 0;
+  const clearStoryLibraryRefinements = () => {
+    setStoryLibraryQuery("");
+    setStoryWorldFilter("all");
+    setStoryHeroFilter("all");
+    setStoryAdventureStatusFilter("all");
+    setStoryWorldStatusFilter("active");
+    setStoryLibrarySort("recent");
+  };
+  const mostRecentAdventure = mainAdventures
+    .filter((item) => !item.archived_at && item.status === "active")
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
+  const visibleMostRecentAdventure = mostRecentAdventure
+    && visibleAdventures.some((item) => item.adventure_id === mostRecentAdventure.adventure_id)
+    ? mostRecentAdventure
+    : null;
   const selectedSetupWorld = worlds.find((item) => item.world_id === selectedWorldId);
   const selectedSetupHero = mainCharacters.find((item) => item.entity_id === adventureHeroId);
+  const selectedSetupContent = selectedWorldDetail?.world_id === selectedWorldId
+    ? selectedWorldDetail.versions.find((item) => item.version === selectedSetupWorld?.latest_version)?.content || null
+    : null;
+  const selectedSetupCover = readStoryWorldCover(selectedSetupContent?.cover_image);
+  const selectedSetupCreation = selectedSetupContent ? characterCreationFromContent(selectedSetupContent) : null;
+  const selectedSetupBaselines = selectedSetupContent?.stats && typeof selectedSetupContent.stats === "object" && !Array.isArray(selectedSetupContent.stats)
+    ? selectedSetupContent.stats as Record<string, number>
+    : {};
+  const selectedSetupStatDefinitions: CharacterCreationStat[] = selectedSetupCreation
+    ? Object.entries(selectedSetupCreation.stats).map(([key, rule]) => ({ key, ...rule, baseline: selectedSetupBaselines[key] }))
+    : [];
+  const adventurePointsSpent = allocatedCreationPoints(selectedSetupStatDefinitions, adventureAllocation);
+  const adventurePointsRemaining = (selectedSetupCreation?.point_budget || 0) - adventurePointsSpent;
+  const adventureAllocationValid = !!selectedSetupCreation
+    && selectedSetupStatDefinitions.length > 0
+    && selectedSetupStatDefinitions.every((stat) => Number.isInteger(adventureAllocation[stat.key])
+      && adventureAllocation[stat.key] >= stat.minimum && adventureAllocation[stat.key] <= stat.maximum
+      && (selectedSetupCreation.allow_below_baseline || adventureAllocation[stat.key] >= stat.baseline))
+    && adventurePointsRemaining >= 0
+    && (selectedSetupCreation.allow_unspent_points || adventurePointsRemaining === 0);
+  const creationKeys = creationStatDefinitions.map((stat) => stat.key.trim().toLocaleLowerCase());
+  const creationAbilityIds = creationAbilities.map((ability) => ability.ability_id.trim());
+  const creationAbilitiesValid = creationAbilities.length <= 50
+    && creationAbilityIds.every((id, index) => /^[a-z0-9][a-z0-9._-]{0,99}$/.test(id)
+      && creationAbilityIds.indexOf(id) === index)
+    && creationAbilities.every((ability) => !!ability.name.trim() && ability.name.trim().length <= 120
+      && !!ability.description.trim() && ability.description.trim().length <= 4000
+      && !!ability.category.trim() && ability.category.trim().length <= 100
+      && !!ability.source.trim() && ability.source.trim().length <= 100
+      && !!ability.activation.trim() && ability.activation.trim().length <= 1000
+      && !!ability.deactivation.trim() && ability.deactivation.trim().length <= 1000
+      && [ability.effects, ability.magic_interactions, ability.demonstrated_capabilities,
+        ability.confirmed_limitations, ability.unresolved_aspects].every((values) => values.length <= 20
+          && values.every((value) => !!value.trim() && value.trim().length <= 1000))
+      && ability.costs.length <= 10
+      && ability.costs.every((cost) => !!cost.resource.trim() && cost.resource.trim().length <= 60
+        && Number.isInteger(cost.amount) && cost.amount >= 1 && cost.amount <= 100000)
+      && new Set(ability.costs.map((cost) => cost.resource.trim().toLocaleLowerCase())).size === ability.costs.length
+      && (ability.cooldown_turns === null || (Number.isInteger(ability.cooldown_turns)
+        && ability.cooldown_turns >= 0 && ability.cooldown_turns <= 1_000_000))
+      && [ability.duration, ability.range].every((value) => value === null || value.length <= 200));
+  const creationWorldValid = Number.isInteger(creationPointBudget) && creationPointBudget >= 0 && creationPointBudget <= 200
+    && creationStatDefinitions.length > 0 && creationStatDefinitions.length <= 20
+    && creationKeys.every((key, index) => !!key && creationKeys.indexOf(key) === index)
+    && creationStatDefinitions.every((stat) => !!stat.key.trim() && stat.key.trim().length <= 40
+      && !!stat.label.trim() && stat.label.trim().length <= 80
+      && Number.isInteger(stat.baseline) && Number.isInteger(stat.minimum) && Number.isInteger(stat.maximum)
+      && Number.isInteger(stat.point_cost) && stat.minimum >= -10 && stat.maximum <= 10
+      && stat.minimum <= stat.baseline && stat.baseline <= stat.maximum
+      && (creationAllowBelowBaseline || stat.minimum === stat.baseline)
+      && stat.point_cost >= 1 && stat.point_cost <= 20)
+    && creationAbilitiesValid;
 
   return <>
     <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Continue a saved story with a local model, while keeping character knowledge and world facts under your control." />
@@ -2238,57 +3022,291 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         <div><h2>Worlds & adventures</h2><p>Create a world once, then start separate adventures from its pinned version.</p></div>
         <span className="privacy-tag">LOCAL</span>
       </div>
-      {worlds.length + mainAdventures.length > 3 && <div className="story-library-tools">
-        <input aria-label="Search worlds and adventures" value={storyLibraryQuery} onChange={(event) => setStoryLibraryQuery(event.target.value)} placeholder="Search worlds and adventures" />
-        <select aria-label="Sort worlds and adventures" value={storyLibrarySort} onChange={(event) => setStoryLibrarySort(event.target.value as "recent" | "name")}>
-          <option value="recent">Recently updated</option><option value="name">Name A–Z</option>
-        </select>
-      </div>}
+      <div className="story-library-tools">
+        <div className="story-library-search-row">
+          <input aria-label="Search worlds and adventures" value={storyLibraryQuery} onChange={(event) => setStoryLibraryQuery(event.target.value)} placeholder="Search worlds and adventures" />
+          {storyLibraryQuery && <button className="quiet-button" type="button" aria-label="Clear search" onClick={() => setStoryLibraryQuery("")}>Clear</button>}
+        </div>
+        <details className="story-library-filters" open={storyLibraryFiltersOpen} onToggle={(event) => setStoryLibraryFiltersOpen(event.currentTarget.open)}>
+          <summary><span>Filters &amp; sort</span><small>{activeStoryLibraryFilterCount ? `${activeStoryLibraryFilterCount} active` : "Optional"}</small></summary>
+          <div className="story-library-filter-grid">
+            <label>Adventure world<select aria-label="Filter adventures by world" value={storyWorldFilter} onChange={(event) => setStoryWorldFilter(event.target.value)}>
+              <option value="all">All worlds</option>{worlds.map((item) => <option key={item.world_id} value={item.world_id}>{item.name}</option>)}
+            </select></label>
+            <label>Protagonist<select aria-label="Filter adventures by protagonist" value={storyHeroFilter} onChange={(event) => setStoryHeroFilter(event.target.value)}>
+              <option value="all">All protagonists</option>{mainCharacters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}
+            </select></label>
+            <label>Adventure status<select aria-label="Filter adventures by status" value={storyAdventureStatusFilter} onChange={(event) => setStoryAdventureStatusFilter(event.target.value as typeof storyAdventureStatusFilter)}>
+              <option value="all">All adventure statuses</option><option value="active">Active</option><option value="paused">Paused</option><option value="complete">Complete</option><option value="archived">Archived</option>
+            </select></label>
+            <label>World status<select aria-label="Filter worlds by status" value={storyWorldStatusFilter} onChange={(event) => setStoryWorldStatusFilter(event.target.value as typeof storyWorldStatusFilter)}>
+              <option value="active">Active worlds</option><option value="archived">Archived worlds</option><option value="all">All worlds</option>
+            </select></label>
+            <label>Sort by<select aria-label="Sort worlds and adventures" value={storyLibrarySort} onChange={(event) => setStoryLibrarySort(event.target.value as typeof storyLibrarySort)}>
+              <option value="recent">Recently updated</option><option value="created">Recently created</option><option value="name">Name A–Z</option>
+            </select></label>
+            {hasStoryLibraryRefinements && <button className="quiet-button story-library-clear" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}
+          </div>
+        </details>
+      </div>
       <div className="story-adventure-list">
-        <div className="story-adventure-list-heading"><strong>Continue playing</strong><small>{mainAdventures.length} saved</small></div>
+        <div className="story-adventure-list-heading"><strong>Continue playing</strong><small role="status" aria-live="polite">{visibleAdventures.length === mainAdventures.length ? `${mainAdventures.length} saved` : `Showing ${visibleAdventures.length} of ${mainAdventures.length} adventures`}</small></div>
+        {visibleMostRecentAdventure && <div className="story-most-recent"><div><strong>Pick up where you left off</strong><small>{visibleMostRecentAdventure.name} · {visibleMostRecentAdventure.world_name} v{visibleMostRecentAdventure.world_version} · {visibleMostRecentAdventure.actor_label}</small></div><button className="secondary-button" type="button" disabled={busy} onClick={() => onSelectBranch(visibleMostRecentAdventure.branch_id)}>Resume</button></div>}
         {visibleAdventures.length ? visibleAdventures.map((item) => <article className="story-adventure-card" key={item.adventure_id}>
-          <div><strong>{item.name}</strong><small>{item.world_name} · world v{item.world_version} · {item.actor_label} · {item.turn_count} turns</small></div>
-          <button className="secondary-button" type="button" disabled={busy} onClick={() => onSelectBranch(item.branch_id)}>Resume</button>
-        </article>) : <p className="empty-hint">{mainAdventures.length ? "No adventures match this search." : "No adventures yet. Start one below, or import a world and adventure."}</p>}
+          <div className="story-library-card-main"><strong>{item.name}</strong><small>{item.world_name} · world v{item.world_version} · {item.actor_label} · {item.turn_count} turns · {item.status}{item.archived_at ? " · archived" : ""}</small></div>
+          {renamingAdventureId === item.adventure_id ? <form className="story-card-rename" onSubmit={(event) => { event.preventDefault(); void updateAdventureLibrary(item, { name: renamingAdventureName.trim() }); }}>
+            <input aria-label={`New name for ${item.name}`} maxLength={200} required value={renamingAdventureName} onChange={(event) => setRenamingAdventureName(event.target.value)} />
+            <button className="secondary-button" type="submit" disabled={busy || !renamingAdventureName.trim()}>Save</button>
+            <button className="quiet-button" type="button" onClick={() => setRenamingAdventureId("")}>Cancel</button>
+          </form> : <div className="story-card-actions">
+            <button className="secondary-button" type="button" disabled={busy || !!item.archived_at} onClick={() => onSelectBranch(item.branch_id)}>{item.archived_at ? "Archived" : "Resume"}</button>
+            <details className="story-card-menu">
+              <summary aria-label={`More actions for ${item.name}`}>More</summary>
+              <div className="story-card-menu-panel">
+                <button className="quiet-button" type="button" disabled={busy} onClick={() => { setRenamingAdventureId(item.adventure_id); setRenamingAdventureName(item.name); }}>Rename adventure</button>
+                <label className="story-card-status-field">Adventure status<select aria-label={`Status for ${item.name}`} value={item.status} disabled={busy || !!item.archived_at} onChange={(event) => void updateAdventureLibrary(item, { status: event.target.value as StoryAdventure["status"] })}>
+                  <option value="active">Active</option><option value="paused">Paused</option><option value="complete">Complete</option>
+                </select></label>
+                <button className="quiet-button" type="button" disabled={busy} onClick={() => void duplicateAdventure(item)}>Duplicate adventure</button>
+                <button className="quiet-button" type="button" disabled={busy} onClick={() => void updateAdventureLibrary(item, { archived: !item.archived_at })}>{item.archived_at ? "Restore adventure" : "Archive adventure"}</button>
+              </div>
+            </details>
+          </div>}
+        </article>) : <div className="story-library-empty"><p className="empty-hint">{mainAdventures.length ? "No adventures match this search and these filters." : "No adventures yet. Start one below, or import a world and adventure."}</p>{mainAdventures.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}
       </div>
       <details className="story-world-library">
-        <summary>Browse worlds <small>{visibleWorlds.length} of {worlds.length}</small></summary>
+        <summary>Browse worlds <small>{visibleWorlds.length} shown of {worlds.length}</small></summary>
         <div className="story-world-library-list">{visibleWorlds.length ? visibleWorlds.map((item) => <article key={item.world_id}>
-          <div><strong>{item.name}</strong><small>{item.description || item.template_key} · v{item.latest_version}</small></div>
-          <button className="secondary-button" type="button" onClick={() => { setSelectedWorldId(item.world_id); setSetupExpanded(true); }}>{selectedWorldId === item.world_id ? "Selected" : "Select"}</button>
-        </article>) : <p className="empty-hint">{worlds.length ? "No worlds match this search." : "Create or import a world to begin."}</p>}</div>
+          <div className="story-library-card-main"><strong>{item.name}</strong><small>{item.description || item.template_key} · v{item.latest_version}{item.archived_at ? " · archived" : ""}</small></div>
+          <div className="story-card-actions">
+            <button className="secondary-button" type="button" disabled={!!item.archived_at || selectedWorldId === item.world_id} onClick={() => { setSelectedWorldId(item.world_id); setShowWorldCreation(false); setSetupStep(1); setSetupExpanded(true); }}>{selectedWorldId === item.world_id ? "Selected" : "Use this world"}</button>
+            <details className="story-card-menu">
+              <summary aria-label={`More actions for ${item.name}`}>More</summary>
+              <div className="story-card-menu-panel">
+                <button className="quiet-button" type="button" disabled={busy} onClick={() => void duplicateWorld(item)}>Duplicate world</button>
+                <button className="quiet-button" type="button" disabled={busy} onClick={() => void setWorldArchived(item, !item.archived_at)}>{item.archived_at ? "Restore world" : "Archive world"}</button>
+              </div>
+            </details>
+          </div>
+        </article>) : <div className="story-library-empty"><p className="empty-hint">{worlds.length ? "No worlds match this search and these filters." : "Create or import a world to begin."}</p>{worlds.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}</div>
       </details>
       <details className="story-world-editor story-hub-setup" open={setupExpanded} onToggle={(event) => setSetupExpanded(event.currentTarget.open)}>
-        <summary>New adventure or create a world</summary>
-        <div className="story-hub-grid">
-        <form className="story-hub-form" onSubmit={(event) => void createWorld(event)}>
-          <div className="story-hub-title"><span>01</span><div><strong>Create a world</strong><small>Start with a small template and add detail as you play.</small></div></div>
+        <summary>Adventure setup · step {setupStep} of 4</summary>
+        <ol className="story-setup-progress" aria-label="Adventure setup progress">
+          {(["World", "Hero", "Review", "Start"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
+            <span>{index + 1}</span><small>{label}</small>
+          </li>)}
+        </ol>
+        <div className="story-hub-grid story-setup-stage">
+        {setupStep === 1 && <section className="story-hub-form">
+          <div className="story-hub-title"><span>01</span><div><strong>Choose or create a world</strong><small>New adventures pin one immutable world version.</small></div></div>
+          {availableWorlds.length > 0 && <label className="field-label">Choose a world<select value={selectedWorldId} onChange={(event) => { setSelectedWorldId(event.target.value); setLibraryError(""); }}>
+            {availableWorlds.map((item) => <option key={item.world_id} value={item.world_id}>{item.name} · v{item.latest_version}</option>)}
+          </select></label>}
+          {!availableWorlds.length && worlds.length > 0 && <p className="field-note">All existing worlds are archived. Restore a world or create a new one to start an adventure.</p>}
+          {selectedSetupWorld && <div className="story-start-summary" role="status">
+            <span>Selected: {selectedSetupWorld.name} · world v{selectedSetupWorld.latest_version}</span>
+            {selectedSetupCover && <img src={storyWorldCoverUrl(selectedSetupCover)} alt={selectedSetupCover.alt_text || `${selectedSetupWorld.name} cover`} />}
+          </div>}
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => { setShowWorldCreation((visible) => !visible); setCreationError(""); }}>
+            {showWorldCreation ? "Cancel new world" : "Create a new world"}
+          </button>
+          {showWorldCreation && <form className="story-hub-form story-hub-create-world" onSubmit={(event) => void createWorld(event)}>
+          <div className="story-hub-title"><span>＋</span><div><strong>Create a world</strong><small>Start with a small template. Advanced rules stay optional.</small></div></div>
           <label className="field-label">World name<input value={worldName} onChange={(event) => setWorldName(event.target.value)} placeholder="The Shattered Coast" maxLength={200} required /></label>
-          <label className="field-label">Starting style<select value={worldTemplate} onChange={(event) => setWorldTemplate(event.target.value)}>{Object.entries(STORY_WORLD_TEMPLATES).map(([key, template]) => <option key={key} value={key}>{template.label}</option>)}</select></label>
+          <label className="field-label">Starting style<select value={worldTemplate} onChange={(event) => {
+            const nextTemplate = event.target.value;
+            const nextStats = defaultCharacterCreationStats(nextTemplate);
+            setWorldTemplate(nextTemplate);
+            setCreationStatDefinitions(nextStats);
+            setCreationTrackerText(trackerDefinitionsText(
+              STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content.trackers,
+            ));
+            setCreationMechanics(defaultStoryMechanics(nextTemplate === "narrative" ? "narrative_only" : "d20"));
+            setCreationError("");
+          }}>{Object.entries(STORY_WORLD_TEMPLATES).map(([key, template]) => <option key={key} value={key}>{template.label}</option>)}</select></label>
           <label className="field-label">Public setting premise<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Share setting details that are safe for the hero to know." /></label>
-          <button className="secondary-button full-button" disabled={busy || !worldName.trim()}>Save world</button>
-        </form>
-        <div className="story-hub-form">
-          <div className="story-hub-title"><span>02</span><div><strong>Build a protagonist</strong><small>One character leads each adventure.</small></div></div>
-          {mainCharacters.length ? <label className="field-label">Choose your hero<select value={adventureHeroId} onChange={(event) => setAdventureHeroId(event.target.value)}>{mainCharacters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label> : <>
-            <p className="empty-hint">Create your first protagonist here. You can add more characters later.</p>
+          <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Stored in the local world version and portable package. Lorethra compresses it to a small JPEG, up to 64 KiB.</small></label>
+          {worldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(worldCover)} alt={worldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={worldCover.alt_text} onChange={(event) => setWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setWorldCover(null)}>Remove cover</button></div>}
+          <details className="character-creation-rules story-world-advanced">
+            <summary>Advanced rules and trackers</summary>
+            <label className="field-label">World-specific trackers<textarea value={creationTrackerText} onChange={(event) => setCreationTrackerText(event.target.value)} rows={3} maxLength={4000} placeholder="health=10/10\nfocus=6/6" /><small className="field-note">One tracker per line as name=current/maximum. Clear the field when this world has no numeric resources.</small></label>
+            <StoryMechanicsEditor value={creationMechanics} stats={creationStatDefinitions.map((stat) => stat.key.trim()).filter(Boolean)} onChange={setCreationMechanics} />
+          <details className="character-creation-rules">
+            <summary>Character attributes · {creationStatDefinitions.length} stats · {creationPointBudget} creation points</summary>
+            <p className="field-note">Set the world’s starting attributes. Temporary resources stay in trackers and do not use creation points.</p>
+            <label className="field-label">Available creation points<input type="number" min={0} max={200} step={1} value={creationPointBudget} onChange={(event) => setCreationPointBudget(Number(event.target.value))} /></label>
+            <label className="control-choice"><input type="checkbox" checked={creationAllowUnspentPoints} onChange={(event) => setCreationAllowUnspentPoints(event.target.checked)} /><span>Allow points to remain unspent</span></label>
+            <label className="control-choice"><input type="checkbox" checked={creationAllowBelowBaseline} onChange={(event) => {
+              const enabled = event.target.checked;
+              setCreationAllowBelowBaseline(enabled);
+              if (!enabled) setCreationStatDefinitions((definitions) => definitions.map((stat) => ({ ...stat, minimum: stat.baseline })));
+            }} /><span>Allow attribute reductions below baseline</span></label>
+            <div className="character-creation-definition-list">
+              {creationStatDefinitions.map((stat, index) => <div className="character-creation-definition" key={`${index}-${stat.key}`}>
+                <label className="field-label">Stat key<input value={stat.key} maxLength={40} onChange={(event) => updateCreationStat(index, { key: event.target.value })} /></label>
+                <label className="field-label">Display name<input value={stat.label} maxLength={80} onChange={(event) => updateCreationStat(index, { label: event.target.value })} /></label>
+                <label className="field-label">Baseline<input type="number" min={-10} max={10} step={1} value={stat.baseline} onChange={(event) => updateCreationStat(index, { baseline: Number(event.target.value) })} /></label>
+                <label className="field-label">Minimum<input type="number" min={-10} max={10} step={1} value={stat.minimum} onChange={(event) => updateCreationStat(index, { minimum: Number(event.target.value) })} /></label>
+                <label className="field-label">Maximum<input type="number" min={-10} max={10} step={1} value={stat.maximum} onChange={(event) => updateCreationStat(index, { maximum: Number(event.target.value) })} /></label>
+                <label className="field-label">Points per increase<input type="number" min={1} max={20} step={1} value={stat.point_cost} onChange={(event) => updateCreationStat(index, { point_cost: Number(event.target.value) })} /></label>
+                <button type="button" className="link-button" disabled={creationStatDefinitions.length <= 1} onClick={() => removeCreationStat(index)}>Remove stat</button>
+              </div>)}
+            </div>
+            <button type="button" className="secondary-button" disabled={creationStatDefinitions.length >= 20} onClick={addCreationStat}>Add attribute</button>
+            <p className="field-note">Players can raise each attribute up to its maximum, refund points down to its minimum, and review the final sheet before starting.</p>
+          </details>
+          <details className="character-creation-rules exceptional-ability-editor">
+            <summary>Exceptional abilities · {creationAbilities.length}</summary>
+            <p className="field-note">Abilities use only declared costs and cooldowns. Empty costs and cooldown mean no resource payment or cooldown; no d20 check is added.</p>
+            {creationAbilities.map((ability, index) => <fieldset className="exceptional-ability-definition" key={`${index}-${ability.ability_id}`}>
+              <legend>{ability.name || `Ability ${index + 1}`}</legend>
+              <div className="character-creation-definition">
+                <label className="field-label">Ability ID<input value={ability.ability_id} maxLength={100} onChange={(event) => updateCreationAbility(index, { ability_id: event.target.value })} /></label>
+                <label className="field-label">Name<input value={ability.name} maxLength={120} onChange={(event) => updateCreationAbility(index, { name: event.target.value })} /></label>
+                <label className="field-label">Category<input value={ability.category} maxLength={100} onChange={(event) => updateCreationAbility(index, { category: event.target.value })} /></label>
+                <label className="field-label">Source<input value={ability.source} maxLength={100} onChange={(event) => updateCreationAbility(index, { source: event.target.value })} /></label>
+                <label className="field-label">Description<textarea value={ability.description} maxLength={4000} onChange={(event) => updateCreationAbility(index, { description: event.target.value })} /></label>
+                <label className="field-label">Activation<input value={ability.activation} maxLength={1000} onChange={(event) => updateCreationAbility(index, { activation: event.target.value })} /></label>
+                <label className="field-label">Deactivation<input value={ability.deactivation} maxLength={1000} onChange={(event) => updateCreationAbility(index, { deactivation: event.target.value })} /></label>
+                <label className="field-label">Known effects<textarea value={ability.effects.join("\n")} onChange={(event) => updateCreationAbility(index, { effects: abilityTextList(event.target.value) })} placeholder="One effect per line" /></label>
+                <label className="field-label">Activation costs<textarea value={ability.costs.map((cost) => `${cost.resource}=${cost.amount}`).join("\n")} onChange={(event) => updateCreationAbility(index, { costs: abilityCostList(event.target.value) })} placeholder="resource=amount, one per line" /></label>
+                <label className="field-label">Cooldown in completed turns<input type="number" min={0} max={1000000} value={ability.cooldown_turns ?? ""} onChange={(event) => updateCreationAbility(index, { cooldown_turns: event.target.value === "" ? null : Number(event.target.value) })} placeholder="None" /></label>
+                <label className="field-label">Duration<input value={ability.duration || ""} maxLength={200} onChange={(event) => updateCreationAbility(index, { duration: event.target.value || null })} /></label>
+                <label className="field-label">Range<input value={ability.range || ""} maxLength={200} onChange={(event) => updateCreationAbility(index, { range: event.target.value || null })} /></label>
+                <label className="field-label">Interactions with ordinary magic<textarea value={ability.magic_interactions.join("\n")} onChange={(event) => updateCreationAbility(index, { magic_interactions: abilityTextList(event.target.value) })} placeholder="One interaction per line" /></label>
+                <label className="field-label">Demonstrated capabilities<textarea value={ability.demonstrated_capabilities.join("\n")} onChange={(event) => updateCreationAbility(index, { demonstrated_capabilities: abilityTextList(event.target.value) })} placeholder="One demonstrated capability per line" /></label>
+                <label className="field-label">Confirmed limitations<textarea value={ability.confirmed_limitations.join("\n")} onChange={(event) => updateCreationAbility(index, { confirmed_limitations: abilityTextList(event.target.value) })} placeholder="One confirmed limitation per line" /></label>
+                <label className="field-label">Unresolved aspects<textarea value={ability.unresolved_aspects.join("\n")} onChange={(event) => updateCreationAbility(index, { unresolved_aspects: abilityTextList(event.target.value) })} placeholder="One unresolved aspect per line" /></label>
+                <button type="button" className="link-button" onClick={() => removeCreationAbility(index)}>Remove ability</button>
+              </div>
+            </fieldset>)}
+            <button type="button" className="secondary-button" disabled={creationAbilities.length >= 50} onClick={addCreationAbility}>Add exceptional ability</button>
+            {!creationAbilitiesValid && <p className="field-note" role="status">Complete each ability definition, use a unique lowercase ID, and enter positive resource costs.</p>}
+          </details>
+          </details>
+          {creationError && <p className="inline-error" role="alert">{creationError}</p>}
+          {!creationWorldValid && <p className="field-note" role="status">Use distinct stat keys, valid baseline bounds, and point costs from 1 to 20.</p>}
+          <button className="secondary-button full-button" disabled={busy || coverPreparing || !worldName.trim() || !creationWorldValid}>Save world</button>
+          </form>}
+          <div className="wizard-actions">
+            <button className="primary-button" type="button" disabled={busy || !selectedSetupWorld || !!selectedSetupWorld.archived_at || !selectedSetupContent} onClick={() => { setLibraryError(""); setSetupStep(2); }}>Continue to hero <span>→</span></button>
+          </div>
+        </section>}
+        {setupStep === 2 && <section className="story-hub-form">
+          <div className="story-hub-title"><span>02</span><div><strong>Choose or create a hero</strong><small>The hero can be reused; every adventure gets separate state.</small></div></div>
+          {mainCharacters.length > 0 && <label className="field-label">Choose an existing hero<select value={adventureHeroId} onChange={(event) => setAdventureHeroId(event.target.value)}>{mainCharacters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>}
+          {mainCharacters.length > 0 && !showHeroCreation && <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowHeroCreation(true)}>Create another hero</button>}
+          {(showHeroCreation || mainCharacters.length === 0) && <>
+            <p className="empty-hint">{mainCharacters.length ? "Add a hero to the workspace library." : "Create your first protagonist here. No Knowledge Explorer setup is needed."}</p>
             <form className="story-hero-create" onSubmit={(event) => void createHero(event)}><input value={heroName} onChange={(event) => setHeroName(event.target.value)} placeholder="Protagonist name" aria-label="Protagonist name" maxLength={200} required /><button className="secondary-button" disabled={busy}>Create hero</button></form>
           </>}
-          <form className="story-start-adventure" onSubmit={(event) => void startAdventure(event)}>
-            <label className="field-label">World<select value={selectedWorldId} onChange={(event) => setSelectedWorldId(event.target.value)} disabled={!worlds.length}><option value="">{worlds.length ? "Choose a world" : "Create a world first"}</option>{worlds.map((item) => <option key={item.world_id} value={item.world_id}>{item.name} · v{item.latest_version}</option>)}</select></label>
+          <p className="field-note">Reusing a hero starts a new isolated adventure branch with a fresh sheet from the selected world. Other adventures, checks, and trackers are not copied.</p>
+          <div className="wizard-actions">
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(1)}>Back</button>
+            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Review starting details <span>→</span></button>
+          </div>
+        </section>}
+        {setupStep === 3 && <form className="story-hub-form story-start-adventure" onSubmit={(event) => void startAdventure(event)}>
+          <div className="story-hub-title"><span>03</span><div><strong>Review starting details and model</strong><small>Nothing is sent to a model during setup.</small></div></div>
+          {selectedSetupWorld && selectedSetupHero && <p className="story-start-summary">{selectedSetupHero.label} · {selectedSetupWorld.name} · pinned world version {selectedSetupWorld.latest_version}</p>}
+            {selectedSetupCreation && <section className="character-creation-allocation" aria-labelledby="character-creation-heading">
+              <div className="story-hub-title"><span>03</span><div><strong id="character-creation-heading">Allocate starting attributes</strong><small>World-defined baselines, limits, and point costs.</small></div></div>
+              <div className="character-creation-allocation-list">
+                {selectedSetupStatDefinitions.map((stat) => {
+                  const value = adventureAllocation[stat.key] ?? stat.baseline;
+                  return <div className="character-creation-allocation-row" key={stat.key}>
+                    <span><strong>{stat.label}</strong><small>{stat.baseline} baseline · {stat.minimum}–{stat.maximum} · {stat.point_cost} point{stat.point_cost === 1 ? "" : "s"} per increase</small></span>
+                    <div><button type="button" className="secondary-button" aria-label={`Decrease ${stat.label}`} disabled={busy || value <= stat.minimum} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value - 1 }))}>−</button>
+                      <output aria-label={`${stat.label} allocation`}>{value}</output>
+                      <button type="button" className="secondary-button" aria-label={`Increase ${stat.label}`} disabled={busy || value >= stat.maximum || adventurePointsRemaining < stat.point_cost} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value + 1 }))}>+</button></div>
+                  </div>;
+                })}
+              </div>
+              <div className="character-creation-allocation-actions">
+                <button type="button" className="link-button" disabled={busy} onClick={resetAdventureAllocation}>Reset to baseline</button>
+                <button type="button" className="link-button" disabled={busy} onClick={randomizeAdventureAllocation}>Randomize</button>
+                <strong aria-live="polite">{adventurePointsRemaining} / {selectedSetupCreation.point_budget} points remaining</strong>
+              </div>
+              {adventureAllocationMessage && <p className="field-note" role="status">{adventureAllocationMessage}</p>}
+              <details className="character-creation-review">
+                <summary>Review final character sheet</summary>
+                <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {stat.baseline} baseline → {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
+              </details>
+              {!adventureAllocationValid && <p className="field-note" role="status">{adventurePointsRemaining < 0 ? "This allocation exceeds the world’s point budget." : adventurePointsRemaining > 0 && !selectedSetupCreation.allow_unspent_points ? "Spend the remaining points before starting." : "Check the world’s stat bounds and allocation rules."}</p>}
+            </section>}
             <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={selectedSetupWorld?.name || "First adventure"} maxLength={200} /></label>
             <p className="story-start-summary" aria-live="polite">{selectedSetupWorld && selectedSetupHero
               ? `Ready to play “${adventureName.trim() || selectedSetupWorld.name}” as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
               : "Choose a world and protagonist to review your adventure."}</p>
-            <button className="primary-button full-button" disabled={busy || !worlds.length || !adventureHeroId}>Start adventure <span>↗</span></button>
+            <section className="story-setup-model" aria-labelledby="setup-model-heading">
+              <h3 id="setup-model-heading">Story model</h3>
+              <p className="field-note">Choose a provider and model for story generation. Setup itself stays local; online providers require separate consent before a request is sent.</p>
+              <div className="story-provider-fields">
+                <label className="field-label">AI provider<select aria-label="Setup AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
+                  {storyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}{provider.local ? " · local" : " · online"}</option>)}
+                  {!storyProviders.length && <option value="ollama">Ollama · local</option>}
+                </select></label>
+                <label className="field-label">Model<select aria-label="Setup model" value={customModel ? "__custom__" : model} disabled={generating || memoryQuerying} onChange={(event) => {
+                  if (event.target.value === "__custom__") { setUsingCustomModel(true); setModel(""); }
+                  else { setUsingCustomModel(false); setModel(event.target.value); }
+                }}>
+                  {!model && !customModel && <option value="">Choose a model</option>}
+                  {providerId === "codex" && <option value="auto">Codex default (automatic)</option>}
+                  {models.filter((name) => name !== "auto").map((name) => <option key={name} value={name}>{name}</option>)}
+                  <option value="__custom__">Enter a model ID manually</option>
+                </select></label>
+                {customModel && <label className="field-label">Custom model ID<input aria-label="Setup custom model ID" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} placeholder="Provider model ID" /></label>}
+              </div>
+              {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "Story requests stay on this device." : "Lorethra will show a provider-specific consent prompt before sending story material."}</p>}
+              {!storyProviderAvailable && <p className="provider-note">This provider is not available yet. You can still start the adventure and configure it later.</p>}
+              {storyProviderAvailable && !model.trim() && <p className="provider-note">Choose a model to generate prose. Character sheets and local mechanics remain available without one.</p>}
+            </section>
+            <div className="wizard-actions">
+              <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(2)}>Back</button>
+              <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Review and continue <span>→</span></button>
+            </div>
+        </form>}
+        {setupStep === 4 && <section className="story-hub-form">
+          <div className="story-hub-title"><span>04</span><div><strong>Start this adventure</strong><small>Review the pinned world, hero, and model one last time.</small></div></div>
+          <p className="story-start-summary" role="status">{selectedSetupWorld && selectedSetupHero
+            ? `“${adventureName.trim() || selectedSetupWorld.name}” starts as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
+            : "Choose a world and hero before starting."}</p>
+          {selectedSetupCreation && <details className="character-creation-review" open>
+            <summary>Starting attributes · {adventurePointsSpent} / {selectedSetupCreation.point_budget} points spent</summary>
+            <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
+          </details>}
+          <p className="field-note">Each start creates a fresh adventure branch and world-specific character sheet. Reusing a hero does not copy another adventure’s turns, checks, trackers, or memories.</p>
+          <p className="provider-note">Story model: {selectedStoryProvider?.label || providerId} · {model.trim() || "not selected"}{!storyProviderAvailable ? " · unavailable until configured" : ""}</p>
+          <form className="wizard-actions" onSubmit={(event) => void startAdventure(event)}>
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(3)}>Back to review</button>
+            <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Start adventure <span>↗</span></button>
           </form>
-        </div>
+        </section>}
         </div>
       </details>
       <details className="story-world-editor">
         <summary>Import or export a world</summary>
-        <p className="field-note">World packages include all world versions, including private author notes. Review contents before sharing or importing; imported text is untrusted story data.</p>
-        <button type="button" className="secondary-button" disabled={!selectedWorldId || busy} onClick={() => void exportWorldPackage()}>Export selected world</button>
+        <p className="field-note">Public exports include reviewed public lore and mechanics. Full archives may include unclassified author content and require preview and confirmation.</p>
+        <div className="adventure-export-controls">
+          <label className="field-label">World export format<select value={worldExportMode} onChange={(event) => {
+            setWorldExportMode(event.target.value as "public_world" | "full_private_archive");
+            setWorldExportReview(null);
+          }}>
+            <option value="public_world">Public world</option>
+            <option value="full_private_archive">Full private archive</option>
+          </select></label>
+          <div className="story-world-editor-actions">
+            <button type="button" className="secondary-button" disabled={!selectedWorldId || busy} onClick={() => void previewWorldExport()}>Preview world export</button>
+            <button type="button" className="primary-button" disabled={!selectedWorldId || busy || !worldExportReview} onClick={() => void exportWorldPackage()}>Download reviewed world</button>
+          </div>
+          {worldExportReview && worldExportReview.workspaceId === workspaceId && worldExportReview.worldId === selectedWorldId
+            && worldExportReview.revision === revision && worldExportReview.mode === worldExportMode && <div className="export-preview" role="status" aria-live="polite">
+              <strong>{worldExportReview.preview.requires_private_confirmation ? "Unclassified content needs confirmation" : "World export preview"}</strong>
+              <span>Included: {JSON.stringify(worldExportReview.preview.included)}</span>
+              {worldExportReview.preview.sensitive && <span>Unclassified content: {JSON.stringify(worldExportReview.preview.sensitive)}</span>}
+            </div>}
+        </div>
         <label className="field-label">Preview a world package<input type="file" accept=".lke-world,.mno-world,application/json" onChange={(event) => { void previewWorldPackage(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
         {worldPackage && worldPackage.workspace === workspaceId && <div>
           <p>{worldPackage.preview.name} · {worldPackage.preview.versions} version(s) · {worldPackage.preview.source_format === "mno-world" ? "MNO RPG Engine world" : `source workspace ${worldPackage.preview.provenance.workspace_id}`} · source world {worldPackage.preview.provenance.world_id}</p>
@@ -2302,8 +3320,57 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       </details>
       <details className="story-world-editor">
         <summary>Import or export an adventure</summary>
-          <p className="field-note">Adventure files preserve turns, RPG state, memories, NPCs, maps, and images. For MNO, import its matching `.mno-world` first. Private notes and secrets stay in the local archive; inspect any export before sharing.</p>
-        {activeAdventure && <button type="button" className="secondary-button" disabled={busy} onClick={() => void exportAdventurePackage()}>Export current adventure</button>}
+        <p className="field-note">Preview an export before downloading. Shareable packages omit private profiles, author-only and unpublished memories, hidden MNO messages, and preserved source archives. Full private archives require confirmation.</p>
+        {activeAdventure && <div className="adventure-export-controls">
+          <label className="field-label">Export format<select value={adventureExportMode} onChange={(event) => {
+            setAdventureExportMode(event.target.value as StoryAdventureExportMode);
+            setAdventureExportReview(null);
+          }}>
+            <option value="shareable_adventure">Shareable adventure</option>
+            <option value="full_private_archive">Full private archive</option>
+            <option value="public_world">Public world only</option>
+            <option value="selected_content">Selected content</option>
+          </select></label>
+          {adventureExportMode === "selected_content" && <fieldset className="export-selection">
+            <legend>Include these record groups</legend>
+            {[
+              ["turn_ids", "Transcript", conversation?.turns.length || 0],
+              ["check_ids", "Legacy d20 checks", rpgState?.checks.length || 0],
+              ["mechanic_check_ids", "World mechanics checks", rpgState?.mechanic_checks.length || 0],
+              ["proposal_ids", "State proposals", rpgState?.proposals.length || 0],
+              ["memory_ids", "Memories", studioData?.memories.memories.length || 0],
+              ["thread_ids", "Story threads", studioData?.memories.threads.length || 0],
+              ["npc_entity_ids", "NPC profiles", studioData?.npcs.length || 0],
+              ["asset_ids", "Images", studioData?.assets.length || 0],
+              ["location_ids", "Map locations", studioData?.locations.length || 0],
+            ].map(([key, label, count]) => <label key={String(key)}>
+              <input type="checkbox" checked={adventureExportSections.includes(String(key))}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked;
+                  setAdventureExportSections((current) => checked
+                    ? [...current, String(key)]
+                    : current.filter((item) => item !== key));
+                  setAdventureExportReview(null);
+                }} />
+              <span>{String(label)} <small>{Number(count)}</small></span>
+            </label>)}
+          </fieldset>}
+          <div className="story-world-editor-actions">
+            <button type="button" className="secondary-button" disabled={busy || (adventureExportMode === "selected_content" && adventureExportSections.length === 0)} onClick={() => void previewAdventureExport()}>Preview export</button>
+            <button type="button" className="primary-button" disabled={busy || !adventureExportReview} onClick={() => void exportAdventurePackage()}>Download reviewed export</button>
+          </div>
+          {adventureExportReview && adventureExportReview.workspaceId === workspaceId
+            && adventureExportReview.branchId === branchId
+            && adventureExportReview.adventureId === activeAdventure.adventure_id
+            && adventureExportReview.revision === revision
+            && adventureExportReview.mode === adventureExportMode && <div className="export-preview" role="status" aria-live="polite">
+              <strong>{adventureExportReview.preview.requires_private_confirmation ? "Private content needs confirmation" : "Export preview"}</strong>
+              <span>Included: {JSON.stringify(adventureExportReview.preview.included)}</span>
+              {adventureExportReview.preview.sensitive && <span>Source sensitivity: {JSON.stringify(adventureExportReview.preview.sensitive)}</span>}
+              {adventureExportReview.preview.excluded && <span>Excluded: {JSON.stringify(adventureExportReview.preview.excluded)}</span>}
+              {adventureExportMode === "public_world" && <small>The world export keeps public lore and mechanics; unclassified and preserved source fields are excluded.</small>}
+            </div>}
+        </div>}
         {branchId === "main" ? <label className="field-label">Preview an adventure package<input type="file" accept=".lke-adventure,.mno-adv,application/json" onChange={(event) => { void previewAdventurePackage(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label> : <p className="field-note">Return to the main workspace to import an adventure as a separate session.</p>}
         {adventurePackage && adventurePackage.workspace === workspaceId && <div>
           <p>{adventurePackage.preview.name} · world v{adventurePackage.preview.world_version} · {adventurePackage.preview.turns} turns · {adventurePackage.preview.memories} memories · {adventurePackage.preview.characters} characters · {adventurePackage.preview.images} images</p>
@@ -2321,8 +3388,14 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <label className="field-label">World name<input value={editWorldName} onChange={(event) => setEditWorldName(event.target.value)} maxLength={200} required /></label>
           <label className="field-label">Public world summary<input value={editWorldDescription} onChange={(event) => setEditWorldDescription(event.target.value)} maxLength={1000} placeholder="A short summary safe to share with the hero" /></label>
           <label className="field-label">Public setting premise<textarea value={editWorldPremise} onChange={(event) => setEditWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Setting details safe for the hero to know" /></label>
+          <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, true); }} /><small className="field-note">This image is pinned with the new version and included in world packages.</small></label>
+          {editWorldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(editWorldCover)} alt={editWorldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={editWorldCover.alt_text} onChange={(event) => setEditWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setEditWorldCover(null)}>Remove cover</button></div>}
           <label className="field-label">Map locations<textarea value={editWorldLocations} onChange={(event) => setEditWorldLocations(event.target.value)} rows={3} maxLength={4000} placeholder="One approved location per line" /><small className="field-note">These locations belong to the new world version. Adventures already started keep their pinned map.</small></label>
-          <div className="story-world-editor-actions"><small>Current version: v{selectedWorldDetail.latest_version}</small><button className="secondary-button" type="submit" disabled={busy || !editWorldName.trim()}>Save new version</button></div>
+          <label className="field-label">World-specific trackers<textarea value={editTrackerText} onChange={(event) => setEditTrackerText(event.target.value)} rows={3} maxLength={4000} placeholder="health=10/10\nfocus=6/6" /><small className="field-note">One tracker per line as name=current/maximum. These rules affect new adventures from this version.</small></label>
+          <StoryMechanicsEditor value={editMechanics}
+            stats={Object.keys((selectedWorldDetail.versions.find((item) => item.version === selectedWorldDetail.latest_version)?.content.stats as Record<string, unknown>) || {})}
+            onChange={setEditMechanics} />
+          <div className="story-world-editor-actions"><small>Current version: v{selectedWorldDetail.latest_version}</small><button className="secondary-button" type="submit" disabled={busy || coverPreparing || !editWorldName.trim()}>Save new version</button></div>
         </form>
       </details>}
       {libraryError && <p className="inline-error" role="alert">{libraryError}</p>}
@@ -2396,7 +3469,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                     <small>{fact.actor_stance} · {fact.evidence_ids.length} linked sources</small>
                   </div>)}
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
-                  {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length} recent checks</small>
+                  {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length + turn.context_manifest.story.recent_mechanic_checks.length} recent checks · {turn.context_manifest.story.character_sheet.experience.total_xp} XP</small>
                     {(turn.context_manifest.story.memories ?? []).map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
                     {(turn.context_manifest.story.author_notes ?? []).map((memory) => <small key={memory.memory_id}>Narrator-only guidance · importance {memory.importance}: {memory.content}</small>)}
                     {(turn.context_manifest.story.excluded_memories ?? []).map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}
@@ -2434,37 +3507,78 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             </div>}
             <details><summary>Advanced story options</summary><label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label></details>
             <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
-            {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "This provider is configured for local inference." : "The prompt, recent story, and authorized context are sent to this provider. API and account charges or data terms may apply."}</p>}
+            {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "This provider is configured for local inference." : "Story requests require provider-specific consent. Private author notes, private NPC profiles, actor-scoped facts, and non-shared memories are excluded before transmission. Provider data terms and account charges may apply."}</p>}
+            {selectedStoryProvider && EXTERNAL_STORY_PROVIDERS.includes(providerId) && (externalProviderConsents.includes(providerId)
+              ? <button className="link-button provider-consent-revoke" type="button" onClick={() => revokeExternalProviderConsent(providerId)}>Revoke consent for {selectedStoryProvider.label} on this device</button>
+              : <small className="provider-note">This provider has no saved consent on this device. The app will show what leaves Lorethra before the first story or memory request.</small>)}
             {selectedStoryProvider && !storyProviderAvailable && <p className="provider-note">This provider is not available yet. Check its setup above, then reload the workspace.</p>}
             {storyProviderAvailable && !model.trim() && <p className="provider-note">Choose a listed model or enter a custom model ID to continue.</p>}
             <button className="primary-button full-button" disabled={generating || busy || !storyProviderAvailable || !model.trim() || !prompt.trim()}>{generating ? "Writing story…" : `Continue story${selectedStoryProvider ? ` with ${selectedStoryProvider.label}` : ""}`} <span>✳</span></button>
             {generating && <button className="secondary-button full-button stop-generation" type="button" onClick={stopStoryGeneration}>Stop generation</button>}
+            {generating && <small className="provider-note">Stop cancels Lorethra’s request and prevents a partial reply from being saved. A provider may finish work it already accepted, and a remote request may still be billable.</small>}
           </form>
         </>}
         {storyError && <p className="inline-error" role="alert">{storyError}</p>}
       </section>
       <div className="story-side-panels">
       <section className="panel rpg-state-panel">
-        <div className="panel-heading"><div><h2>Character & game state</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} v${activeAdventure.world_version}` : "State appears here when you play a world-based adventure."}</p></div><span className="privacy-tag">D20</span></div>
+        <div className="panel-heading"><div><h2>Character & game state</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} v${activeAdventure.world_version}` : "State appears here when you play a world-based adventure."}</p></div><span className="privacy-tag">{rpgState?.mechanics.mode.replaceAll("_", " ") || "RPG"}</span></div>
         {activeAdventure && rpgState?.sheet ? <>
           <div className="rpg-location"><small>Current location</small><strong dir="auto">{rpgState.sheet.current_location || "Not set"}</strong></div>
-          <div className="rpg-stat-list"><strong>Stats</strong><div>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <span key={name}>{name}<b>{value >= 0 ? `+${value}` : value}</b></span>)}</div></div>
+          <div className="rpg-stat-list"><strong>Stats</strong><div>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <span key={name}>{activeStatLabel(name)}<b>{value >= 0 ? `+${value}` : value}</b></span>)}</div></div>
           <details className="rpg-edit-stats"><summary>Edit stat modifiers</summary><form onSubmit={(event) => void saveRpgStats(event)}>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <label className="field-label" key={name}>{name}<input type="number" min={-10} max={10} value={editableStats[name] ?? value} onChange={(event) => setEditableStats((stats) => ({ ...stats, [name]: Number(event.target.value) }))} /></label>)}<button className="secondary-button full-button" disabled={busy}>Save stats</button></form></details>
           <div className="rpg-tracker-list"><strong>Trackers</strong>{Object.entries(rpgState.sheet.trackers).map(([name, tracker]) => <div key={name}><span>{name}</span><b>{tracker.value} / {tracker.max}</b><meter min={0} max={Math.max(1, tracker.max)} value={tracker.value} /></div>)}</div>
-          <form className="rpg-check-form" onSubmit={(event) => void rollD20(event)}>
-            <div className="story-hub-title"><span>🎲</span><div><strong>Roll a check</strong><small>d20 + stat modifier against a visible target.</small></div></div>
+          {rpgState.mechanics.skills.length > 0 && <details className="rpg-edit-stats"><summary>Skills and proficiency · {rpgState.mechanics.skills.length}</summary>
+            <form onSubmit={(event) => void saveRpgSkills(event)}>{rpgState.mechanics.skills.map((skill) => <label className="field-label" key={skill.skill_id}>{skill.label} · {skill.attribute || "no governing stat"}<input type="number" min={0} max={skill.max_rank} value={editableSkills[skill.skill_id] ?? skill.starting_rank} onChange={(event) => setEditableSkills((ranks) => ({ ...ranks, [skill.skill_id]: Number(event.target.value) }))} /><small>Rank {editableSkills[skill.skill_id] ?? skill.starting_rank} · +{skill.rank_bonus} per rank</small></label>)}<button className="secondary-button full-button" disabled={busy}>Save skill ranks</button></form>
+          </details>}
+          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "Manual awards" : `${rpgState.sheet.experience.automatic_xp.toLocaleString()} automatic XP · ${rpgState.sheet.experience.per_completed_turn} per completed player turn`}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} manual` : ""}</small>
+            {rpgState.mechanics.experience.allow_manual_awards && <form className="rpg-check-fields" onSubmit={(event) => void awardExperience(event)}><label className="field-label">Manual XP award<input type="number" min={1} max={1_000_000} step={1} value={experienceAward} onChange={(event) => setExperienceAward(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy || rpgState.sheet.experience.total_xp >= rpgState.sheet.experience.maximum_xp}>Award XP</button></form>}
+          </section>
+          {rpgState.sheet.abilities.length > 0 && <section className="rpg-ability-list" aria-labelledby="rpg-abilities-heading">
+            <strong id="rpg-abilities-heading">Exceptional abilities</strong>
+            <p className="field-note">These definitions are pinned to the adventure’s world version. No unstated mana cost, roll, or cooldown is added.</p>
+            {rpgState.sheet.abilities.map((ability) => {
+              const cooldownReady = rpgState.adventure.completed_turns >= ability.ready_after_turn;
+              const costsAvailable = ability.costs.every((cost) => {
+                const tracker = Object.entries(rpgState.sheet!.trackers).find(([name]) => name.toLocaleLowerCase() === cost.resource.toLocaleLowerCase())?.[1];
+                return !!tracker && tracker.value >= cost.amount;
+              });
+              const sections: Array<[string, string[]]> = [
+                ["Known effects", ability.effects], ["Interactions with ordinary magic", ability.magic_interactions],
+                ["Demonstrated capabilities", ability.demonstrated_capabilities], ["Confirmed limitations", ability.confirmed_limitations],
+                ["Unresolved aspects", ability.unresolved_aspects],
+              ];
+              return <article className={`rpg-ability-card ${ability.is_active ? "active" : ""}`} key={ability.ability_id}>
+                <div className="rpg-ability-heading"><div><strong>{ability.name}</strong><small>{ability.category} · {ability.source} · {ability.is_active ? "Active" : "Inactive"}</small></div>
+                  <button type="button" className={ability.is_active ? "secondary-button" : "primary-button"} disabled={busy || generating || (!ability.is_active && (!cooldownReady || !costsAvailable))} onClick={() => void setAbilityActive(ability.ability_id, !ability.is_active)}>{ability.is_active ? "Deactivate" : "Activate"}</button></div>
+                <p>{ability.description}</p>
+                <div className="rpg-ability-facts"><span><b>Activation</b>{ability.activation}</span><span><b>Deactivation</b>{ability.deactivation}</span>
+                  <span><b>Cost</b>{ability.costs.length ? ability.costs.map((cost) => `${cost.amount} ${cost.resource}`).join(", ") : "None"}</span>
+                  <span><b>Cooldown</b>{ability.cooldown_turns === null ? "None" : `${ability.cooldown_turns} completed turns`}{!cooldownReady && ` · ready after turn ${ability.ready_after_turn}`}</span>
+                  {ability.duration && <span><b>Duration</b>{ability.duration}</span>}{ability.range && <span><b>Range</b>{ability.range}</span>}
+                </div>
+                {sections.filter(([, items]) => items.length > 0).map(([label, items]) => <div className="rpg-ability-list-section" key={label}>
+                  <b>{label}</b><ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>)}
+                {!cooldownReady && <small role="status">This ability’s explicitly defined cooldown has not elapsed.</small>}
+                {!costsAvailable && <small role="status">A declared activation resource is unavailable or too low.</small>}
+              </article>;
+            })}
+          </section>}
+          {rpgState.mechanics.mode === "narrative_only" ? <div className="rpg-check-form"><strong>Narrative-only resolution</strong><p>Checks are resolved through the scene. No dice or hidden numerical roll is added.</p></div> : <form className="rpg-check-form" onSubmit={(event) => void rollMechanicsCheck(event)}>
+            <div className="story-hub-title"><span>🎲</span><div><strong>Resolve a check</strong><small>{rpgState.mechanics.mode === "hybrid" ? "Roll with the pinned rules or continue narratively." : `${rpgState.mechanics.dice.count}d${rpgState.mechanics.dice.sides} · ${rpgState.mechanics.dice.resolution.replaceAll("_", " ")}`}</small></div></div>
             <div className="rpg-check-fields">
-              <label className="field-label">Stat<select value={checkStat || Object.keys(rpgState.sheet.stats)[0] || ""} onChange={(event) => setCheckStat(event.target.value)}>{Object.keys(rpgState.sheet.stats).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
-              <label className="field-label">Difficulty<select value={customCheckTarget ? "custom" : String(checkTarget)} onChange={(event) => {
-                const custom = event.target.value === "custom";
-                setCustomCheckTarget(custom);
-                if (!custom) setCheckTarget(Number(event.target.value));
-              }}><option value="8">Easy · 8</option><option value="12">Standard · 12</option><option value="16">Hard · 16</option><option value="20">Very hard · 20</option><option value="custom">Custom target</option></select></label>
-              {customCheckTarget && <label className="field-label">Custom target<input type="number" min={1} max={100} value={checkTarget} onChange={(event) => setCheckTarget(Number(event.target.value))} /></label>}
+              <label className="field-label">Encounter<select value={rpgState.mechanics.encounter_types.some((item) => item.encounter_type === checkEncounter) ? checkEncounter : rpgState.mechanics.encounter_types[0]?.encounter_type || ""} onChange={(event) => setCheckEncounter(event.target.value)}>{rpgState.mechanics.encounter_types.map((item) => <option key={item.encounter_type} value={item.encounter_type}>{item.label}</option>)}</select></label>
+              <label className="field-label">Skill<select value={checkSkill} onChange={(event) => setCheckSkill(event.target.value)}><option value="">No skill</option>{rpgState.mechanics.skills.map((item) => <option key={item.skill_id} value={item.skill_id}>{item.label} · rank {rpgState.sheet!.skills[item.skill_id] ?? item.starting_rank}</option>)}</select></label>
+              <label className="field-label">Attribute<select value={rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute || checkStat || (rpgState.mechanics.dice.include_attribute ? Object.keys(rpgState.sheet.stats)[0] : "")} disabled={!!rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute} onChange={(event) => setCheckStat(event.target.value)}>
+                {(!rpgState.mechanics.dice.include_attribute || (checkSkill && !rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute)) && <option value="">None</option>}{Object.keys(rpgState.sheet.stats).map((name) => <option key={name} value={name}>{activeStatLabel(name)}</option>)}
+              </select></label>
+              <label className="field-label">Difficulty<select value={rpgState.mechanics.difficulties.some((item) => item.difficulty_id === checkDifficulty) ? checkDifficulty : rpgState.mechanics.difficulties[0]?.difficulty_id || ""} onChange={(event) => setCheckDifficulty(event.target.value)}>{rpgState.mechanics.difficulties.map((item) => <option key={item.difficulty_id} value={item.difficulty_id}>{item.label} · {item.target}</option>)}</select></label>
             </div>
-            <button className="secondary-button full-button" disabled={busy || generating || !Object.keys(rpgState.sheet.stats).length}>Roll d20</button>
-          </form>
-          {rpgState.checks[0] && <div className={`rpg-last-check ${rpgState.checks[0].outcome}`}><strong>Last check · {rpgState.checks[0].outcome}</strong><span>{rpgState.checks[0].die_roll} + {rpgState.checks[0].modifier} = {rpgState.checks[0].total} vs {rpgState.checks[0].target}</span></div>}
+            <button className="secondary-button full-button" disabled={busy || generating}>Roll using pinned rules</button>
+          </form>}
+          {rpgState.mechanic_checks[0] && <div className={`rpg-last-check ${rpgState.mechanic_checks[0].outcome}`}><strong>Last world-rule check · {rpgState.mechanic_checks[0].outcome}</strong><span>{rpgState.mechanic_checks[0].dice.join(", ")} · {rpgState.mechanic_checks[0].resolution.replaceAll("_", " ")} · +{rpgState.mechanic_checks[0].modifier} = {rpgState.mechanic_checks[0].total} vs {rpgState.mechanic_checks[0].target}</span></div>}
+          {rpgState.checks[0] && <div className={`rpg-last-check ${rpgState.checks[0].outcome}`}><strong>Legacy d20 result · {rpgState.checks[0].outcome}</strong><span>{rpgState.checks[0].die_roll} + {rpgState.checks[0].modifier} = {rpgState.checks[0].total} vs {rpgState.checks[0].target}</span></div>}
           <details className="rpg-proposal-section">
             <summary>State changes for review · {rpgState.proposals.filter((item) => item.review_status === "proposed").length} pending</summary>
             <form className="rpg-proposal-form" onSubmit={(event) => void proposeRpgChange(event)}>
@@ -2490,7 +3604,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </>}
             </article>)}
           </details>
-        </> : <p className="empty-hint">Start an adventure from a world to get a character sheet, trackers, and d20 checks.</p>}
+        </> : <p className="empty-hint">Start an adventure from a world to get a character sheet, trackers, and checks using its pinned mechanics.</p>}
         {rpgError && <p className="inline-error" role="alert">{rpgError}</p>}
       </section>
       {activeAdventure && studioData && <details className="panel story-detail-panel">

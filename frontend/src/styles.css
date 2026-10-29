@@ -73,4 +73,46 @@
 .scenario-outcome>small{display:block;font-size:8px;line-height:1.4;color:#9ebbaa;margin-top:5px}
 @media(max-width:1100px){.scenario-create-basics,.scenario-brief{grid-template-columns:1fr 1fr}.scenario-create-basics .field-label:nth-child(3){grid-column:1/-1}}
 @media(max-width:950px){.scenario-create-options{grid-template-columns:1fr}.scenario-brief{grid-template-columns:1fr}}
+
+/* Narrow desktop windows collapse the side rail into a compact top navigation. */
+@media(max-width:720px){
+  body{min-width:320px}
+  .app-shell{display:block;min-width:0}
+  .sidebar{position:sticky;inset:auto;top:0;width:100%;height:auto;min-height:0;flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 12px;border-right:0;border-bottom:1px solid var(--line)}
+  .brand{flex:0 0 auto;margin-right:auto;padding:0 4px}
+  .brand>div:last-child{display:block}
+  .brand span{font-size:8px}
+  .workspace-label{display:none}
+  .workspace-select{display:block;flex:0 1 190px;width:auto;min-width:120px;height:36px;margin:0;font-size:11px}
+  .primary-nav{display:flex;flex:1 0 100%;gap:4px;width:100%;min-width:0;margin:0;overflow-x:auto;padding-bottom:2px}
+  .nav-item{flex:1 0 auto;justify-content:flex-start;align-items:center;min-width:78px;padding:8px 9px}
+  .nav-item>span:last-child{display:block;min-width:0}
+  .nav-item>span:last-child small{display:none}
+  .nav-item b{font-size:11px;white-space:nowrap}
+  .nav-icon{flex:none}
+  .sidebar-bottom{display:none}
+  .main-area{grid-column:1;min-width:0}
+  .topbar{height:auto;min-height:52px;flex-wrap:wrap;gap:8px;padding:9px 14px}
+  .breadcrumbs{min-width:0;max-width:100%;overflow:hidden}
+  .top-actions{flex-wrap:wrap;gap:5px 8px;max-width:100%}
+  .page-content{min-width:0;padding:18px 14px 48px}
+  .page-heading{align-items:flex-start;flex-direction:column;gap:12px}
+  .metric-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stacked-panels{grid-template-columns:1fr}
+}
+@media(max-width:480px){
+  .sidebar{padding:8px}
+  .brand{gap:7px;padding:0}
+  .workspace-select{flex-basis:150px;max-width:48vw;min-width:100px;padding:0 7px}
+  .primary-nav{gap:2px}
+  .nav-item{min-width:72px;gap:6px;padding:8px 6px}
+  .nav-item b{font-size:10px}
+  .nav-icon{width:16px;font-size:14px}
+  .topbar{padding:8px 10px}
+  .top-actions{gap:3px 5px}
+  .top-actions .quiet-button{padding:6px;font-size:10px}
+  .page-content{padding-right:10px;padding-left:10px}
+  .metric-row{grid-template-columns:minmax(0,1fr)}
+}
 .temporal-query-form{display:grid;gap:8px;margin-top:18px;padding-top:4px}.temporal-query-form textarea{width:100%;border:1px solid #303a3c;background:#111719;color:var(--text);border-radius:7px;padding:9px 10px;outline:none;font-size:10px;line-height:1.6;resize:vertical}.temporal-query-form textarea:focus{border-color:#5d8b76}.temporal-query-form textarea:disabled{opacity:.7}.temporal-answer{margin-top:13px;padding:12px;border:1px solid #35483e;border-radius:9px;background:#17211d}.temporal-answer.insufficient{border-color:#4a4334;background:#211f1a}.temporal-answer>p{font-size:11px;line-height:1.7;color:#d3dfd9;white-space:pre-wrap}.temporal-citation{display:grid;gap:4px;padding:9px 0;border-top:1px solid #2b3933}.temporal-citation strong{font-size:10px;font-weight:500;color:#a9cfb8}.temporal-citation small{font-size:8px;color:#84938d}
+.adventure-export-controls{display:grid;gap:6px;max-width:760px}.export-selection{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;border:1px solid var(--line);border-radius:8px;padding:12px}.export-selection legend{padding:0 6px;color:#9aa8a4;font-size:9px}.export-selection label{display:flex;align-items:center;gap:7px;color:#c2ceca;font-size:10px}.export-selection input{accent-color:#8dc4a7}.export-selection small{margin-left:3px;color:#778581}.export-preview{display:grid;gap:6px;padding:12px;border:1px solid #35483e;border-radius:9px;background:#17211d;color:#aebdb6;font-size:9px;line-height:1.55;overflow-wrap:anywhere}.export-preview strong{color:#d2e5da;font-size:10px}.export-preview small{color:#d8bf8b}

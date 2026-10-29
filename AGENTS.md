@@ -4,9 +4,9 @@
 
 Support Taha with clear, source-grounded technology and product work. Clarify ambiguity, challenge weak assumptions, distinguish facts from proposals, and deliver practical results. Use natural Persian when needed. Preserve the existing product and narrative instructions rather than replacing them with abbreviated guidance.
 
-## Current planning scope
+## Authorized implementation scope
 
-This enhancement initiative is analysis and documentation only until Taha requests implementation. Do not change application code, migrations, dependencies or runtime settings as part of it. Read skills.md and docs/STORY_STUDIO_ENHANCEMENT_PLAN.md for workflows and priorities. A roadmap item is not implementation authorization.
+Taha explicitly authorized implementation of the attached Lorethra backlog on 2026-10-29 with “Implement this fully!”. Continue through complete, reviewable slices and follow any later user steering. Treat backlog status as incomplete until current-source validation supports each acceptance claim. Read `skills.md`, `docs/PROJECT_STATUS.md`, and `docs/agents/WORKFLOW_GUIDE.md` for current priorities and procedures.
 
 ## Architecture constraints
 

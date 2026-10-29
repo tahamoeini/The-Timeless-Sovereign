@@ -1,7 +1,10 @@
 """Continuity, NPC, map, and local image behavior for world-based stories."""
 
 import base64
+import io
 import unittest
+
+from PIL import Image
 
 from lke.core import CommandGateway, ConflictError, Database, ValidationError
 
@@ -117,6 +120,104 @@ class StoryContinuityTests(unittest.TestCase):
                             "adventure_id": "adventure", "source_turn_id": assistant_id,
                             "changes": [{"operation": "set_location", "location": "Elsewhere"}],
                         }, branch="adventure")
+
+    def test_historical_turn_edit_rebuilds_rpg_state_and_keeps_manual_changes(self):
+        turn = self.append_turn(
+            "historical-battle", self.revision,
+            "Defend the northern pass", "The ruler falls in battle.",
+        )
+        assistant_id = turn["assistant_turn_id"]
+        proposal = self.command("battle-state", turn["revision"], "propose_rpg_state", {
+            "adventure_id": "adventure", "source_turn_id": assistant_id,
+            "changes": [{"operation": "tracker_delta", "tracker_id": "health", "delta": -4}],
+        }, branch="adventure", actor="ai:local")
+        accepted = self.command("accept-battle-state", proposal["revision"], "review_rpg_state_proposal", {
+            "proposal_id": proposal["proposal_id"], "review_status": "accepted",
+        }, branch="adventure")
+        manual = self.command("manual-stat", accepted["revision"], "update_rpg_sheet", {
+            "adventure_id": "adventure", "stats": {"might": 7},
+        }, branch="adventure")
+        preview = self.gateway.preview_story_turn_edit(
+            self.workspace_id, "adventure", "adventure", "conversation", assistant_id,
+        )
+        self.assertEqual(preview["turns_to_replace_or_hide"], 1)
+        self.assertEqual(preview["before"]["trackers"]["health"]["value"], 4)
+        self.assertEqual(preview["after"]["trackers"]["health"]["value"], 8)
+        self.assertEqual(len(preview["invalidated_proposals"]), 1)
+        self.assertEqual(self.gateway.current_revision(self.workspace_id, "adventure"), manual["revision"])
+        edited = self.command("rewrite-battle", manual["revision"], "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": assistant_id,
+            "action": "edit", "content": "The ruler survives and rallies the defenders.",
+        }, branch="adventure")
+
+        state = self.gateway.get_rpg_state(self.workspace_id, "adventure", "adventure")
+        self.assertEqual(state["sheet"]["trackers"]["health"]["value"], 8)
+        self.assertEqual(state["sheet"]["stats"]["might"], 7)
+        reconstruction = edited["state_reconstruction"]
+        self.assertTrue(reconstruction["reconstructed"])
+        self.assertIn("trackers", reconstruction["changed_fields"])
+        self.assertEqual(
+            [item["proposal_id"] for item in reconstruction["invalidated_proposals"]],
+            [proposal["proposal_id"]],
+        )
+
+    def test_historical_turn_edit_reconstructs_npc_profiles_from_valid_changes(self):
+        npc = self.command("create-ferryman", self.revision, "create_story_npc", {
+            "adventure_id": "adventure", "npc_entity_id": "ferryman", "label": "The Ferryman",
+            "aliases": ["Boatman"],
+            "public_profile": {"motivation": "Protect the harbor", "current_goal": "Guard the old ferry"},
+            "private_profile": {}, "review_status": "accepted",
+        }, branch="adventure")
+        turn = self.append_turn(
+            "ferryman-battle", npc["revision"], "Defend the ferry", "The ferryman is killed.",
+        )
+        proposal = self.command("ferryman-death", turn["revision"], "propose_rpg_state", {
+            "adventure_id": "adventure", "source_turn_id": turn["assistant_turn_id"],
+            "changes": [{
+                "operation": "npc_profile", "npc_entity_id": "ferryman",
+                "updates": {"current_goal": "Bury the fallen at the ferry"},
+            }],
+        }, branch="adventure", actor="ai:local")
+        accepted = self.command("accept-ferryman-death", proposal["revision"], "review_rpg_state_proposal", {
+            "proposal_id": proposal["proposal_id"], "review_status": "accepted",
+        }, branch="adventure")
+        self.assertEqual(
+            self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]["public_profile"]["current_goal"],
+            "Bury the fallen at the ferry",
+        )
+
+        edited = self.command("rewrite-ferryman-battle", accepted["revision"], "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": turn["assistant_turn_id"],
+            "action": "edit", "content": "The ferryman escapes the fight with a wound.",
+        }, branch="adventure")
+        current_npc = self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]
+        self.assertEqual(current_npc["public_profile"]["current_goal"], "Guard the old ferry")
+        self.assertIn("npc_profiles", edited["state_reconstruction"]["changed_fields"])
+        self.assertEqual(edited["state_reconstruction"]["changed_npc_profiles"], ["ferryman"])
+
+    def test_historical_reconstruction_is_branch_local_after_a_fork(self):
+        turn = self.append_turn(
+            "forked-battle", self.revision, "Hold the pass", "The guard captain falls.",
+        )
+        proposal = self.command("forked-state", turn["revision"], "propose_rpg_state", {
+            "adventure_id": "adventure", "source_turn_id": turn["assistant_turn_id"],
+            "changes": [{"operation": "tracker_delta", "tracker_id": "health", "delta": -3}],
+        }, branch="adventure", actor="ai:local")
+        accepted = self.command("accept-forked-state", proposal["revision"], "review_rpg_state_proposal", {
+            "proposal_id": proposal["proposal_id"], "review_status": "accepted",
+        }, branch="adventure")
+        self.gateway.create_branch(
+            self.workspace_id, "adventure", "alternate", accepted["revision"], "fork-alternate",
+        )
+        self.command("rewrite-alternate-battle", accepted["revision"], "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": turn["assistant_turn_id"],
+            "action": "edit", "content": "The guard captain survives the battle.",
+        }, branch="alternate")
+
+        parent_state = self.gateway.get_rpg_state(self.workspace_id, "adventure", "adventure")
+        alternate_state = self.gateway.get_rpg_state(self.workspace_id, "alternate", "adventure")
+        self.assertEqual(parent_state["sheet"]["trackers"]["health"]["value"], 5)
+        self.assertEqual(alternate_state["sheet"]["trackers"]["health"]["value"], 8)
 
     def test_memory_review_rejects_a_changed_source_without_losing_proposal(self):
         turn = self.append_turn("memory-source-review", self.revision, "Listen", "A bell rings once.")
@@ -289,6 +390,16 @@ class StoryContinuityTests(unittest.TestCase):
         }, branch="adventure")
         locations = self.gateway.list_story_locations(self.workspace_id, "adventure", "adventure")
         self.assertEqual(locations[0]["name"], "Smuggler's Cove")
+        self.assertEqual(locations[0]["effective_status"], "approved")
+        self.command("rewrite-map-turn", self.gateway.current_revision(self.workspace_id, "adventure"),
+                     "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": conversation["turns"][-1]["turn_id"],
+            "action": "edit", "content": "The coast is empty.",
+        }, branch="adventure")
+        locations = self.gateway.list_story_locations(self.workspace_id, "adventure", "adventure")
+        self.assertEqual(locations[0]["status"], "approved")
+        self.assertEqual(locations[0]["effective_status"], "superseded")
+        self.assertEqual(self.gateway.get_rpg_state(self.workspace_id, "adventure", "adventure")["sheet"]["current_location"], "Old Harbor")
         travel = self.command("travel", self.gateway.current_revision(self.workspace_id, "adventure"), "travel_to_location", {
             "adventure_id": "adventure", "location": "Cliff Road",
         }, branch="adventure")
@@ -300,20 +411,50 @@ class StoryContinuityTests(unittest.TestCase):
             }, branch="adventure")
 
     def test_local_image_assets_validate_bytes_and_are_branch_scoped(self):
-        png = b"\x89PNG\r\n\x1a\n" + b"test-image"
-        result = self.command("image", self.revision, "add_story_asset", {
-            "adventure_id": "adventure", "asset_id": "hero-reference", "target_kind": "character",
-            "target_id": "hero", "display_name": "Mira reference.png", "mime_type": "image/png",
-            "data_base64": base64.b64encode(png).decode("ascii"), "provenance": {"origin": "user_upload"},
-        }, branch="adventure")
+        revision = self.revision
+        images = {}
+        for image_format, mime_type, extension in (
+            ("PNG", "image/png", "png"),
+            ("JPEG", "image/jpeg", "jpg"),
+            ("WEBP", "image/webp", "webp"),
+        ):
+            stream = io.BytesIO()
+            Image.new("RGB", (3, 2), (24, 64, 128)).save(stream, format=image_format)
+            images[mime_type] = stream.getvalue()
+            result = self.command(f"image-{extension}", revision, "add_story_asset", {
+                "adventure_id": "adventure", "asset_id": f"hero-reference-{extension}", "target_kind": "character",
+                "target_id": "hero", "display_name": f"Mira reference.{extension}", "mime_type": mime_type,
+                "data_base64": base64.b64encode(images[mime_type]).decode("ascii"), "provenance": {"origin": "user_upload"},
+            }, branch="adventure")
+            revision = result["revision"]
         assets = self.gateway.list_story_assets(self.workspace_id, "adventure", "adventure")
-        self.assertEqual(assets[0]["asset_id"], "hero-reference")
-        self.assertEqual(assets[0]["size_bytes"], len(png))
-        self.assertEqual(self.gateway.get_story_asset(self.workspace_id, "adventure", "adventure", "hero-reference")["content"], png)
-        with self.assertRaises(ValidationError):
-            self.command("bad-image", result["revision"], "add_story_asset", {
+        self.assertEqual({asset["mime_type"] for asset in assets}, set(images))
+        for asset in assets:
+            content = self.gateway.get_story_asset(
+                self.workspace_id, "adventure", "adventure", asset["asset_id"],
+            )["content"]
+            self.assertEqual(asset["size_bytes"], len(content))
+            self.assertEqual(content, images[asset["mime_type"]])
+        with self.assertRaisesRegex(ValidationError, "decodable"):
+            self.command("truncated-image", revision, "add_story_asset", {
                 "adventure_id": "adventure", "target_kind": "character", "target_id": "hero",
-                "display_name": "fake.png", "mime_type": "image/png", "data_base64": base64.b64encode(b"not png").decode("ascii"),
+                "display_name": "truncated.png", "mime_type": "image/png",
+                "data_base64": base64.b64encode(images["image/png"][:24]).decode("ascii"),
+            }, branch="adventure")
+        with self.assertRaisesRegex(ValidationError, "declared file type"):
+            self.command("mismatched-image", revision, "add_story_asset", {
+                "adventure_id": "adventure", "target_kind": "character", "target_id": "hero",
+                "display_name": "mislabelled.png", "mime_type": "image/png",
+                "data_base64": base64.b64encode(images["image/jpeg"]).decode("ascii"),
+            }, branch="adventure")
+        animated = io.BytesIO()
+        frames = [Image.new("RGB", (2, 2), color) for color in ((0, 0, 0), (255, 255, 255))]
+        frames[0].save(animated, format="WEBP", save_all=True, append_images=frames[1:])
+        with self.assertRaisesRegex(ValidationError, "Animated"):
+            self.command("animated-image", revision, "add_story_asset", {
+                "adventure_id": "adventure", "target_kind": "character", "target_id": "hero",
+                "display_name": "animated.webp", "mime_type": "image/webp",
+                "data_base64": base64.b64encode(animated.getvalue()).decode("ascii"),
             }, branch="adventure")
 
     def test_simulation_is_off_by_default_and_completed_turns_are_counted(self):
