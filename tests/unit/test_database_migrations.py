@@ -63,10 +63,22 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
+            v14_columns = {
+                table: {row[1] for row in upgraded.connection.execute(f"PRAGMA table_info({table})").fetchall()}
+                for table in ("story_turns", "story_adventures", "rpg_sheets", "story_map_locations")
+            }
+            archive_trigger = upgraded.connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='story_adventure_source_archive_immutable'"
+            ).fetchone()
             upgraded.close()
 
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue({"story_conversations", "story_turns", "journal_events", "rules", "scenarios", "scenario_assumptions", "extraction_batches", "extraction_candidates", "entity_evidence", "external_exchanges", "story_worlds", "story_world_versions", "story_adventures", "rpg_sheets", "rpg_checks", "rpg_state_proposals", "story_turn_edits", "story_memories", "story_threads", "story_npc_profiles", "story_assets", "story_map_locations"} <= tables)
+        self.assertTrue({"metadata_json"} <= v14_columns["story_turns"])
+        self.assertTrue({"source_archive_json"} <= v14_columns["story_adventures"])
+        self.assertTrue({"map_region", "map_x", "map_y", "map_scale"} <= v14_columns["rpg_sheets"])
+        self.assertTrue({"location_type", "description", "icon", "x", "y"} <= v14_columns["story_map_locations"])
+        self.assertIsNotNone(archive_trigger)
 
     def test_v2_database_upgrades_to_journal_and_rule_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

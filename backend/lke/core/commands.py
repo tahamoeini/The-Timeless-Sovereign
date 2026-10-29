@@ -24,7 +24,7 @@ _ALLOWED_COMMANDS = {
     "create_story_world", "revise_story_world", "import_story_world", "create_story_adventure", "update_rpg_sheet",
     "record_d20_check", "propose_rpg_state", "review_rpg_state_proposal",
     "edit_story_turn", "create_story_memory", "revise_story_memory", "review_story_memory",
-    "save_story_thread", "update_story_npc", "travel_to_location", "add_story_asset",
+    "save_story_thread", "update_story_npc", "create_story_npc", "travel_to_location", "add_story_asset",
     "set_npc_simulation",
     "create_rule", "review_rule", "create_scenario", "set_scenario_assumption",
     "review_scenario_assumption", "record_extraction_batch", "review_extraction_candidate",
@@ -210,15 +210,18 @@ def _command_request_hash(request: dict[str, Any]) -> str:
     return hashlib.sha256(_json(stable_request).encode("utf-8")).hexdigest()
 
 
-def _validated_world_content(value: Any) -> dict[str, Any]:
+def _validated_world_content(value: Any, *, max_bytes: int | None = None, label: str = "world content") -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValidationError("world content must be an object")
+        raise ValidationError(f"{label} must be an object")
+    if max_bytes is None:
+        source_archive = value.get("mno_source")
+        max_bytes = 1_500_000 if isinstance(source_archive, dict) and source_archive.get("format") == "mno-world" and source_archive.get("version") == 1 else 100_000
     try:
         serialized = _json(value)
-        if len(serialized.encode("utf-8")) > 1_500_000:
-            raise ValidationError("world content is limited to 1.5 MB")
+        if len(serialized.encode("utf-8")) > max_bytes:
+            raise ValidationError(f"{label} is limited to {max_bytes / 1_000_000:g} MB")
     except (TypeError, ValueError, RecursionError) as error:
-        raise ValidationError("world content must contain JSON-compatible values") from error
+        raise ValidationError(f"{label} must contain JSON-compatible values") from error
 
     credential_fields = {
         "apikey", "openaiapikey", "authorization", "bearertoken", "accesstoken",
@@ -259,7 +262,7 @@ def _validated_import_archive(value: Any) -> dict[str, Any] | None:
             raise ValidationError("Adventure source archive is limited to 10 MB")
     except (TypeError, ValueError, RecursionError) as error:
         raise ValidationError("Source archive must contain valid JSON") from error
-    _validated_world_content(source)
+    _validated_world_content(source, max_bytes=10_000_000, label="Adventure source archive")
     return {"format": "mno-adv", "version": 2, "filename": filename, "data": source}
 
 
@@ -3091,6 +3094,54 @@ class CommandGateway:
                 (workspace_id, branch_id, adventure_id, npc_entity_id, _json([alias.strip() for alias in aliases]), _json(public_profile), _json(private_profile), status, old["created_revision"] if old else revision, revision, now, now),
             )
             return {"adventure_id": adventure_id, "npc_entity_id": npc_entity_id, "review_status": status}, "story.npc_profile_saved", True
+
+        if command_type == "create_story_npc":
+            if actor.startswith("ai:"):
+                raise ValidationError("AI actors cannot create canonical NPC identities")
+            adventure_id = _required_text(payload.get("adventure_id"), "adventure_id", 100)
+            npc_entity_id = _required_text(payload.get("npc_entity_id"), "npc_entity_id", 100)
+            label = _required_text(payload.get("label"), "NPC name", 200)
+            adventure = connection.execute(
+                "SELECT actor_entity_id FROM story_adventures WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                (workspace_id, branch_id, adventure_id),
+            ).fetchone()
+            if not adventure or npc_entity_id == adventure["actor_entity_id"]:
+                raise ValidationError("Choose an active adventure and an NPC identity separate from its protagonist")
+            if connection.execute(
+                "SELECT 1 FROM entities WHERE workspace_id=? AND branch_id=? AND entity_id=?",
+                (workspace_id, branch_id, npc_entity_id),
+            ).fetchone():
+                raise ConflictError("The NPC identity already exists in this branch")
+            aliases = payload.get("aliases", [])
+            public_profile = payload.get("public_profile", {})
+            private_profile = payload.get("private_profile", {})
+            status = payload.get("review_status", "proposed")
+            if (not isinstance(aliases, list) or len(aliases) > 20 or
+                    any(not isinstance(alias, str) or not alias.strip() or len(alias.strip()) > 100 for alias in aliases) or
+                    not isinstance(public_profile, dict) or not isinstance(private_profile, dict) or
+                    status not in {"proposed", "accepted", "rejected"}):
+                raise ValidationError("NPC aliases, profiles, or review status are invalid")
+            if len(_json(public_profile).encode("utf-8")) > 20_000 or len(_json(private_profile).encode("utf-8")) > 20_000:
+                raise ValidationError("NPC profiles are limited to 20 KB each")
+            now = _now()
+            properties_json = _json({"role": "non_player_character"})
+            connection.execute(
+                "INSERT INTO entities(workspace_id,branch_id,entity_id,entity_type,label,properties_json,created_revision,updated_revision) "
+                "VALUES(?,?,?,'character',?,?,?,?)",
+                (workspace_id, branch_id, npc_entity_id, label, properties_json, revision, revision),
+            )
+            connection.execute(
+                "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) VALUES(?,?,?,?,?)",
+                (workspace_id, branch_id, npc_entity_id, label, properties_json),
+            )
+            connection.execute(
+                "INSERT INTO story_npc_profiles(workspace_id,branch_id,adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, branch_id, adventure_id, npc_entity_id, _json([alias.strip() for alias in aliases]),
+                 _json(public_profile), _json(private_profile), status, revision, revision, now, now),
+            )
+            return {"adventure_id": adventure_id, "npc_entity_id": npc_entity_id, "label": label,
+                    "review_status": status}, "story.npc_created", True
 
         if command_type == "travel_to_location":
             if actor.startswith("ai:"):

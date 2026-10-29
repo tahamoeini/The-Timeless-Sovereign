@@ -168,6 +168,7 @@ export type StoryTurn = {
   context_manifest_id: string | null;
   context_manifest: ContextManifest | null;
   context_revision: number | null;
+  metadata: Record<string, unknown> | null;
   created_revision: number;
   created_at: string;
   status: "active" | "deleted" | "superseded";
@@ -320,6 +321,10 @@ export type RpgState = {
     updated_revision: number;
     stats: Record<string, number>;
     trackers: Record<string, { value: number; max: number }>;
+    map_region?: string;
+    map_x?: number | null;
+    map_y?: number | null;
+    map_scale?: string;
   } | null;
   checks: RpgCheck[];
   proposals: RpgStateProposal[];
@@ -351,11 +356,11 @@ export type StoryMemory = {
 export type StoryThread = { thread_id: string; title: string; detail: string; status: "open" | "closed"; created_revision: number; updated_revision: number; created_at: string; updated_at: string };
 export type StoryNpc = {
   npc_entity_id: string; label: string; entity_type: string; aliases: string[];
-  public_profile: Record<string, string>; private_profile: Record<string, string>;
+  public_profile: Record<string, string>; private_profile: Record<string, unknown>;
   review_status: "proposed" | "accepted" | "rejected"; created_revision: number; updated_revision: number;
 };
 export type StoryAsset = { asset_id: string; target_kind: "character" | "scene"; target_id: string; display_name: string; mime_type: string; provenance: Record<string, unknown>; size_bytes: number; created_revision: number; created_at: string };
-export type StoryMapLocation = { location_id: string; name: string; status: "approved" | "rejected"; source_proposal_id: string | null; created_revision: number; reviewed_revision: number | null; created_at: string };
+export type StoryMapLocation = { location_id: string; name: string; status: "approved" | "rejected"; source_proposal_id: string | null; created_revision: number; reviewed_revision: number | null; created_at: string; location_type?: string; description?: string; icon?: string; x?: number | null; y?: number | null };
 export type StoryStudioData = { memories: { memories: StoryMemory[]; history: Record<string, StoryMemory[]>; threads: StoryThread[]; conversation_id: string }; npcs: StoryNpc[]; assets: StoryAsset[]; locations: StoryMapLocation[] };
 
 export type RuntimeConfig = { baseUrl: string; token: string };

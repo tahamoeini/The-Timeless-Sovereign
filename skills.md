@@ -8,7 +8,7 @@ Read AGENTS.md, PRODUCT.md, ARCHITECTURE.md and docs/STORY_STUDIO_ENHANCEMENT_PL
 |---|---|---|---|
 | Feature research | Competitor URL and user objective | Dated evidence, confidence, local gap and limitations | docs/agents/RESEARCH_AND_PLANNING.md |
 | Enhancement specification | Selected enhancement ID | User journey, contract proposal, failure cases and acceptance | docs/agents/RESEARCH_AND_PLANNING.md |
-| Story Studio RPG implementation | User-approved RPG upgrade slice | Gateway-owned changes, isolated world/adventure behavior, focused tests and updated acceptance evidence | docs/agents/RPG_IMPLEMENTATION_GUIDE.md |
+| Story Studio RPG implementation | User-approved RPG upgrade slice or imported story package | Gateway-owned changes, isolated world/adventure behavior, MNO role/privacy mapping when applicable, focused tests and updated acceptance evidence | docs/agents/RPG_IMPLEMENTATION_GUIDE.md; docs/contracts/MNO_IMPORT.md |
 | Continuity evaluation | Scene and actor-scoped canon | Expected allowed/forbidden knowledge and voice rubric | docs/agents/VALIDATION_GUIDE.md |
 | Platform completion audit | Current implementation and approved RPG plan | Must/should/could gaps, evidence and release blockers | docs/STORY_STUDIO_PLATFORM_AUDIT.md |
 | Implementation handoff | Explicitly authorized slice | Scope, affected modules, checks and rollback | docs/agents/HANDOFF_TEMPLATE.md |

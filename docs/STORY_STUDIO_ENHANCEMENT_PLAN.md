@@ -1,6 +1,6 @@
 # Story Studio enhancement plan
 
-Date: 2026-10-23. Status: approved for implementation by the user; implementation in progress.
+Date: 2026-10-29. Status: approved for implementation by the user; implementation in progress.
 
 ## Recommendation
 
@@ -8,13 +8,13 @@ Build an RPG-first authoring and play experience on the existing Lorethra core. 
 
 ## Implementation update
 
-The current source has advanced beyond the initial v10 slice described below. See [the platform audit](STORY_STUDIO_PLATFORM_AUDIT.md) for the current must-have, should-have and could-have inventory, verified evidence and remaining release gates. This plan remains in progress.
+The current source has advanced beyond the initial v10 slice described below. See [the platform audit](STORY_STUDIO_PLATFORM_AUDIT.md) for the current must-have, should-have and could-have inventory, verified evidence and remaining release gates. The supplied MNO static pages, screenshots, changelog and paired world/adventure exports have now been reviewed. The practical translation is a shorter resume-first dashboard, collapsed setup tools, role-aware import, optional world-cast selection, coordinate-backed map details, and explicit separation of author-only thoughts/secrets from model context. This plan remains in progress.
 
-The user approved this plan for implementation on 2026-10-23. The first vertical slice is in place on schema v10: reusable world versions, isolated adventures pinned to a world version, character stats and trackers, deterministic d20 checks, human-reviewed tracker/location proposals, and a simple world/adventure setup and RPG panel. The implementation preserves SQLite as authority and uses the existing command gateway. Remaining plan items are tracked in [the RPG implementation guide](agents/RPG_IMPLEMENTATION_GUIDE.md) and [acceptance matrix](ACCEPTANCE_MATRIX.md); this is partial progress, not completion of the whole plan.
+The user approved implementation on 2026-10-23. The project now uses schema v14 and includes versioned worlds, isolated adventures, d20 checks, reviewed state, continuity panels, local assets/reader, `.lke-world` / `.lke-adventure` packages, and MNO `.mno-world` v1 / `.mno-adv` v2 import. The supplied world was imported through the gateway and the paired adventure was previewed and imported through the authenticated ASGI API in an in-memory database. The UI prioritizes Continue, provides shared library search with recent/A–Z sorting, keeps setup progressively disclosed, previews the selected hero/world before starting, and lets players add selected MNO world-cast NPCs without exposing private fields to model context. SQLite remains authoritative and canonical writes use the existing command gateway. This is partial progress, not completion of the whole plan.
 
 ## Evidence and limits
 
-Public pages, the MNO RPG Engine browser interface and repository source were inspected on the date above. Product descriptions establish advertised capabilities, not tested quality. No accounts, paid generations, uploads, adventure creation, or competitor performance tests were used. Local findings are source inspection, not a runtime acceptance result. The MNO review opened library, adventure setup, provider, identity, and backup screens but did not start a game or change settings.
+Public pages, the MNO RPG Engine browser interface, user-saved HTML/screenshots, the user-provided changelog and paired MNO world/adventure files were inspected on the dates above. Product descriptions establish advertised capabilities, not tested quality. No account or paid generation was used. The saved HTML was inspected as static content and scripts were not run. The supplied world and adventure were converted; the adventure was imported through authenticated ASGI into an in-memory database. Live MNO gameplay and Lorethra browser import were not exercised. This API-path check is not desktop or browser acceptance.
 
 Sources:
 
@@ -104,6 +104,6 @@ Decide after evidence: local embedding model and multilingual quality; profile v
 - Avoid copying external branding, content or proprietary internals. Adopt workflow ideas and independently designed contracts.
 - No social publishing, connectors, paid services or broader cloud transfer are authorized by this plan.
 
-## Completion record for this planning step
+## Current implementation and evidence boundary
 
-Delivered comparative review, source boundaries, prioritized packages, acceptance criteria and agent workflow documents. No application code, schemas, dependencies or runtime configuration changed. Competitor generation quality and current local runtime behavior remain untested. MNO screens were inspected without creating a world/adventure or changing preferences; gameplay and save round-trips remain follow-up validation. Supermemory's documented product semantics are reviewed, but its local binary, license, Windows fit, offline behavior, retrieval quality and cost have not been independently verified.
+The MNO importer, source-role filtering, local archive preservation, world-cast selection, NPC private-data display, map presentation and resume-first dashboard are implemented. The MNO and adventure-package tests pass in the current Python runtime, and TypeScript checking passes. The Vite build and migration file-backed suite still need a clean environment run; the desktop, browser, live-provider and separate-device recovery gates remain open. Competitor generation quality and live MNO gameplay were not independently tested. Supermemory's local binary, license, Windows fit, offline behavior, retrieval quality and cost remain evaluation questions rather than dependencies.

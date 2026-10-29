@@ -1007,4 +1007,7 @@ ALTER TABLE story_map_locations ADD COLUMN description TEXT NOT NULL DEFAULT '';
 ALTER TABLE story_map_locations ADD COLUMN icon TEXT NOT NULL DEFAULT '';
 ALTER TABLE story_map_locations ADD COLUMN x REAL;
 ALTER TABLE story_map_locations ADD COLUMN y REAL;
+CREATE TRIGGER story_adventure_source_archive_immutable BEFORE UPDATE OF source_archive_json ON story_adventures
+WHEN OLD.source_archive_json IS NOT NEW.source_archive_json
+BEGIN SELECT RAISE(ABORT, 'imported adventure source archives are immutable'); END;
 """
