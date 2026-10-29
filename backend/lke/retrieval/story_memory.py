@@ -78,6 +78,54 @@ def memory_content_revision(memory: dict[str, Any], versions: list[dict[str, Any
     return basis
 
 
+def restrict_retry_context(
+    current: dict[str, Any], original: dict[str, Any], *, original_revision: int
+) -> dict[str, Any]:
+    """Keep a retry inside its recorded historical view and today's permissions."""
+    allowed_claims = {item.get("claim_id") for item in original.get("included", [])}
+    current_claims = current.get("included", [])
+    included = [item for item in current_claims if item.get("claim_id") in allowed_claims]
+    excluded = list(current.get("excluded", []))
+    excluded.extend(
+        {"claim_id": item.get("claim_id"), "reason": "not_in_original_turn_context"}
+        for item in current_claims if item.get("claim_id") not in allowed_claims
+    )
+    result = {**current, "included": included, "excluded": excluded}
+    original_story = original.get("story")
+    current_story = current.get("story")
+    if not isinstance(original_story, dict) or not isinstance(current_story, dict):
+        return result
+    story = {**current_story}
+    for key in ("character_sheet", "recent_checks"):
+        if key in original_story:
+            story[key] = original_story[key]
+    for key, identity_key in (("memories", "memory_id"), ("author_notes", "memory_id"),
+                              ("open_threads", "thread_id"), ("public_npcs", "entity_id")):
+        original_items = {item.get(identity_key): item for item in original_story.get(key, []) if isinstance(item, dict)}
+        current_items = [item for item in current_story.get(key, []) if isinstance(item, dict)]
+        story[key] = [item for item in current_items if item.get(identity_key) in original_items
+                      and item.get("created_revision", 0) <= original_revision
+                      and item.get("updated_revision", 0) <= original_revision]
+    original_locations = set(original_story.get("approved_locations", []))
+    story["approved_locations"] = [
+        location for location in current_story.get("approved_locations", []) if location in original_locations
+    ]
+    original_episodes = {
+        item.get("turn_id"): item.get("content")
+        for item in original_story.get("retrieved_episodes", []) if isinstance(item, dict)
+    }
+    story["retrieved_episodes"] = [
+        item for item in current_story.get("retrieved_episodes", [])
+        if original_episodes.get(item.get("turn_id")) == item.get("content")
+    ]
+    story["excluded_episode_count"] = max(
+        current_story.get("excluded_episode_count", 0),
+        original_story.get("excluded_episode_count", 0) + len(original_episodes) - len(story["retrieved_episodes"]),
+    )
+    result["story"] = story
+    return result
+
+
 def select_story_memories(
     memories: list[dict[str, Any]],
     *,

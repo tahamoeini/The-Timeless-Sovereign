@@ -28,7 +28,7 @@ from lke.core.errors import ConflictError, IdempotencyConflictError, LKEError, N
 from lke.extraction import EXTRACTOR_VERSION, OUTPUT_SCHEMA_VERSION, PROMPT_VERSION, extraction_messages, validate_candidates
 from lke.ops.backup import BackupError, MAX_BACKUP_ARCHIVE_BYTES, create_backup, restore_backup_into_database
 from lke.retrieval import ContextCompiler
-from lke.retrieval.story_memory import bounded_story_history, select_story_episodes, select_story_memories, situation_dependency_revision
+from lke.retrieval.story_memory import bounded_story_history, restrict_retry_context, select_story_episodes, select_story_memories, situation_dependency_revision
 
 
 _TAURI_ORIGINS = {"tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"}
@@ -657,9 +657,16 @@ def create_app(
         story_context = _story_adventure_context(
             gateway, workspace_id, body.branch_id, body.conversation_id,
             preceding_user["narrative_order"], preceding_user["content"], turns=prefix["turns"],
+            knowledge_revision=turns[target_index].get("context_revision"),
         )
         if story_context:
             context["story"] = story_context
+        original_manifest = turns[target_index].get("context_manifest")
+        original_revision = original_manifest.get("base_revision") if isinstance(original_manifest, dict) else None
+        if type(original_revision) is int:
+            context = restrict_retry_context(context, original_manifest, original_revision=original_revision)
+            context["story_snapshot_revision"] = original_revision
+            context["retry_of_manifest_id"] = original_manifest.get("manifest_id")
         messages = _story_messages(prefix, context, preceding_user["content"])
         try:
             assistant_content = await run_in_threadpool(story_provider_registry.generate, body.provider, body.model, messages)
@@ -898,6 +905,7 @@ def _story_adventure_context(
     as_of_narrative_order: int = 2**31 - 1,
     query: str = "",
     turns: list[dict[str, Any]] | None = None,
+    knowledge_revision: int | None = None,
 ) -> dict[str, Any] | None:
     adventure = next(
         (item for item in gateway.list_story_adventures(workspace_id, branch_id)
@@ -918,14 +926,18 @@ def _story_adventure_context(
     sheet = state["sheet"]
     memory_state = gateway.get_story_memories(workspace_id, branch_id, adventure["adventure_id"])
     story_turns = conversation["turns"] if turns is None else turns
+    eligible_memories = [
+        memory for memory in memory_state["memories"]
+        if knowledge_revision is None or memory["created_revision"] <= knowledge_revision
+    ]
     selected_memories = select_story_memories(
-        memory_state["memories"],
+        eligible_memories,
         actor_entity_id=conversation["actor_entity_id"],
         as_of_narrative_order=as_of_narrative_order,
         query=query,
         source_turns=story_turns,
         situation_revision=situation_dependency_revision(story_turns, sheet, memory_state["threads"]),
-        memory_history=memory_state["history"],
+        memory_history={memory["memory_id"]: memory_state["history"][memory["memory_id"]] for memory in eligible_memories},
     )
     episode_recall = select_story_episodes(
         story_turns,
@@ -936,11 +948,15 @@ def _story_adventure_context(
     visible_npcs = [
         {"entity_id": npc["npc_entity_id"], "name": npc["label"], "aliases": npc["aliases"], "profile": npc["public_profile"]}
         for npc in npcs if npc["review_status"] == "accepted"
+        and (knowledge_revision is None or (npc["created_revision"] <= knowledge_revision and npc["updated_revision"] <= knowledge_revision))
     ]
     locations = pinned_world["content"].get("locations", [])
     if not isinstance(locations, list):
         locations = []
     approved_map_locations = gateway.list_story_locations(workspace_id, branch_id, adventure["adventure_id"])
+    if knowledge_revision is not None:
+        approved_map_locations = [location for location in approved_map_locations
+                                  if location["reviewed_revision"] is not None and location["reviewed_revision"] <= knowledge_revision]
     approved_locations = [location for location in locations if isinstance(location, str)]
     approved_locations.extend(
         location["name"] for location in approved_map_locations if location["status"] == "approved"
@@ -968,8 +984,10 @@ def _story_adventure_context(
         "excluded_episodes": episode_recall["excluded_episodes"],
         "excluded_episode_count": episode_recall["excluded_episode_count"],
         "open_threads": [
-            {"thread_id": thread["thread_id"], "title": thread["title"], "detail": thread["detail"]}
+            {"thread_id": thread["thread_id"], "title": thread["title"], "detail": thread["detail"],
+             "created_revision": thread["created_revision"], "updated_revision": thread["updated_revision"]}
             for thread in memory_state["threads"] if thread["status"] == "open"
+            and (knowledge_revision is None or (thread["created_revision"] <= knowledge_revision and thread["updated_revision"] <= knowledge_revision))
         ],
         "public_npcs": visible_npcs,
         "approved_locations": list(dict.fromkeys(approved_locations)),

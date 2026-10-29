@@ -61,6 +61,8 @@ World-package continuation: 53 focused in-memory tests passed across package, co
 
 Automatic memory continuation: each adventure append and assistant edit/retry atomically writes a source-turn-linked, actor-scoped event excerpt as proposed; focused tests verify it awaits review and retry creates a new proposal. This improves capture coverage but does not identify salient facts semantically; stale state reconstruction and explicit correction links remain open.
 
+Turn lifecycle continuation: gateway tests verify editing an assistant response without client-supplied downstream IDs automatically supersedes all later turns from stored order, while earlier turns remain active. Focused tests also cover edit, delete, retry metadata, stale-source proposal handling and immutable revision history.
+
 Entity F1, relation precision, evidence grounding, retrieval Recall@K, temporal accuracy, context efficiency, narrative continuity, human review cost, import performance, and recovery performance require a fixed bilingual evaluation corpus and rubric. Numeric targets are intentionally unset until a measured baseline exists.
 
 ## Definition of Done
