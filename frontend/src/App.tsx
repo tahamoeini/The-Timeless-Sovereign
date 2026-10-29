@@ -2124,13 +2124,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   </div>)}
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
                   {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length} recent checks</small>
-                    {turn.context_manifest.story.memories.map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
-                    {turn.context_manifest.story.author_notes.map((memory) => <small key={memory.memory_id}>Narrator-only guidance · importance {memory.importance}: {memory.content}</small>)}
-                    {turn.context_manifest.story.excluded_memories.map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}
-                    {turn.context_manifest.story.retrieved_episodes.map((episode) => <details key={episode.turn_id}><summary>Past turn {episode.narrative_order} · {episode.role} · relevance {episode.selection_score}</summary><p dir="auto">{episode.content}</p></details>)}
+                    {(turn.context_manifest.story.memories ?? []).map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
+                    {(turn.context_manifest.story.author_notes ?? []).map((memory) => <small key={memory.memory_id}>Narrator-only guidance · importance {memory.importance}: {memory.content}</small>)}
+                    {(turn.context_manifest.story.excluded_memories ?? []).map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}
+                    {(turn.context_manifest.story.retrieved_episodes ?? []).map((episode) => <details key={episode.turn_id}><summary>Past turn {episode.narrative_order} · {episode.role} · relevance {episode.selection_score}</summary><p dir="auto">{episode.content}</p></details>)}
                     {turn.context_manifest.story.excluded_episode_count > 0 && <small className="story-context-exclusions">{turn.context_manifest.story.excluded_episode_count} older turns excluded or outside this context window.</small>}
-                    {turn.context_manifest.story.open_threads.map((thread) => <small key={thread.thread_id}>Open thread · {thread.title}: {thread.detail}</small>)}
-                    {turn.context_manifest.story.public_npcs.map((npc) => <small key={npc.entity_id}>Approved NPC · {npc.name} · {JSON.stringify(npc.profile)}</small>)}
+                    {(turn.context_manifest.story.open_threads ?? []).map((thread) => <small key={thread.thread_id}>Open thread · {thread.title}: {thread.detail}</small>)}
+                    {(turn.context_manifest.story.public_npcs ?? []).map((npc) => <small key={npc.entity_id}>Approved NPC · {npc.name} · {JSON.stringify(npc.profile)}</small>)}
                   </div>}
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
                 </details>}

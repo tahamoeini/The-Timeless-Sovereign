@@ -30,6 +30,27 @@ def _rank_score(text: str, query_terms: set[str], importance: int, order: int, l
     return relevance * 4.0 + max(1, min(5, importance)) * 0.65 + recency
 
 
+def bounded_story_history(
+    turns: list[dict[str, Any]], as_of_narrative_order: int, character_budget: int = 12_000
+) -> list[dict[str, str]]:
+    """Select recent active turns that are not later than the requested story time."""
+    eligible = [
+        turn for turn in turns
+        if turn.get("status", "active") == "active"
+        and turn.get("role") in {"user", "assistant"}
+        and turn.get("narrative_order", 0) <= as_of_narrative_order
+    ]
+    selected: list[dict[str, str]] = []
+    used = 0
+    for turn in reversed(eligible):
+        content = turn["content"]
+        if used + len(content) > character_budget:
+            break
+        selected.append({"role": turn["role"], "content": content})
+        used += len(content)
+    return list(reversed(selected))
+
+
 def select_story_memories(
     memories: list[dict[str, Any]],
     *,

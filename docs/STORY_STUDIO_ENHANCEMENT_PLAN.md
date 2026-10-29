@@ -8,6 +8,8 @@ Build an RPG-first authoring and play experience on the existing LKE core. The m
 
 ## Implementation update
 
+The current source has advanced beyond the initial v10 slice described below. See [the platform audit](STORY_STUDIO_PLATFORM_AUDIT.md) for the current must-have, should-have and could-have inventory, verified evidence and remaining release gates. This plan remains in progress.
+
 The user approved this plan for implementation on 2026-10-23. The first vertical slice is in place on schema v10: reusable world versions, isolated adventures pinned to a world version, character stats and trackers, deterministic d20 checks, human-reviewed tracker/location proposals, and a simple world/adventure setup and RPG panel. The implementation preserves SQLite as authority and uses the existing command gateway. Remaining plan items are tracked in [the RPG implementation guide](agents/RPG_IMPLEMENTATION_GUIDE.md) and [acceptance matrix](ACCEPTANCE_MATRIX.md); this is partial progress, not completion of the whole plan.
 
 ## Evidence and limits

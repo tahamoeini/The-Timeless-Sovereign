@@ -2,10 +2,22 @@
 
 import unittest
 
-from lke.retrieval.story_memory import select_story_episodes, select_story_memories
+from lke.retrieval.story_memory import bounded_story_history, select_story_episodes, select_story_memories
 
 
 class StoryMemoryRetrievalTests(unittest.TestCase):
+    def test_recent_history_excludes_future_and_superseded_turns(self):
+        turns = [
+            {"role": "user", "content": "Ask about the harbor.", "narrative_order": 2, "status": "active"},
+            {"role": "assistant", "content": "The harbor is quiet.", "narrative_order": 2, "status": "active"},
+            {"role": "assistant", "content": "A hidden future is revealed.", "narrative_order": 8, "status": "active"},
+            {"role": "assistant", "content": "A discarded account.", "narrative_order": 1, "status": "superseded"},
+        ]
+        self.assertEqual(bounded_story_history(turns, 2), [
+            {"role": "user", "content": "Ask about the harbor."},
+            {"role": "assistant", "content": "The harbor is quiet."},
+        ])
+
     def memory(
         self, memory_id, content, *, scope="shared", known_by=None, importance=3,
         order=1, status="accepted", enabled=True,

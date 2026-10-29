@@ -190,7 +190,7 @@ class StoryRpgTests(unittest.TestCase):
             self.gateway, self.workspace_id, "adventure-a", "conversation-adventure-a"
         )
         self.assertEqual(story_context["public_lore"], "A foggy fishing town faces a cold sea.")
-        self.assertNotIn("author_notes", story_context)
+        self.assertEqual(story_context["author_notes"], [])
         self.assertNotIn("secretly a ghost", str(story_context))
         self.assertNotIn("unreviewed hidden chamber", str(story_context))
 
