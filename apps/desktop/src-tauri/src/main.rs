@@ -50,11 +50,13 @@ fn main() {
                 .sidecar("lke-api")?
                 .env("LKE_API_TOKEN", &token)
                 .env("LKE_API_PORT", &port_text)
-                .env("LKE_DATA_DIR", &data_path);
+                .env("LKE_DATA_DIR", &data_path)
+                .env(
+                    "LKE_DEV_MODE",
+                    if cfg!(debug_assertions) { "1" } else { "0" },
+                );
             let (mut events, child) = command.spawn()?;
-            tauri::async_runtime::spawn(async move {
-                while events.recv().await.is_some() {}
-            });
+            tauri::async_runtime::spawn(async move { while events.recv().await.is_some() {} });
 
             app.manage(ApiState {
                 base_url: format!("http://127.0.0.1:{port}"),

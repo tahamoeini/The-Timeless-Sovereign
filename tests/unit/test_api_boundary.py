@@ -81,6 +81,19 @@ class ApiBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_vite_origin_is_allowed_only_in_dev_mode(self) -> None:
+        origin = "http://127.0.0.1:5173"
+        with patch.dict(os.environ, {"LKE_DEV_MODE": "0"}):
+            self.app = create_app(self.database, auth_token="test-token")
+            rejected = self.request("GET", "/api/v1/health", headers={"Origin": origin})
+        self.assertEqual(rejected.status_code, 403)
+
+        with patch.dict(os.environ, {"LKE_DEV_MODE": "1"}):
+            self.app = create_app(self.database, auth_token="test-token")
+            allowed = self.request("GET", "/api/v1/health", headers={"Origin": origin})
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.headers.get("access-control-allow-origin"), origin)
+
     def test_preflight_allows_only_required_methods_and_headers(self) -> None:
         origin = "http://127.0.0.1:5173"
         with patch.dict(os.environ, {"LKE_DEV_MODE": "1"}):

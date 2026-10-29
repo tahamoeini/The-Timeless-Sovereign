@@ -10,7 +10,7 @@ Run core integrity checks with `python -m unittest discover -s tests\unit -v`.
 
 ## Local API
 
-The API binds only to `127.0.0.1`. It rejects non-loopback peers and unknown browser origins. Data endpoints require a bearer token. The Tauri host generates a per-run token and delivers it to the sidecar and main webview through a Tauri command. Do not publish the token in logs, URLs, the database, or imported documents. The bundled API sidecar was built and smoke-tested for startup, health, and token enforcement. The Tauri host and installer have not been built because the required Windows C++ linker is not available in the current environment.
+The API binds only to `127.0.0.1`. It rejects non-loopback peers and unknown browser origins. Tauri debug builds enable the Vite development origin; release builds explicitly disable it and accept only the desktop origins. Data endpoints require a bearer token. The Tauri host generates a per-run token and delivers it to the sidecar and main webview through a Tauri command. Do not publish the token in logs, URLs, the database, or imported documents. The bundled API sidecar was built and smoke-tested for startup, health, and token enforcement. The Tauri host and installer have not been built because the required Windows C++ linker is not available in the current environment.
 
 The direct API default data path is `%LOCALAPPDATA%\LKE\knowledge.sqlite3`; `LKE_DATA_DIR` can select another private local directory. The Tauri host supplies its per-application local data directory through `LKE_DATA_DIR`. Core callers can supply an explicit database path. SQLite uses WAL and full synchronous commits for file-backed stores.
 
