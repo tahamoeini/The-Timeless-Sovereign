@@ -665,77 +665,19 @@ class CommandGateway:
                     raise ConflictError(f"Expected revision {expected_revision}; current revision is {parent['head_revision']}")
                 if not branch_id or branch_id == parent_branch_id:
                     raise ValidationError("branch_id must be new and distinct from its parent")
-                connection.execute(
-                    "INSERT INTO branches(workspace_id,branch_id,parent_branch_id,parent_revision,base_revision,head_revision,created_at) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (workspace_id, branch_id, parent_branch_id, expected_revision, expected_revision, expected_revision, now),
-                )
-                for table, columns in (
-                    ("entities", "entity_id,entity_type,label,properties_json,created_revision,updated_revision"),
-                    ("relations", "relation_id,source_entity_id,target_entity_id,relation_type,properties_json,review_status,created_revision"),
-                    ("claims", "claim_id,subject_entity_id,predicate,object_value,epistemic_status,review_status,visibility,narrative_order,evidence_json,created_revision"),
-                    ("rules", "rule_id,name,description,rule_mode,severity,subject_entity_id,predicate,object_value,predicate_cardinality,review_status,created_revision"),
-                    ("actor_beliefs", "belief_id,actor_entity_id,claim_id,stance,awareness_order,created_revision"),
-                    ("story_conversations", "conversation_id,actor_entity_id,title,actor_is_user_controlled,created_revision,updated_revision,created_at,updated_at"),
-                    ("story_turns", "conversation_id,turn_id,turn_order,role,narrative_order,content,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
-                    ("story_adventures", "adventure_id,world_id,world_version,conversation_id,name,actor_entity_id,status,created_revision,updated_revision,created_at,updated_at,completed_turns,npc_simulation_enabled"),
-                    ("rpg_sheets", "adventure_id,conversation_id,stats_json,trackers_json,current_location,created_revision,updated_revision"),
-                    ("story_turn_edits", "conversation_id,turn_id,version,content,status,provider,model,context_manifest_id,context_manifest_json,context_revision,created_revision,created_at"),
-                    ("story_memories", "adventure_id,memory_id,version,kind,content,context_enabled,review_status,source_turn_id,narrative_order,supersedes_version,importance,knowledge_scope,known_by_json,created_revision,reviewed_revision,created_at"),
-                    ("story_threads", "adventure_id,thread_id,title,detail,status,created_revision,updated_revision,created_at,updated_at"),
-                    ("story_npc_profiles", "adventure_id,npc_entity_id,aliases_json,public_profile_json,private_profile_json,review_status,created_revision,updated_revision,created_at,updated_at"),
-                    ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at"),
-                    ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at"),
-                    ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at"),
-                    ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at"),
-                    ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
-                    ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
-                    ("scenarios", "scenario_id,title,problem,constraints_json,created_revision,created_at"),
-                    ("scenario_options", "scenario_id,option_id,label,description,position,created_revision"),
-                    ("scenario_claim_evidence", "scenario_id,claim_id,created_revision"),
-                    ("scenario_source_evidence", "scenario_id,source_id,created_revision"),
-                    ("scenario_assumptions", "scenario_id,option_id,assumption_id,version,subject_entity_id,predicate,object_value,assumption_action,predicate_cardinality,review_status,supersedes_version,created_revision,created_at"),
-                    ("extraction_batches", "batch_id,source_id,source_sha256,model,extractor_version,prompt_version,output_schema_version,created_revision,created_at"),
-                    ("extraction_candidates", "candidate_id,batch_id,kind,payload_json,review_status,canonical_record_type,canonical_record_id,created_revision,reviewed_revision"),
-                    ("evidence", "evidence_id,source_id,anchor,quote,context_fingerprint,created_revision"),
-                    ("entity_evidence", "entity_id,evidence_id,created_revision"),
-                ):
-                    ordering = {
-                        "journal_events": " ORDER BY event_id,version",
-                        "scenario_assumptions": " ORDER BY scenario_id,option_id,assumption_id,version",
-                        "external_exchanges": " ORDER BY created_revision,exchange_id",
-                        "extraction_candidates": " ORDER BY candidate_id",
-                    }.get(table, "")
-                    connection.execute(
-                        f"INSERT INTO {table}(workspace_id,branch_id,{columns}) "
-                        f"SELECT workspace_id,?,{columns} FROM {table} WHERE workspace_id=? AND branch_id=?{ordering}",
-                        (branch_id, workspace_id, parent_branch_id),
-                    )
-                connection.execute(
-                    "INSERT INTO entity_search(workspace_id,branch_id,entity_id,label,properties) "
-                    "SELECT workspace_id,?,entity_id,label,properties FROM entity_search "
-                    "WHERE workspace_id=? AND branch_id=?",
-                    (branch_id, workspace_id, parent_branch_id),
-                )
-                connection.execute(
-                    "INSERT INTO revisions(workspace_id,branch_id,revision,command_id,parent_revision,actor,reason,created_at,payload_json) "
-                    "VALUES(?,?,?,?,?,?, ?, ?, ?)",
-                    (workspace_id, branch_id, expected_revision, command_id, expected_revision, actor, reason, now, _json(envelope)),
-                )
-                connection.execute(
-                    "INSERT INTO audit_events(event_id,workspace_id,branch_id,revision,command_id,event_type,actor,reason,payload_json,created_at) "
-                    "VALUES(?,?,?,?,?,'branch.created',?,?,?,?)",
-                    (str(uuid4()), workspace_id, branch_id, expected_revision, command_id, actor, reason, _json(envelope), now),
-                )
-                connection.execute(
-                    "INSERT INTO projection_outbox(outbox_id,workspace_id,branch_id,revision,projection,created_at) "
-                    "VALUES(?,?,?,?, 'all', ?)",
-                    (str(uuid4()), workspace_id, branch_id, expected_revision, now),
-                )
-                result = {"workspace_id": workspace_id, "branch_id": branch_id, "parent_branch_id": parent_branch_id, "revision": expected_revision}
-                connection.execute(
-                    "INSERT INTO commands(workspace_id,idempotency_key,request_hash,branch_id,result_json,created_at) VALUES(?,?,?,?,?,?)",
-                    (workspace_id, key, request_hash, branch_id, _json(result), now),
+                result = _snapshot_branch(
+                    connection,
+                    workspace_id=workspace_id,
+                    parent_branch_id=parent_branch_id,
+                    branch_id=branch_id,
+                    revision=expected_revision,
+                    actor=actor,
+                    reason=reason,
+                    command_id=command_id,
+                    idempotency_key=key,
+                    request_hash=request_hash,
+                    envelope=envelope,
+                    created_at=now,
                 )
                 connection.commit()
                 return result
