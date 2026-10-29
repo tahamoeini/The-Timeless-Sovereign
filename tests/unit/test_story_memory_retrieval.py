@@ -2,7 +2,9 @@
 
 import unittest
 
-from lke.retrieval.story_memory import bounded_story_history, select_story_episodes, select_story_memories
+from lke.retrieval.story_memory import (
+    bounded_story_history, select_story_episodes, select_story_memories, situation_dependency_revision,
+)
 
 
 class StoryMemoryRetrievalTests(unittest.TestCase):
@@ -86,6 +88,56 @@ class StoryMemoryRetrievalTests(unittest.TestCase):
         self.assertEqual(reasons["changed"], "source_turn_changed")
         self.assertEqual(reasons["inactive"], "source_turn_inactive")
         self.assertEqual(reasons["missing"], "source_turn_outside_history")
+
+    def test_situation_is_excluded_after_its_scene_location_or_threads_change(self):
+        situation = {**self.memory("situation", "At the harbor."), "kind": "situation", "source_turn_id": None,
+                     "created_revision": 10}
+        cases = [
+            ([{"created_revision": 11}], {"updated_revision": 2}, []),
+            ([{"created_revision": 3, "edit_history": [{"created_revision": 11}]}], {"updated_revision": 2}, []),
+            ([], {"updated_revision": 11}, []),
+            ([], {"updated_revision": 2}, [{"updated_revision": 11}]),
+        ]
+        for turns, sheet, threads in cases:
+            with self.subTest(turns=turns, sheet=sheet, threads=threads):
+                result = select_story_memories(
+                    [situation], actor_entity_id="hero", as_of_narrative_order=5, query="harbor",
+                    situation_revision=situation_dependency_revision(turns, sheet, threads),
+                )
+                self.assertEqual(result["memories"], [])
+                self.assertEqual(result["excluded_memories"][0]["reason"], "stale_situation")
+
+        result = select_story_memories(
+            [situation], actor_entity_id="hero", as_of_narrative_order=5, query="harbor",
+            situation_revision=10,
+        )
+        self.assertEqual([item["memory_id"] for item in result["memories"]], ["situation"])
+
+    def test_context_toggle_does_not_refresh_stale_situation(self):
+        original = {**self.memory("situation", "At the harbor."), "kind": "situation", "source_turn_id": None,
+                    "created_revision": 5}
+        toggled = {**original, "version": 2, "created_revision": 12}
+        result = select_story_memories(
+            [toggled], actor_entity_id="hero", as_of_narrative_order=5, query="harbor",
+            situation_revision=10, memory_history={"situation": [original, toggled]},
+        )
+        self.assertEqual(result["excluded_memories"][0]["reason"], "stale_situation")
+        rebuilt = {**toggled, "version": 3, "content": "Now at the market.", "created_revision": 13}
+        result = select_story_memories(
+            [rebuilt], actor_entity_id="hero", as_of_narrative_order=5, query="market",
+            situation_revision=10, memory_history={"situation": [original, toggled, rebuilt]},
+        )
+        self.assertEqual([item["memory_id"] for item in result["memories"]], ["situation"])
+
+    def test_context_toggle_does_not_refresh_memory_from_an_edited_turn(self):
+        original = {**self.memory("event", "A key appeared."), "created_revision": 5}
+        toggled = {**original, "version": 2, "created_revision": 12}
+        result = select_story_memories(
+            [toggled], actor_entity_id="hero", as_of_narrative_order=5, query="key",
+            source_turns=[{"turn_id": "turn-event", "status": "active", "edit_history": [{"created_revision": 10}]}],
+            memory_history={"event": [original, toggled]},
+        )
+        self.assertEqual(result["excluded_memories"][0]["reason"], "source_turn_changed")
 
     def test_older_transcript_details_are_retrieved_with_source_turn_ids(self):
         turns = [

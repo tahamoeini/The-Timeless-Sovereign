@@ -2245,6 +2245,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </div>
           <form className="story-mini-form" onSubmit={(event) => void saveSituation(event)}>
             <div className="story-detail-heading"><strong>Current situation</strong><button type="button" className="link-button" onClick={prepareSituation}>Rebuild draft</button></div>
+            <p className="muted">After the story, location, or threads change, update and review this summary before it can be used again.</p>
             <label className="field-label">Editable summary<textarea value={situationDraft} onChange={(event) => setSituationDraft(event.target.value)} rows={4} maxLength={4000} placeholder="A short, player-reviewed summary of the current scene" /></label>
             <small className="field-note">Rebuilt summaries wait for review before entering model context.</small>
             <button className="secondary-button full-button" disabled={busy || !situationDraft.trim()}>Save situation for review</button>

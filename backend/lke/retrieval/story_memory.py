@@ -63,8 +63,8 @@ def situation_dependency_revision(
     return max(revisions)
 
 
-def situation_content_revision(memory: dict[str, Any], versions: list[dict[str, Any]]) -> int:
-    """Context toggles do not make an unchanged situation fresh again."""
+def memory_content_revision(memory: dict[str, Any], versions: list[dict[str, Any]]) -> int:
+    """Context toggles do not make unchanged memory content fresh again."""
     basis = memory["created_revision"]
     fields = ("kind", "content", "source_turn_id", "narrative_order")
     for previous in reversed(versions[:-1]):
@@ -96,6 +96,8 @@ def select_story_memories(
     turns_by_id = {turn["turn_id"]: turn for turn in source_turns} if source_turns is not None else None
     for memory in memories:
         memory_id = memory["memory_id"]
+        versions = (memory_history or {}).get(memory_id, [memory])
+        content_revision = memory_content_revision(memory, versions)
         reason = None
         if memory["review_status"] != "accepted":
             reason = f"review_status:{memory['review_status']}"
@@ -104,8 +106,7 @@ def select_story_memories(
         elif memory["narrative_order"] > as_of_narrative_order:
             reason = "future_memory"
         if reason is None and memory.get("kind") == "situation" and situation_revision is not None:
-            versions = (memory_history or {}).get(memory_id, [memory])
-            if situation_content_revision(memory, versions) < situation_revision:
+            if content_revision < situation_revision:
                 reason = "stale_situation"
         if reason is None and memory.get("source_turn_id") and turns_by_id is not None:
             source = turns_by_id.get(memory["source_turn_id"])
@@ -113,7 +114,7 @@ def select_story_memories(
                 reason = "source_turn_outside_history"
             elif source.get("status", "active") != "active":
                 reason = "source_turn_inactive"
-            elif any(edit.get("created_revision", 0) > memory["created_revision"] for edit in source.get("edit_history", [])):
+            elif any(edit.get("created_revision", 0) > content_revision for edit in source.get("edit_history", [])):
                 reason = "source_turn_changed"
         if reason is None and memory.get("knowledge_scope") == "private":
             reason = "private_memory"
