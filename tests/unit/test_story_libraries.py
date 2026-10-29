@@ -113,7 +113,9 @@ class StoryLibraryTests(unittest.TestCase):
             package = self.gateway.export_world_package(self.workspace_id, "world", export_mode="public_world")
 
         self.assertEqual(revised["version"], 2)
-        self.assertEqual(validate_image.call_count, 2)
+        # The update validates canonical input; export validates the stored archive
+        # and the redacted public package independently.
+        self.assertEqual(validate_image.call_count, 3)
         self.assertTrue(all(call.args == ("image/jpeg", b"validated by image decoder")
                             for call in validate_image.call_args_list))
         self.assertEqual(package["versions"][-1]["content"]["cover_image"], content["cover_image"])
