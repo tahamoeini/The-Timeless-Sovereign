@@ -15,6 +15,18 @@ class DatabaseMigrationTests(unittest.TestCase):
             database.connection.execute(f"DROP TABLE {table}")
 
     def _drop_story_extensions(self, database):
+        database.connection.execute("DROP TRIGGER IF EXISTS story_adventure_source_archive_immutable")
+        for table, column in (
+            ("story_turns", "metadata_json"),
+            ("story_adventures", "source_archive_json"),
+            ("rpg_sheets", "map_region"),
+            ("rpg_sheets", "map_x"),
+            ("rpg_sheets", "map_y"),
+            ("rpg_sheets", "map_scale"),
+        ):
+            columns = {row[1] for row in database.connection.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column in columns:
+                database.connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
         for table in ("story_map_locations", "story_assets", "story_npc_profiles", "story_threads", "story_memories", "story_turn_edits"):
             database.connection.execute(f"DROP TABLE IF EXISTS {table}")
         database.connection.execute("ALTER TABLE story_adventures DROP COLUMN npc_simulation_enabled")
