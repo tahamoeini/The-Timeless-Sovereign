@@ -10,6 +10,7 @@ node-compile-cache/
 
 # Python
 .venv/
+.venv-linux/
 venv/
 __pycache__/
 *.py[cod]

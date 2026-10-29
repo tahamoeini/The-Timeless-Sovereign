@@ -3,13 +3,13 @@ set -eu
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 output_directory="$repo_root/apps/desktop/src-tauri/binaries"
-work_directory="$repo_root/.build/pyinstaller"
 python_executable="${PYTHON:-python3}"
 target_triple="$(rustc --print host-tuple)"
 if [ -z "$target_triple" ]; then
   printf '%s\n' "Could not determine the Rust target triple." >&2
   exit 1
 fi
+work_directory="$repo_root/.build/pyinstaller-$target_triple"
 
 mkdir -p "$output_directory" "$work_directory"
 cd "$repo_root"
