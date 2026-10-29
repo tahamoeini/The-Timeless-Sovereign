@@ -15,12 +15,12 @@ enum ApiChild {
 }
 
 impl ApiChild {
-    fn kill(&mut self) {
+    fn stop(self) {
         match self {
             Self::Bundled(child) => {
                 let _ = child.kill();
             }
-            Self::Development(child) => {
+            Self::Development(mut child) => {
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -164,8 +164,7 @@ fn main() {
             if let Some(state) = handle.try_state::<ApiState>() {
                 if let Ok(mut child) = state.child.lock() {
                     if let Some(child) = child.take() {
-                        let mut child = child;
-                        child.kill();
+                        child.stop();
                     }
                 }
             }

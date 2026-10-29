@@ -121,6 +121,13 @@ class StoryAdventureRequest(BaseModel):
     actor_is_user_controlled: bool = True
 
 
+class StoryAdventurePackageImportRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    adventure_id: str = Field(min_length=1, max_length=100)
+    package: dict[str, Any]
+
+
 class D20CheckRequest(BaseModel):
     branch_id: str = Field(min_length=1, max_length=100)
     expected_revision: int = Field(ge=0)
@@ -400,6 +407,71 @@ def create_app(
             **created,
             "adventure": gateway.list_story_adventures(workspace_id, branch_id)[0],
             "conversation": gateway.get_conversation(workspace_id, branch_id, body.conversation_id),
+        }
+
+    @app.get("/api/v1/workspaces/{workspace_id}/story/adventures/{adventure_id}/package")
+    def export_story_adventure_package(workspace_id: str, adventure_id: str, branch_id: str):
+        return gateway.export_story_adventure_package(workspace_id, branch_id, adventure_id)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/story/adventures/package-preview")
+    def preview_story_adventure_package(workspace_id: str, body: dict[str, Any]):
+        return gateway.preview_story_adventure_package(workspace_id, body)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/story/adventures/package-import")
+    def import_story_adventure_package(workspace_id: str, body: StoryAdventurePackageImportRequest):
+        preview = gateway.preview_story_adventure_package(workspace_id, body.package)
+        world_id = preview["matching_world_id"]
+        main_revision = body.expected_revision
+        world_imported = False
+        if world_id is None:
+            world_id = "world_import_" + hashlib.sha256(body.idempotency_key.encode("utf-8")).hexdigest()[:20]
+            world_result = gateway.execute(
+                workspace_id=workspace_id,
+                branch_id="main",
+                expected_revision=main_revision,
+                idempotency_key=body.idempotency_key + ".world",
+                command_type="import_story_world",
+                payload={"world_id": world_id, "package": body.package["world"]},
+                actor="user",
+                reason="Import the world packaged with a reviewed adventure",
+            )
+            main_revision = world_result["revision"]
+            world_imported = True
+
+        conversation_id = "conversation_" + hashlib.sha256(body.idempotency_key.encode("utf-8")).hexdigest()[:20]
+        gateway.create_branch(
+            workspace_id=workspace_id,
+            parent_branch_id="main",
+            branch_id=body.adventure_id,
+            expected_revision=main_revision,
+            idempotency_key=body.idempotency_key + ".snapshot",
+            reason=_STORY_ADVENTURE_REASON,
+        )
+        imported = gateway.execute(
+            workspace_id=workspace_id,
+            branch_id=body.adventure_id,
+            expected_revision=main_revision,
+            idempotency_key=body.idempotency_key + ".import",
+            command_type="import_story_adventure",
+            payload={
+                "adventure_id": body.adventure_id,
+                "conversation_id": conversation_id,
+                "world_id": world_id,
+                "world_version": body.package["adventure"]["world_version"],
+                "package": body.package,
+            },
+            actor="user",
+            reason="Import a reviewed adventure as an isolated duplicate",
+        )
+        adventure = next(
+            item for item in gateway.list_story_adventures(workspace_id, body.adventure_id)
+            if item["adventure_id"] == body.adventure_id
+        )
+        return {
+            **imported,
+            "branch_id": body.adventure_id,
+            "world_imported": world_imported,
+            "adventure": adventure,
         }
 
     @app.get("/api/v1/workspaces/{workspace_id}/story/adventures/{adventure_id}/rpg")
