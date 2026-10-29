@@ -312,7 +312,7 @@ class _CodexAppServer:
                     return models
                 finally:
                     _stop_codex_process(process)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise StoryProviderError("Codex model discovery could not start.") from error
 
     def generate(self, model: str, messages: list[dict[str, str]]) -> str:
