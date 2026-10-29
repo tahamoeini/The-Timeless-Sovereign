@@ -11,7 +11,9 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | feat(lorethra): expand RPG mechanics, continuity, and libraries | Application code, schema migrations, and focused backend/API tests |
 | docs: consolidate project guides and changelog | Current status, acceptance evidence, documentation map, contracts, UX decisions, and this changelog |
 | test(story): account for package image revalidation (`5df3b45`) | Updated world-cover validation coverage for the canonical update, stored package, and redacted public-export boundaries |
-| feat(story): streamline adventure discovery and setup | Add an always-visible adventure creation action, progressive disclosure for long libraries, clearer wizard steps, and live point-budget guidance |
+| ci(windows): build desktop package on pull requests (`851a1b1`) | Run Windows checks, bundled API smoke, MSI/NSIS builds, and artifact upload on pull requests |
+| feat(story): streamline adventure discovery and setup (`80095ba`) | Add an always-visible adventure creation action, progressive disclosure for long libraries, clearer wizard steps, and live point-budget guidance |
+| docs(status): refresh UX and Windows acceptance evidence | Synchronize project status, release gates, operations, and changelog with the verified UI workflow and Windows package |
 
 ### RPG authoring and deterministic play
 
@@ -43,11 +45,11 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 
 - Added focused tests for character creation, exceptional abilities, configurable mechanics, and story library lifecycle; expanded package, API, provider, continuity, migration, and backup/restore coverage.
 - Corrected the world-cover test to cover all three intended validations: the canonical world update, the stored package before export, and the redacted public package.
-- The current frontend production build passed TypeScript checking and Vite bundling.
-- A local browser check verified that searching a 32-adventure library returns the matching result and count. At a 700 × 900 viewport, compact navigation and library controls remained usable.
-- The current Story Studio browser check verified the header action opens setup, a 32-adventure library initially shows eight non-featured cards with the remainder disclosed, expansion exposes the rest, and a search still returns the correct one-of-32 result. The current TypeScript check passed. A local Vite build attempt was blocked by sandbox `spawn EPERM`; current-source Windows CI is the package/build evidence gate.
-- GitHub Actions Windows run 37 at commit `5df3b45` passed all 190 core and authenticated API tests in 12.610 seconds; the story-export privacy check and frontend type/build steps also passed. The local full-suite attempt was blocked by this sandbox's missing Pillow package and denied temporary-directory writes.
-- Full lifecycle browser acceptance, hostile-file UI checks, live provider behavior, current-source Windows packaging, clean-machine launch, and separate-device recovery remain open. See docs/PROJECT_STATUS.md and docs/ACCEPTANCE_MATRIX.md.
+- TypeScript passed locally, and the current Windows workflow runs the complete frontend build. The local Vite bundle attempt was blocked by sandbox `spawn EPERM`; the Windows Actions build is the production-bundle evidence.
+- The Story Studio browser check verified the header action opens setup, a 32-adventure library initially shows eight additional cards, expansion exposes the rest, and search still returns the correct one-of-32 result. At 700 × 900, compact navigation and library controls remained usable.
+- GitHub Actions Windows run 40 at schema-v17 commit `851a1b1` passed all 190 core/API tests in 12.610 seconds, story-export privacy, and frontend type/build checks. The bundled API passed health, token authentication, isolated command persistence, Unicode, and audit smoke checks. MSI and NSIS installers (26.57 MiB and 25.46 MiB) were uploaded as artifact `lke-windows-installers` (ID `12917692947`, 54,329,028 bytes; expires 2027-01-27).
+- GitHub Actions Windows run 41 at UI commit `80095ba` passed all 190 core/API tests in 12.454 seconds, story-export privacy, frontend type/build, bundled API smoke, MSI/NSIS build, and artifact upload. Its `lke-windows-installers` artifact (ID `12920110955`, 54,331,297 bytes) expires on 2027-01-27. Run 40 at `851a1b1` provides the published per-installer sizes: MSI 26.57 MiB and NSIS 25.46 MiB.
+- Full lifecycle browser acceptance, hostile-file UI checks, live provider behavior, clean-machine installation and launch, and separate-device recovery remain open. See docs/PROJECT_STATUS.md and docs/ACCEPTANCE_MATRIX.md.
 
 ### Documentation
 
