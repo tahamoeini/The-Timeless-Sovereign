@@ -57,6 +57,7 @@ def select_story_memories(
     actor_entity_id: str,
     as_of_narrative_order: int,
     query: str,
+    source_turns: list[dict[str, Any]] | None = None,
     max_items: int = 12,
     character_budget: int = 4000,
     author_budget: int = 1500,
@@ -67,6 +68,7 @@ def select_story_memories(
     actor_candidates: list[dict[str, Any]] = []
     author_candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
+    turns_by_id = {turn["turn_id"]: turn for turn in source_turns} if source_turns is not None else None
     for memory in memories:
         memory_id = memory["memory_id"]
         reason = None
@@ -76,16 +78,24 @@ def select_story_memories(
             reason = "context_disabled"
         elif memory["narrative_order"] > as_of_narrative_order:
             reason = "future_memory"
-        elif memory.get("knowledge_scope") == "private":
+        if reason is None and memory.get("source_turn_id") and turns_by_id is not None:
+            source = turns_by_id.get(memory["source_turn_id"])
+            if source is None:
+                reason = "source_turn_outside_history"
+            elif source.get("status", "active") != "active":
+                reason = "source_turn_inactive"
+            elif any(edit.get("created_revision", 0) > memory["created_revision"] for edit in source.get("edit_history", [])):
+                reason = "source_turn_changed"
+        if reason is None and memory.get("knowledge_scope") == "private":
             reason = "private_memory"
-        elif memory.get("knowledge_scope") == "actors" and actor_entity_id not in memory.get("known_by", []):
+        elif reason is None and memory.get("knowledge_scope") == "actors" and actor_entity_id not in memory.get("known_by", []):
             reason = "actor_not_authorized"
+        if reason:
+            excluded.append({"memory_id": memory_id, "reason": reason})
         elif memory.get("knowledge_scope") == "author":
             author_candidates.append(memory)
         else:
             actor_candidates.append(memory)
-        if reason:
-            excluded.append({"memory_id": memory_id, "reason": reason})
 
     def rank(items: list[dict[str, Any]]) -> list[tuple[float, dict[str, Any]]]:
         scored = [

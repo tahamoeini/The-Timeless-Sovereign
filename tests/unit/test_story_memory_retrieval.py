@@ -70,6 +70,23 @@ class StoryMemoryRetrievalTests(unittest.TestCase):
         excluded = {item["memory_id"]: item["reason"] for item in result["excluded_memories"]}
         self.assertEqual(excluded["too-large"], "context_budget")
 
+    def test_sourced_memories_are_omitted_if_their_turn_changes_or_leaves_history(self):
+        memories = [self.memory(name, "A key appeared.") for name in ("valid", "changed", "inactive", "missing")]
+        turns = [
+            {"turn_id": "turn-valid", "status": "active", "edit_history": []},
+            {"turn_id": "turn-changed", "status": "active", "edit_history": [{"created_revision": 2}]},
+            {"turn_id": "turn-inactive", "status": "superseded", "edit_history": []},
+        ]
+        result = select_story_memories(
+            memories, actor_entity_id="hero", as_of_narrative_order=5,
+            query="key", source_turns=turns,
+        )
+        self.assertEqual([item["memory_id"] for item in result["memories"]], ["valid"])
+        reasons = {item["memory_id"]: item["reason"] for item in result["excluded_memories"]}
+        self.assertEqual(reasons["changed"], "source_turn_changed")
+        self.assertEqual(reasons["inactive"], "source_turn_inactive")
+        self.assertEqual(reasons["missing"], "source_turn_outside_history")
+
     def test_older_transcript_details_are_retrieved_with_source_turn_ids(self):
         turns = [
             {"turn_id": "old-user", "role": "user", "narrative_order": 1, "status": "active",

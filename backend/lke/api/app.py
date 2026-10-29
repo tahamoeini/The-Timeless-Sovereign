@@ -915,6 +915,7 @@ def _story_adventure_context(
         actor_entity_id=conversation["actor_entity_id"],
         as_of_narrative_order=as_of_narrative_order,
         query=query,
+        source_turns=conversation["turns"] if turns is None else turns,
     )
     episode_recall = select_story_episodes(
         conversation["turns"] if turns is None else turns,
