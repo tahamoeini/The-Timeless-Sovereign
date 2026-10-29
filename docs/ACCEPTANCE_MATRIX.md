@@ -51,6 +51,10 @@ The current RPG slice passes 87 unit tests with `test_api_boundary.py` excluded,
 
 ## Quality targets
 
+2026-10-29 audit: focused in-memory continuity, memory selection, provider parsing, gateway and branch-promotion checks passed within a 57-test run. Twelve migration/backup tests errored because Windows denied access to Python-created temporary directories, both under the workspace and the default temporary directory; those tests are not verified in this run. TypeScript checking and Python compilation passed. The Vite production build failed because the installed Rolldown native binding was unavailable. Authenticated API, real browser, live provider, Windows installer and separate-device recovery remain unverified for this change. Recent-turn filtering, retry transcript scoping and stale sourced-memory exclusion have targeted deterministic tests; historical RPG state and source-less summaries still need validation.
+
+After the continuity changes, a separate focused run of 46 in-memory continuity, memory-retrieval, provider, gateway and branch-promotion tests passed. This does not replace the failing migration/backup run or the pending API and browser checks.
+
 Entity F1, relation precision, evidence grounding, retrieval Recall@K, temporal accuracy, context efficiency, narrative continuity, human review cost, import performance, and recovery performance require a fixed bilingual evaluation corpus and rubric. Numeric targets are intentionally unset until a measured baseline exists.
 
 ## Definition of Done

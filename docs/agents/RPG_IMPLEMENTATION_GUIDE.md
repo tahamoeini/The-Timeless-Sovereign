@@ -23,9 +23,9 @@ Keep the ordinary path short: create or choose a world, build or choose a protag
 
 ## Implemented baseline
 
-Schema v10 contains `story_worlds`, immutable `story_world_versions`, branch-scoped `story_adventures`, `rpg_sheets`, immutable `rpg_checks`, and reviewable `rpg_state_proposals`. The gateway supports world creation/revision, adventure creation, sheet edits, d20 checks, tracker/location proposals and review. The authenticated API exposes world/adventure listing and setup, RPG state, and a random d20 check route. The Story screen includes simple world templates, protagonist setup, pinned-version adventure setup, resume cards, stat editing, checks, proposals, and a context summary.
+Schema v13 includes world versions, isolated adventures, character sheets, checks and reviewable state proposals, turn edit history, scoped story memories and threads, NPC profiles, local image assets and approved map locations. The Story screen exposes these foundations, a reader/print view and selectable text-provider adapters. Review source and the acceptance matrix before treating any workflow as release-ready.
 
-The implemented context adds the pinned world's description and public lore, the approved sheet, and recent checks. Do not assume NPC profiles, manual memory controls, event-memory synthesis, Situation summaries, maps, package import/export, turn editing/cancellation, illustrations, reading view, or print export exist; they remain planned work.
+The context includes pinned public world data, current approved RPG state, actor-filtered memories, narrator guidance and bounded older-turn recall. Sourced memories are omitted when their source turn changed or is outside the selected transcript history. Historical RPG state reconstruction, automatic memory extraction, source-linked summary invalidation, portable world/adventure packages, full publishing workflows and live acceptance remain incomplete. See the platform audit for the complete priority list and verification gaps.
 
 ## Work sequence for remaining scope
 
