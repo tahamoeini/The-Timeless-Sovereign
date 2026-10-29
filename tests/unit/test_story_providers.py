@@ -2,8 +2,11 @@
 
 import io
 import json
+import queue
 import subprocess
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from lke.ai.providers import (
@@ -14,6 +17,7 @@ from lke.ai.providers import (
     _anthropic_messages,
     _local_hf_base_url,
     _openai_responses,
+    _request_json,
 )
 
 
@@ -21,14 +25,51 @@ class FakeOllama:
     def list_models(self):
         return ["qwen-local"]
 
-    def generate(self, model, messages):
+    def generate(self, model, messages, **kwargs):
         return f"{model}: story"
 
-    def generate_json(self, model, messages):
+    def generate_json(self, model, messages, **kwargs):
         return {"ok": True}
 
 
 class StoryProviderTests(unittest.TestCase):
+    def test_provider_timeout_is_distinct_from_network_failure(self):
+        with patch("lke.ai.providers.urlopen", side_effect=TimeoutError):
+            with self.assertRaisesRegex(StoryProviderError, "timed out"):
+                _request_json("https://provider.example")
+
+    def test_cancelled_remote_request_closes_the_active_response(self):
+        class BlockingResponse:
+            def __init__(self):
+                self.read_started = threading.Event()
+                self.closed = threading.Event()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+            def read(self, _size):
+                self.read_started.set()
+                if not self.closed.wait(2):
+                    return b"{}"
+                raise OSError("response closed")
+
+            def close(self):
+                self.closed.set()
+
+        response = BlockingResponse()
+        cancel_event = threading.Event()
+        with patch("lke.ai.providers.urlopen", return_value=response):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                request = executor.submit(_request_json, "https://provider.example", cancel_event=cancel_event)
+                self.assertTrue(response.read_started.wait(1))
+                cancel_event.set()
+                with self.assertRaisesRegex(StoryProviderError, "stopped"):
+                    request.result(timeout=2)
+        self.assertTrue(response.closed.is_set())
+
     def test_provider_inventory_includes_codex_and_supported_cloud_and_local_options(self):
         with patch("lke.ai.providers._model_names", return_value=["hf-local"]), patch.object(_CodexAppServer, "list_models", return_value=["codex-model"]) as codex_discovery:
             registry = StoryProviderRegistry(FakeOllama(), {
@@ -80,6 +121,64 @@ class StoryProviderTests(unittest.TestCase):
             _stop_codex_process(process)
         self.assertEqual(stop_tree.call_args.args[0], ["taskkill", "/PID", "1234", "/T", "/F"])
         process.kill.assert_called_once()
+
+    def test_codex_cancellation_stops_the_ephemeral_app_server(self):
+        responses = queue.Queue()
+        turn_started = threading.Event()
+
+        class CapturingInput:
+            def __init__(self):
+                self.closed = False
+
+            def write(self, line):
+                message = json.loads(line)
+                if message.get("method") == "initialize":
+                    responses.put(json.dumps({"id": 1, "result": {}}) + "\n")
+                elif message.get("method") == "thread/start":
+                    responses.put(json.dumps({"id": 2, "result": {"thread": {"id": "thread-1"}}}) + "\n")
+                elif message.get("method") == "turn/start":
+                    turn_started.set()
+
+            def flush(self):
+                pass
+
+            def close(self):
+                self.closed = True
+                responses.put(None)
+
+        class BlockingOutput:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                line = responses.get(timeout=4)
+                if line is None:
+                    raise StopIteration
+                return line
+
+        writer = CapturingInput()
+        process = Mock(stdin=writer, stdout=BlockingOutput(), pid=1234)
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        cancel_event = threading.Event()
+        codex = _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"})
+
+        with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch(
+            "lke.ai.providers.subprocess.Popen", return_value=process,
+        ):
+            directory.return_value.__enter__.return_value = "scratch"
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                generation = executor.submit(
+                    codex.generate, "auto", [{"role": "user", "content": "Continue."}],
+                    cancel_event=cancel_event,
+                )
+                self.assertTrue(turn_started.wait(1))
+                cancel_event.set()
+                with self.assertRaisesRegex(StoryProviderError, "stopped"):
+                    generation.result(timeout=2)
+
+        self.assertTrue(writer.closed)
+        process.wait.assert_called_once_with(timeout=2)
 
     def test_codex_catalog_failure_keeps_automatic_default_available(self):
         registry = StoryProviderRegistry(FakeOllama(), {"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"})

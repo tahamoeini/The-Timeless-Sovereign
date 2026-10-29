@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ipaddress
+import http.client
 import json
 import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -28,6 +30,19 @@ _PROVIDER_IDS = {"ollama", "openai", "claude", "codex", "huggingface", "huggingf
 _MODEL_NAME = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 _DEFAULT_LOCAL_HF_URL = "http://127.0.0.1:8000/v1"
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _close_http_response(response: Any) -> None:
+    response_socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    if response_socket is not None:
+        try:
+            response_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    try:
+        response.close()
+    except OSError:
+        pass
 
 
 def _validated_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -53,8 +68,15 @@ def _validated_model(model: str) -> str:
     return value
 
 
-def _read_json_response(response: Any) -> dict[str, Any]:
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event and cancel_event.is_set():
+        raise StoryProviderError("The story request was stopped.")
+
+
+def _read_json_response(response: Any, cancel_event: threading.Event | None = None) -> dict[str, Any]:
+    _raise_if_cancelled(cancel_event)
     raw = response.read(_MAX_RESPONSE_BYTES + 1)
+    _raise_if_cancelled(cancel_event)
     if len(raw) > _MAX_RESPONSE_BYTES:
         raise StoryProviderError("The provider response exceeded the size limit.")
     try:
@@ -74,24 +96,67 @@ def _request_json(
     headers: dict[str, str] | None = None,
     timeout_seconds: float = 300,
     follow_redirects: bool = True,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
+    _raise_if_cancelled(cancel_event)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     request_headers = {"Accept": "application/json", **(headers or {})}
     if body is not None:
         request_headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=request_headers, method=method)
+    response_ready = threading.Event()
+    request_complete = threading.Event()
+    response_lock = threading.Lock()
+    response_contexts = []
+
+    def close_response_on_cancel() -> None:
+        while not request_complete.wait(0.05):
+            if cancel_event and cancel_event.is_set():
+                response_ready.wait(timeout_seconds)
+                with response_lock:
+                    response = response_contexts[0] if response_contexts else None
+                if response is not None:
+                    _close_http_response(response)
+                return
+
+    watcher = threading.Thread(target=close_response_on_cancel, daemon=True) if cancel_event else None
+    if watcher:
+        watcher.start()
     try:
         if follow_redirects:
             response_context = urlopen(request, timeout=timeout_seconds)
         else:
             response_context = build_opener(_NoRedirectHandler).open(request, timeout=timeout_seconds)
+        with response_lock:
+            response_contexts.append(response_context)
+            response_ready.set()
+        _raise_if_cancelled(cancel_event)
         with response_context as response:
-            return _read_json_response(response)
+            return _read_json_response(response, cancel_event)
     except HTTPError as error:
         # Provider bodies can echo prompts or request details. Keep them out of errors and logs.
+        if cancel_event and cancel_event.is_set():
+            raise StoryProviderError("The story request was stopped.") from error
         raise StoryProviderError(f"The selected provider returned HTTP {error.code}.") from error
-    except (URLError, TimeoutError, OSError) as error:
+    except TimeoutError as error:
+        if cancel_event and cancel_event.is_set():
+            raise StoryProviderError("The story request was stopped.") from error
+        raise StoryProviderError("The selected provider timed out.") from error
+    except URLError as error:
+        if cancel_event and cancel_event.is_set():
+            raise StoryProviderError("The story request was stopped.") from error
+        if isinstance(error.reason, TimeoutError):
+            raise StoryProviderError("The selected provider timed out.") from error
         raise StoryProviderError("The selected provider is not responding.") from error
+    except (OSError, http.client.HTTPException) as error:
+        if cancel_event and cancel_event.is_set():
+            raise StoryProviderError("The story request was stopped.") from error
+        raise StoryProviderError("The selected provider is not responding.") from error
+    finally:
+        response_ready.set()
+        request_complete.set()
+        if watcher:
+            watcher.join(timeout=0.1)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -112,6 +177,7 @@ def _text_from_openai_compatible(value: dict[str, Any]) -> str:
 def _chat_completion(
     *, base_url: str, model: str, messages: list[dict[str, str]], api_key: str | None,
     timeout_seconds: float = 300, follow_redirects: bool = True,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     checked = _validated_messages(messages)
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -121,11 +187,15 @@ def _chat_completion(
         headers=headers,
         timeout_seconds=timeout_seconds,
         follow_redirects=follow_redirects,
+        cancel_event=cancel_event,
     )
     return _text_from_openai_compatible(value)
 
 
-def _openai_responses(model: str, messages: list[dict[str, str]], api_key: str) -> str:
+def _openai_responses(
+    model: str, messages: list[dict[str, str]], api_key: str,
+    cancel_event: threading.Event | None = None,
+) -> str:
     checked = _validated_messages(messages)
     instructions = "\n\n".join(message["content"] for message in checked if message["role"] == "system")
     inputs = [
@@ -137,6 +207,7 @@ def _openai_responses(model: str, messages: list[dict[str, str]], api_key: str) 
         payload={"model": _validated_model(model), "instructions": instructions, "input": inputs,
                  "max_output_tokens": 1200},
         headers={"Authorization": f"Bearer {api_key}"},
+        cancel_event=cancel_event,
     )
     output: list[str] = []
     for item in value.get("output", []):
@@ -150,7 +221,10 @@ def _openai_responses(model: str, messages: list[dict[str, str]], api_key: str) 
     return text
 
 
-def _anthropic_messages(model: str, messages: list[dict[str, str]], api_key: str) -> str:
+def _anthropic_messages(
+    model: str, messages: list[dict[str, str]], api_key: str,
+    cancel_event: threading.Event | None = None,
+) -> str:
     checked = _validated_messages(messages)
     instructions = "\n\n".join(message["content"] for message in checked if message["role"] == "system")
     content = [message for message in checked if message["role"] in {"user", "assistant"}]
@@ -159,6 +233,7 @@ def _anthropic_messages(model: str, messages: list[dict[str, str]], api_key: str
         payload={"model": _validated_model(model), "max_tokens": 1200,
                  "system": instructions, "messages": content},
         headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        cancel_event=cancel_event,
     )
     blocks = value.get("content")
     text = "\n".join(
@@ -252,7 +327,8 @@ class _CodexAppServer:
                     finally:
                         lines.put(None)
 
-                threading.Thread(target=read_lines, daemon=True).start()
+                reader = threading.Thread(target=read_lines, daemon=True)
+                reader.start()
                 deadline = time.monotonic() + min(self.timeout_seconds, 10)
 
                 def send(message: dict[str, Any]) -> None:
@@ -312,10 +388,12 @@ class _CodexAppServer:
                     return models
                 finally:
                     _stop_codex_process(process)
+                    reader.join(timeout=1)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise StoryProviderError("Codex model discovery could not start.") from error
 
-    def generate(self, model: str, messages: list[dict[str, str]]) -> str:
+    def generate(self, model: str, messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None) -> str:
+        _raise_if_cancelled(cancel_event)
         executable = self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")
         if not executable:
             raise StoryProviderError("Codex app-server was not found. Install or configure the Codex CLI first.")
@@ -361,12 +439,15 @@ class _CodexAppServer:
                 import time
 
                 while True:
+                    _raise_if_cancelled(cancel_event)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise StoryProviderError("Codex app-server timed out.")
                     try:
-                        line = messages_in.get(timeout=remaining)
+                        line = messages_in.get(timeout=min(remaining, 0.1) if cancel_event else remaining)
                     except queue.Empty as error:
+                        if cancel_event:
+                            continue
                         raise StoryProviderError("Codex app-server timed out.") from error
                     if line is None:
                         raise StoryProviderError("Codex app-server stopped before completing the turn.")
@@ -408,12 +489,15 @@ class _CodexAppServer:
                 }})
                 chunks: list[str] = []
                 while True:
+                    _raise_if_cancelled(cancel_event)
                     remaining = deadline - __import__("time").monotonic()
                     if remaining <= 0:
                         raise StoryProviderError("Codex app-server timed out.")
                     try:
-                        line = messages_in.get(timeout=remaining)
+                        line = messages_in.get(timeout=min(remaining, 0.1) if cancel_event else remaining)
                     except queue.Empty as error:
+                        if cancel_event:
+                            continue
                         raise StoryProviderError("Codex app-server timed out.") from error
                     if line is None:
                         raise StoryProviderError("Codex app-server stopped before completing the turn.")
@@ -447,6 +531,7 @@ class _CodexAppServer:
                         send({"id": event["id"], "error": {"code": -32000, "message": "Story Studio does not approve tools."}})
             finally:
                 _stop_codex_process(process)
+                reader.join(timeout=1)
 
 
 def receive_after_send(send: Any, receive: Any, deadline: float, method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -542,45 +627,54 @@ class StoryProviderRegistry:
             return models
         raise StoryProviderError("Model discovery is not available for this provider.")
 
-    def generate(self, provider: str, model: str, messages: list[dict[str, str]]) -> str:
+    def generate(
+        self, provider: str, model: str, messages: list[dict[str, str]],
+        *, cancel_event: threading.Event | None = None,
+    ) -> str:
+        _raise_if_cancelled(cancel_event)
         if provider not in _PROVIDER_IDS:
             raise StoryProviderError("Choose a supported story provider.")
         if provider == "ollama":
             try:
-                return self.ollama.generate(_validated_model(model), _validated_messages(messages))
+                return self.ollama.generate(_validated_model(model), _validated_messages(messages),
+                                            cancel_event=cancel_event)
             except OllamaError as error:
                 raise StoryProviderError(str(error)) from error
         if provider == "openai":
             key = self.env.get("OPENAI_API_KEY", "")
             if not key:
                 raise StoryProviderError("Set OPENAI_API_KEY before using the OpenAI API.")
-            return _openai_responses(model, messages, key)
+            return _openai_responses(model, messages, key, cancel_event=cancel_event)
         if provider == "claude":
             key = self.env.get("ANTHROPIC_API_KEY", "")
             if not key:
                 raise StoryProviderError("Set ANTHROPIC_API_KEY before using Claude.")
-            return _anthropic_messages(model, messages, key)
+            return _anthropic_messages(model, messages, key, cancel_event=cancel_event)
         if provider == "huggingface":
             key = self.env.get("HF_TOKEN", "")
             if not key:
                 raise StoryProviderError("Set HF_TOKEN before using Hugging Face Inference Providers.")
             return _chat_completion(base_url="https://router.huggingface.co/v1", model=model,
-                                    messages=messages, api_key=key)
+                                    messages=messages, api_key=key, cancel_event=cancel_event)
         if provider == "huggingface_local":
             base_url = _local_hf_base_url(self.env)
             return _chat_completion(base_url=base_url, model=model, messages=messages,
-                                    api_key=self.env.get("LKE_HF_LOCAL_API_KEY"), follow_redirects=False)
-        return self.codex.generate(model, messages)
+                                    api_key=self.env.get("LKE_HF_LOCAL_API_KEY"), follow_redirects=False,
+                                    cancel_event=cancel_event)
+        return self.codex.generate(model, messages, cancel_event=cancel_event)
 
-    def generate_json(self, provider: str, model: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+    def generate_json(
+        self, provider: str, model: str, messages: list[dict[str, str]],
+        *, cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         checked = _validated_messages(messages)
         if provider == "ollama":
             try:
-                return self.ollama.generate_json(_validated_model(model), checked)
+                return self.ollama.generate_json(_validated_model(model), checked, cancel_event=cancel_event)
             except OllamaError as error:
                 raise StoryProviderError(str(error)) from error
         json_messages = [*checked, {"role": "system", "content": "Return exactly one valid JSON object and no markdown."}]
-        content = self.generate(provider, model, json_messages)
+        content = self.generate(provider, model, json_messages, cancel_event=cancel_event)
         start = content.find("{")
         if start < 0:
             raise StoryProviderError("The provider did not return a JSON object.")

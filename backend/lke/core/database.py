@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 17
 
 
 class Database:
@@ -88,6 +88,15 @@ class Database:
                 current = 13
             if current < 14:
                 self._apply_migration(14, _SCHEMA_V14)
+                current = 14
+            if current < 15:
+                self._apply_migration(15, _SCHEMA_V15)
+                current = 15
+            if current < 16:
+                self._apply_migration(16, _SCHEMA_V16)
+                current = 16
+            if current < 17:
+                self._apply_migration(17, _SCHEMA_V17)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -1010,4 +1019,57 @@ ALTER TABLE story_map_locations ADD COLUMN y REAL;
 CREATE TRIGGER story_adventure_source_archive_immutable BEFORE UPDATE OF source_archive_json ON story_adventures
 WHEN OLD.source_archive_json IS NOT NEW.source_archive_json
 BEGIN SELECT RAISE(ABORT, 'imported adventure source archives are immutable'); END;
+"""
+
+
+_SCHEMA_V15 = """
+ALTER TABLE rpg_sheets ADD COLUMN abilities_json TEXT NOT NULL DEFAULT '[]'
+    CHECK(json_valid(abilities_json));
+"""
+
+_SCHEMA_V16 = """
+ALTER TABLE rpg_sheets ADD COLUMN skills_json TEXT NOT NULL DEFAULT '{}'
+    CHECK(json_valid(skills_json));
+ALTER TABLE rpg_sheets ADD COLUMN experience_json TEXT NOT NULL DEFAULT '{"manual_awards":0}'
+    CHECK(json_valid(experience_json));
+CREATE TABLE rpg_mechanic_checks (
+    workspace_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    adventure_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    actor_entity_id TEXT NOT NULL,
+    encounter_type TEXT NOT NULL CHECK(length(trim(encounter_type)) BETWEEN 1 AND 80),
+    stat_name TEXT NOT NULL DEFAULT '',
+    skill_id TEXT,
+    dice_json TEXT NOT NULL CHECK(json_valid(dice_json)),
+    resolution TEXT NOT NULL CHECK(resolution IN ('sum','highest','success_count')),
+    modifier INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    target INTEGER NOT NULL CHECK(target BETWEEN 1 AND 2000),
+    difficulty_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN ('success','failure')),
+    rules_json TEXT NOT NULL CHECK(json_valid(rules_json)),
+    created_revision INTEGER NOT NULL CHECK(created_revision >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,branch_id,check_id),
+    FOREIGN KEY(workspace_id,branch_id,adventure_id)
+        REFERENCES story_adventures(workspace_id,branch_id,adventure_id) ON DELETE CASCADE
+);
+CREATE INDEX rpg_mechanic_checks_adventure_idx
+    ON rpg_mechanic_checks(workspace_id,branch_id,adventure_id,created_revision DESC);
+CREATE TRIGGER rpg_mechanic_checks_no_update BEFORE UPDATE ON rpg_mechanic_checks
+BEGIN SELECT RAISE(ABORT, 'RPG mechanic check results are immutable'); END;
+CREATE TRIGGER rpg_mechanic_checks_no_delete BEFORE DELETE ON rpg_mechanic_checks
+BEGIN SELECT RAISE(ABORT, 'RPG mechanic check results are immutable'); END;
+"""
+
+
+_SCHEMA_V17 = """
+ALTER TABLE story_worlds ADD COLUMN archived_at TEXT;
+ALTER TABLE story_adventures ADD COLUMN archived_at TEXT;
+CREATE INDEX story_worlds_library_idx
+    ON story_worlds(workspace_id,archived_at,updated_at DESC,name COLLATE NOCASE);
+CREATE INDEX story_adventures_library_archive_idx
+    ON story_adventures(workspace_id,archived_at,updated_at DESC,adventure_id);
 """

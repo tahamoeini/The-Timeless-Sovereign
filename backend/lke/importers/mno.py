@@ -210,7 +210,7 @@ def convert_mno_adventure(source: Any, world_package: dict[str, Any], filename: 
     if type(source.get("version")) is not int or source["version"] != 2:
         raise ValidationError("Only MNO .mno-adv version 2 files are supported")
     source_world_id = _clean_text(source.get("worldId"), "MNO worldId", 100, required=True)
-    if not isinstance(world_package, dict) or world_package.get("protocol") != "lke.world.v1":
+    if not isinstance(world_package, dict) or world_package.get("protocol") not in {"lke.world.v1", "lke.world.v2"}:
         raise ValidationError("Import the matching MNO world before this adventure")
     world_id = world_package.get("provenance", {}).get("world_id")
     source_world = next((version for version in reversed(world_package.get("versions", []))
