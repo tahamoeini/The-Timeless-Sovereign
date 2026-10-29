@@ -21,7 +21,7 @@ _ALLOWED_COMMANDS = {
     "create_entity", "update_entity", "add_relation", "update_relation", "review_relation", "add_claim",
     "update_claim", "review_claim", "add_belief", "import_source", "add_evidence",
     "create_conversation", "append_story_turn", "create_journal_event", "revise_journal_event",
-    "create_story_world", "revise_story_world", "create_story_adventure", "update_rpg_sheet",
+    "create_story_world", "revise_story_world", "import_story_world", "create_story_adventure", "update_rpg_sheet",
     "record_d20_check", "propose_rpg_state", "review_rpg_state_proposal",
     "edit_story_turn", "create_story_memory", "revise_story_memory", "review_story_memory",
     "save_story_thread", "update_story_npc", "travel_to_location", "add_story_asset",
@@ -232,6 +232,40 @@ def _validated_world_content(value: Any) -> dict[str, Any]:
 
     reject_secrets(value)
     return value
+
+
+def validate_world_package(package: Any) -> dict[str, Any]:
+    """Validate a bounded, portable world history without mutating the database."""
+    if not isinstance(package, dict) or package.get("protocol") != "lke.world.v1":
+        raise ValidationError("Unsupported world package format or version")
+    try:
+        if len(_json(package).encode("utf-8")) > 2_000_000:
+            raise ValidationError("World package is limited to 2 MB")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("World package must contain valid JSON") from error
+    provenance = package.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValidationError("World package provenance is required")
+    source_workspace = _required_text(provenance.get("workspace_id"), "source workspace_id", 100)
+    source_world = _required_text(provenance.get("world_id"), "source world_id", 100)
+    versions = package.get("versions")
+    if not isinstance(versions, list) or not 1 <= len(versions) <= 100:
+        raise ValidationError("World package must contain between 1 and 100 versions")
+    clean = []
+    for number, item in enumerate(versions, 1):
+        if not isinstance(item, dict) or type(item.get("version")) is not int or item["version"] != number:
+            raise ValidationError("World package versions must be contiguous and start at 1")
+        description = item.get("description", "")
+        if not isinstance(description, str) or len(description.strip()) > 4000:
+            raise ValidationError("World description must be text of at most 4000 characters")
+        clean.append({
+            "version": number,
+            "name": _required_text(item.get("name"), "world name", 200),
+            "description": description.strip(),
+            "template_key": _required_text(item.get("template_key"), "template_key", 60),
+            "content": _validated_world_content(item.get("content")),
+        })
+    return {"protocol": "lke.world.v1", "provenance": {"workspace_id": source_workspace, "world_id": source_world}, "versions": clean}
 
 
 def _validated_stats(value: Any) -> dict[str, int]:
@@ -1683,6 +1717,27 @@ class CommandGateway:
                 "source_id": fields["source_id"],
             }, event_type, True
 
+        if command_type == "import_story_world":
+            if branch_id != "main" or actor.startswith("ai:"):
+                raise ValidationError("Only a user can import a world into the main branch")
+            package = validate_world_package(payload.get("package"))
+            world_id = _required_text(payload.get("world_id"), "world_id", 100)
+            if connection.execute("SELECT 1 FROM story_worlds WHERE workspace_id=? AND world_id=?", (workspace_id, world_id)).fetchone():
+                raise ConflictError("The target world ID already exists; import as a duplicate with a new ID")
+            versions = package["versions"]
+            now = _now()
+            connection.execute(
+                "INSERT INTO story_worlds(workspace_id,world_id,name,latest_version,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (workspace_id, world_id, versions[-1]["name"], len(versions), now, now),
+            )
+            connection.executemany(
+                "INSERT INTO story_world_versions(workspace_id,world_id,version,name,description,template_key,content_json,created_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                [(workspace_id, world_id, item["version"], item["name"], item["description"], item["template_key"],
+                  _json(item["content"]), revision, now) for item in versions],
+            )
+            return {"world_id": world_id, "name": versions[-1]["name"], "version": len(versions),
+                    "source": package["provenance"]}, "story.world_imported", True
+
         if command_type in {"create_story_world", "revise_story_world"}:
             if branch_id != "main":
                 raise ValidationError("World library changes must be committed on the main workspace branch")
@@ -1885,11 +1940,14 @@ class CommandGateway:
             if source_turn_id is not None:
                 source_turn_id = _required_text(source_turn_id, "source_turn_id", 100)
                 turn = connection.execute(
-                    "SELECT 1 FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=? AND role='assistant'",
+                    "SELECT COALESCE((SELECT e.status FROM story_turn_edits e WHERE e.workspace_id=t.workspace_id "
+                    "AND e.branch_id=t.branch_id AND e.conversation_id=t.conversation_id AND e.turn_id=t.turn_id "
+                    "ORDER BY e.version DESC LIMIT 1),'active') AS status FROM story_turns t "
+                    "WHERE t.workspace_id=? AND t.branch_id=? AND t.conversation_id=? AND t.turn_id=? AND t.role='assistant'",
                     (workspace_id, branch_id, adventure["conversation_id"], source_turn_id),
                 ).fetchone()
-                if not turn:
-                    raise ValidationError("source_turn_id must identify an assistant turn in this adventure")
+                if not turn or turn["status"] != "active":
+                    raise ValidationError("source_turn_id must identify an active assistant turn in this adventure")
             proposal_id = _required_text(payload.get("proposal_id") or str(uuid4()), "proposal_id", 100)
             connection.execute(
                 "INSERT INTO rpg_state_proposals(workspace_id,branch_id,proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at) "
@@ -1916,6 +1974,14 @@ class CommandGateway:
                 raise ConflictError("RPG state proposal has already been reviewed")
             changes = _validated_rpg_changes(payload.get("changes", json.loads(proposal["changes_json"]))) if decision == "accepted" else []
             if decision == "accepted":
+                if proposal["source_turn_id"]:
+                    source_edit = connection.execute(
+                        "SELECT status,created_revision FROM story_turn_edits WHERE workspace_id=? AND branch_id=? "
+                        "AND conversation_id=? AND turn_id=? ORDER BY version DESC LIMIT 1",
+                        (workspace_id, branch_id, proposal["conversation_id"], proposal["source_turn_id"]),
+                    ).fetchone()
+                    if source_edit and (source_edit["status"] != "active" or source_edit["created_revision"] > proposal["created_revision"]):
+                        raise ConflictError("RPG state proposal is stale because its source turn changed after it was proposed")
                 sheet_changes = [change for change in changes if change["operation"] in {"tracker_delta", "set_location"}]
                 sheet = None
                 trackers: dict[str, Any] = {}
@@ -2118,11 +2184,14 @@ class CommandGateway:
             if source_turn_id is not None:
                 source_turn_id = _required_text(source_turn_id, "source_turn_id", 100)
                 source_turn = connection.execute(
-                    "SELECT narrative_order FROM story_turns WHERE workspace_id=? AND branch_id=? AND conversation_id=? AND turn_id=? AND role='assistant'",
+                    "SELECT t.narrative_order,COALESCE((SELECT e.status FROM story_turn_edits e "
+                    "WHERE e.workspace_id=t.workspace_id AND e.branch_id=t.branch_id AND e.conversation_id=t.conversation_id "
+                    "AND e.turn_id=t.turn_id ORDER BY e.version DESC LIMIT 1),'active') AS status FROM story_turns t "
+                    "WHERE t.workspace_id=? AND t.branch_id=? AND t.conversation_id=? AND t.turn_id=? AND t.role='assistant'",
                     (workspace_id, branch_id, adventure["conversation_id"], source_turn_id),
                 ).fetchone()
-                if not source_turn:
-                    raise ValidationError("source_turn_id must identify an assistant turn in this adventure")
+                if not source_turn or source_turn["status"] != "active":
+                    raise ValidationError("source_turn_id must identify an active assistant turn in this adventure")
                 narrative_order = source_turn["narrative_order"]
             else:
                 narrative_order = payload.get("narrative_order", 0)
@@ -2192,6 +2261,21 @@ class CommandGateway:
             decision = payload.get("review_status")
             if type(version) is not int or version < 1 or decision not in {"accepted", "rejected"}:
                 raise ValidationError("Review requires a version and accepted/rejected status")
+            if decision == "accepted":
+                memory = connection.execute(
+                    "SELECT m.source_turn_id,m.created_revision,a.conversation_id FROM story_memories m "
+                    "JOIN story_adventures a ON a.workspace_id=m.workspace_id AND a.branch_id=m.branch_id AND a.adventure_id=m.adventure_id "
+                    "WHERE m.workspace_id=? AND m.branch_id=? AND m.adventure_id=? AND m.memory_id=? AND m.version=?",
+                    (workspace_id, branch_id, adventure_id, memory_id, version),
+                ).fetchone()
+                if memory and memory["source_turn_id"]:
+                    source_edit = connection.execute(
+                        "SELECT status,created_revision FROM story_turn_edits WHERE workspace_id=? AND branch_id=? "
+                        "AND conversation_id=? AND turn_id=? ORDER BY version DESC LIMIT 1",
+                        (workspace_id, branch_id, memory["conversation_id"], memory["source_turn_id"]),
+                    ).fetchone()
+                    if source_edit and (source_edit["status"] != "active" or source_edit["created_revision"] > memory["created_revision"]):
+                        raise ConflictError("Story memory is stale because its source turn changed after it was proposed")
             result = connection.execute(
                 "UPDATE story_memories SET review_status=?,reviewed_revision=? WHERE workspace_id=? AND branch_id=? AND adventure_id=? AND memory_id=? AND version=? AND review_status='proposed'",
                 (decision, revision, workspace_id, branch_id, adventure_id, memory_id, version),
@@ -2941,6 +3025,26 @@ class CommandGateway:
                 (workspace_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def export_world_package(self, workspace_id: str, world_id: str) -> dict[str, Any]:
+        world = self.get_story_world(workspace_id, world_id)
+        return validate_world_package({
+            "protocol": "lke.world.v1",
+            "provenance": {"workspace_id": workspace_id, "world_id": world_id},
+            "versions": list(reversed(world["versions"])),
+        })
+
+    def preview_world_package(self, workspace_id: str, package: Any) -> dict[str, Any]:
+        self.current_revision(workspace_id, "main")
+        clean = validate_world_package(package)
+        with self.db.lock:
+            collision = self.db.connection.execute(
+                "SELECT 1 FROM story_worlds WHERE workspace_id=? AND world_id=?",
+                (workspace_id, clean["provenance"]["world_id"]),
+            ).fetchone() is not None
+        return {"protocol": clean["protocol"], "provenance": clean["provenance"],
+                "name": clean["versions"][-1]["name"], "versions": len(clean["versions"]),
+                "source_id_conflict": collision, "import_mode": "duplicate"}
 
     def get_story_world(self, workspace_id: str, world_id: str) -> dict[str, Any]:
         with self.db.lock:

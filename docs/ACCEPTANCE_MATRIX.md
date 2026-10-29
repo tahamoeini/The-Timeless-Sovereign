@@ -55,6 +55,8 @@ The current RPG slice passes 87 unit tests with `test_api_boundary.py` excluded,
 
 After the continuity changes, a separate focused run of 46 in-memory continuity, memory-retrieval, provider, gateway and branch-promotion tests passed. This does not replace the failing migration/backup run or the pending API and browser checks.
 
+2026-10-29 continuation: 51 focused in-memory continuity, memory-retrieval, provider, gateway and branch-promotion tests passed. New gateway fixtures verify that changing, deleting or superseding a source turn prevents acceptance of its pending RPG proposal without altering the sheet or revision, and that rejection remains possible; an edited source also prevents acceptance of its pending memory. New proposals and memories reject inactive source turns. These checks do not reconstruct already accepted state after a historical edit, and they are not API, browser or live-model evidence.
+
 Entity F1, relation precision, evidence grounding, retrieval Recall@K, temporal accuracy, context efficiency, narrative continuity, human review cost, import performance, and recovery performance require a fixed bilingual evaluation corpus and rubric. Numeric targets are intentionally unset until a measured baseline exists.
 
 ## Definition of Done

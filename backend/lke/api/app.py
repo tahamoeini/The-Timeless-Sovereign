@@ -307,6 +307,14 @@ def create_app(
     def get_story_world(workspace_id: str, world_id: str):
         return gateway.get_story_world(workspace_id, world_id)
 
+    @app.get("/api/v1/workspaces/{workspace_id}/story/worlds/{world_id}/package")
+    def export_world_package(workspace_id: str, world_id: str):
+        return gateway.export_world_package(workspace_id, world_id)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/story/worlds/package-preview")
+    def preview_world_package(workspace_id: str, body: dict[str, Any]):
+        return gateway.preview_world_package(workspace_id, body)
+
     @app.post("/api/v1/workspaces/{workspace_id}/story/worlds", status_code=201)
     def create_story_world(workspace_id: str, body: StoryWorldRequest):
         return gateway.execute(

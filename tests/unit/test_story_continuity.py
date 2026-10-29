@@ -3,7 +3,7 @@
 import base64
 import unittest
 
-from lke.core import CommandGateway, Database, ValidationError
+from lke.core import CommandGateway, ConflictError, Database, ValidationError
 
 
 class StoryContinuityTests(unittest.TestCase):
@@ -68,6 +68,61 @@ class StoryContinuityTests(unittest.TestCase):
         self.assertEqual(revised["turns"][0]["edit_history"][0]["content"], "Walk to the bridge")
         self.assertEqual(revised["turns"][1]["content"], "The gate is closed.")
         self.assertEqual(self.gateway.current_revision(self.workspace_id, "adventure"), changed["revision"])
+
+    def test_source_changes_prevent_proposal_acceptance_but_allow_rejection(self):
+        revision = self.revision
+        for action in ("edit", "delete", "supersede"):
+            with self.subTest(action=action):
+                turn = self.append_turn(f"source-{action}", revision, "Look around", "A door opens.")
+                turns = self.gateway.get_conversation(self.workspace_id, "adventure", "conversation")["turns"]
+                user_id, assistant_id = turns[-2]["turn_id"], turns[-1]["turn_id"]
+                proposal = self.command(f"proposal-{action}", turn["revision"], "propose_rpg_state", {
+                    "adventure_id": "adventure", "source_turn_id": assistant_id,
+                    "changes": [{"operation": "tracker_delta", "tracker_id": "health", "delta": -1}],
+                }, branch="adventure", actor="ai:local")
+                payload = {"conversation_id": "conversation", "turn_id": assistant_id,
+                           "action": "delete" if action == "delete" else "edit", "content": "The door stays shut."}
+                if action == "supersede":
+                    payload.update(turn_id=user_id, content="Wait outside.", superseded_turn_ids=[assistant_id])
+                edited = self.command(f"change-{action}", proposal["revision"], "edit_story_turn", payload, branch="adventure")
+                with self.assertRaisesRegex(ConflictError, "source turn changed"):
+                    self.command(f"accept-{action}", edited["revision"], "review_rpg_state_proposal", {
+                        "proposal_id": proposal["proposal_id"], "review_status": "accepted",
+                    }, branch="adventure")
+                state = self.gateway.get_rpg_state(self.workspace_id, "adventure", "adventure")
+                self.assertEqual(state["sheet"]["trackers"]["health"]["value"], 8)
+                self.assertEqual(self.gateway.current_revision(self.workspace_id, "adventure"), edited["revision"])
+                rejected = self.command(f"reject-{action}", edited["revision"], "review_rpg_state_proposal", {
+                    "proposal_id": proposal["proposal_id"], "review_status": "rejected",
+                }, branch="adventure")
+                revision = rejected["revision"]
+                if action != "edit":
+                    with self.assertRaisesRegex(ValidationError, "active assistant"):
+                        self.command(f"inactive-{action}", revision, "propose_rpg_state", {
+                            "adventure_id": "adventure", "source_turn_id": assistant_id,
+                            "changes": [{"operation": "set_location", "location": "Elsewhere"}],
+                        }, branch="adventure")
+
+    def test_memory_review_rejects_a_changed_source_without_losing_proposal(self):
+        turn = self.append_turn("memory-source-review", self.revision, "Listen", "A bell rings once.")
+        proposed = self.command("propose-memory-review", turn["revision"], "create_story_memory", {
+            "adventure_id": "adventure", "memory_id": "bell-memory", "kind": "event",
+            "content": "A bell rings once.", "source_turn_id": turn["assistant_turn_id"], "review_status": "proposed",
+        }, branch="adventure")
+        edited = self.command("edit-memory-source", proposed["revision"], "edit_story_turn", {
+            "conversation_id": "conversation", "turn_id": turn["assistant_turn_id"],
+            "action": "edit", "content": "No bell is heard.",
+        }, branch="adventure")
+        with self.assertRaisesRegex(ConflictError, "source turn changed"):
+            self.command("accept-stale-memory", edited["revision"], "review_story_memory", {
+                "adventure_id": "adventure", "memory_id": "bell-memory", "version": 1, "review_status": "accepted",
+            }, branch="adventure")
+        memory = self.gateway.get_story_memories(self.workspace_id, "adventure", "adventure")["memories"][0]
+        self.assertEqual(memory["review_status"], "proposed")
+        self.assertEqual(self.gateway.current_revision(self.workspace_id, "adventure"), edited["revision"])
+        self.command("reject-stale-memory", edited["revision"], "review_story_memory", {
+            "adventure_id": "adventure", "memory_id": "bell-memory", "version": 1, "review_status": "rejected",
+        }, branch="adventure")
 
     def test_retry_metadata_is_audited_and_turn_revisions_are_immutable(self):
         first = self.append_turn("retry-base", self.revision, "Look at the sea", "The sea is dark.")
