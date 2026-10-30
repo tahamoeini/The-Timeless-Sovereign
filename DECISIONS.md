@@ -74,6 +74,18 @@ This file records decisions made against the LKE v1.1 baseline. Unverified choic
 
 **Reason:** worlds can use different mechanics without changing the legacy d20 default or affecting adventures already in progress. Persisting rule snapshots beside immutable check records keeps history and portable packages interpretable after later world revisions.
 
+## ADR-013 — Branch-scoped character identity notes
+
+**Decision:** keep optional character identity notes on the canonical character profile. Setup edits the reusable main-branch hero; an active adventure edits its actor snapshot through that adventure's selected-branch command gateway. Preserve bounded standard and imported MNO fields in revision history. Treat notes as descriptive, user-authored local story context, exclude them from hosted-provider requests and public/shareable exports, and retain the profile snapshot used by historical retries.
+
+**Reason:** players need practical ways to define a protagonist and revise an adventure-specific portrayal without rewriting reusable characters or sibling adventures. Branch-scoped revisioned writes preserve continuity and make the local-versus-hosted privacy boundary inspectable.
+
+## ADR-014 — Revisioned MNO lorebook activation
+
+**Decision:** preserve the imported MNO world source unchanged and store user activation/keyword overrides by source entry index under `mno_import.lorebook_rules` in an immutable world version. The local context selector may include up to four always-on entries and four keyword matches, with a 12,000-character total. Saved context manifests record the selected entries and excluded count. Hosted-provider context and public/shareable exports omit the imported lorebook and overrides; full-private archives retain them and disclose them in export review.
+
+**Reason:** users need to tune imported lore retrieval without editing opaque source files, rewriting provenance, or implying that narrator reference is character knowledge. Versioning keeps existing adventures stable, while inspectable limits and export boundaries make context selection and portability explicit.
+
 ## Deferred decisions
 
 The exact document parser, embedding model, graph-retrieval framework, minimum hardware, agent safe-apply policy, and final backup container remain open until their evaluation criteria, Windows packaging, offline behavior, licensing, and recovery effects are reviewed. Optional dependencies must remain replaceable and cannot own canonical data. Current platform priorities and release gaps are tracked in [Project status](docs/PROJECT_STATUS.md).
