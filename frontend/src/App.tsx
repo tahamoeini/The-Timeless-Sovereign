@@ -131,6 +131,40 @@ function buildMnoLorebookRules(entries: MnoLorebookDraft[]): Record<string, { ac
   }));
 }
 
+function humanizeImportedField(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (letter) => letter.toLocaleUpperCase());
+}
+
+function renderImportedProfileValue(value: unknown, depth = 0): ReactNode {
+  if (value === null || value === undefined || value === "") return <span className="muted">Not set</span>;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (depth >= 3) return <span className="muted">Deeper nested detail omitted for readability</span>;
+  if (Array.isArray(value)) {
+    if (!value.length) return <span className="muted">None</span>;
+    return <ul className="story-profile-value-list">
+      {value.slice(0, 20).map((item, index) => <li key={index}>{renderImportedProfileValue(item, depth + 1)}</li>)}
+      {value.length > 20 && <li className="muted">{value.length - 20} more items</li>}
+    </ul>;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (!entries.length) return <span className="muted">No details</span>;
+    return <dl className="story-npc-details story-npc-details-nested">
+      {entries.slice(0, 20).map(([key, entryValue]) => <div key={key}>
+        <dt>{humanizeImportedField(key)}</dt>
+        <dd dir="auto">{renderImportedProfileValue(entryValue, depth + 1)}</dd>
+      </div>)}
+      {entries.length > 20 && <div><dt>More</dt><dd>{entries.length - 20} additional fields</dd></div>}
+    </dl>;
+  }
+  return String(value);
+}
+
 function readStoryWorldCover(value: unknown): StoryWorldCover | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const cover = value as Partial<StoryWorldCover>;
@@ -4353,8 +4387,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </details>}
           {studioData.npcs.map((npc) => {
             const portrait = studioData.assets.find((asset) => asset.target_kind === "character" && asset.target_id === npc.npc_entity_id);
-            const privateTrackers = npc.private_profile.trackers && typeof npc.private_profile.trackers === "object" ? npc.private_profile.trackers : {};
-            const privateLife = npc.private_profile.life && typeof npc.private_profile.life === "object" ? npc.private_profile.life as Record<string, unknown> : {};
+            const privateTrackers = npc.private_profile.trackers && typeof npc.private_profile.trackers === "object" && !Array.isArray(npc.private_profile.trackers) ? npc.private_profile.trackers as Record<string, unknown> : {};
+            const privateTrackerEntries = Object.entries(privateTrackers);
+            const privateLife = npc.private_profile.life && typeof npc.private_profile.life === "object" && !Array.isArray(npc.private_profile.life) ? npc.private_profile.life as Record<string, unknown> : {};
             const privateNotes = typeof npc.private_profile.notes === "string" ? npc.private_profile.notes : "";
             return <article className="story-npc-card" key={npc.npc_entity_id}>
               <div className="story-npc-heading">
@@ -4364,14 +4399,26 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               <details><summary>Profile</summary><dl className="story-npc-details">
                 {(["age", "gender", "race", "job", "appearance", "persona", "motivation", "voice", "current_goal", "whereabouts", "extra"] as const).filter((key) => npc.public_profile[key]).map((key) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd dir="auto">{npc.public_profile[key]}</dd></div>)}
               </dl></details>
-              <details><summary>Memory & private details</summary>
-                <p className="private-note">Author-only secrets and notes are never included in story context: {privateNotes || "none"}</p>
-                {Object.keys(privateTrackers).length > 0 && <><small>Relationship and NPC trackers</small><pre dir="auto">{JSON.stringify(privateTrackers, null, 2)}</pre></>}
+              <details><summary>Private notes and trackers · author-only</summary>
+                <p className="private-note">Only you can see these details. They are never included in story context or sent to a model.</p>
+                <div className="story-npc-private-notes"><strong>Private notes</strong><p dir="auto">{privateNotes || "No private notes saved."}</p></div>
+                {privateTrackerEntries.length > 0
+                  ? <>
+                    <strong className="story-npc-section-label">Relationship and NPC trackers</strong>
+                    <dl className="story-npc-details">
+                      {privateTrackerEntries.slice(0, 40).map(([key, value]) => <div key={key}>
+                        <dt>{humanizeImportedField(key)}</dt>
+                        <dd dir="auto">{renderImportedProfileValue(value)}</dd>
+                      </div>)}
+                      {privateTrackerEntries.length > 40 && <div><dt>More</dt><dd>{privateTrackerEntries.length - 40} additional trackers</dd></div>}
+                    </dl>
+                  </>
+                  : <p className="empty-hint">No imported relationship or character trackers.</p>}
               </details>
-              <details><summary>Life</summary><dl className="story-npc-details">
+              <details><summary>Off-screen life · author-only</summary><dl className="story-npc-details">
                 {[["Mini-goal", privateLife.lifeGoal], ["Whereabouts", privateLife.lifeWhere], ["Last activity", privateLife.lifeTick], ["First seen", privateLife.firstSeenTurn], ["Last seen", privateLife.lastSeenTurn], ["Life history", privateLife.lifeHistory]]
                   .filter(([, value]) => value !== undefined && value !== null && value !== "")
-                  .map(([label, value]) => <div key={String(label)}><dt>{String(label)}</dt><dd dir="auto">{typeof value === "string" ? value : JSON.stringify(value)}</dd></div>)}
+                  .map(([label, value]) => <div key={String(label)}><dt>{String(label)}</dt><dd dir="auto">{renderImportedProfileValue(value)}</dd></div>)}
                 {!Object.keys(privateLife).length && <p className="empty-hint">No private-life record yet.</p>}
               </dl></details>
             </article>;

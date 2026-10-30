@@ -66,3 +66,20 @@
   .reader-character-art,.reader-scene-art{max-width:100%;max-height:180mm;page-break-inside:avoid}
 }
 @media(max-width:700px){.story-detail-content{padding-inline:10px}.story-mini-form{padding:9px}.story-turn-actions{gap:4px}.story-turn-actions button{font-size:7px;padding:5px 6px}.story-provider-fields{grid-template-columns:1fr}.story-library-tools{grid-template-columns:1fr}.story-adventure-card{align-items:flex-start}.story-adventure-card small{line-height:1.5}.story-map-preview{min-height:190px}.story-map-locations{grid-template-columns:1fr}.story-npc-details>div{grid-template-columns:76px 1fr}}
+
+/* Keep NPC authoring details readable and easy to open with a pointer or keyboard. */
+.story-npc-card>details>summary{display:inline-flex;align-items:center;min-height:40px;padding:5px 7px;font-size:12px;line-height:1.4}
+.story-npc-card>details>summary:focus-visible{outline:2px solid #90b596;outline-offset:2px;border-radius:4px}
+.story-npc-heading strong,.story-npc-section-label{font-size:13px;color:#c8d7ce}
+.story-npc-card small,.story-npc-card p{font-size:12px;line-height:1.55}
+.story-npc-details{gap:9px}
+.story-npc-details>div{grid-template-columns:minmax(105px,0.35fr) minmax(0,1fr);gap:10px}
+.story-npc-details dt{font-size:11px;text-transform:none}
+.story-npc-details dd{font-size:12px;line-height:1.6}
+.story-npc-details-nested{margin-top:5px}
+.story-profile-value-list{display:grid;gap:5px;margin:0;padding-inline-start:18px}
+.story-npc-section-label{display:block;margin-top:12px}
+.story-npc-private-notes{margin-top:8px;padding:9px 10px;border-inline-start:2px solid #ad9e79;background:#1d1a14;color:#d4c79f}
+.story-npc-private-notes strong{font-size:12px}
+.story-npc-private-notes p{margin:4px 0 0;color:#d4c79f}
+@media(max-width:700px){.story-npc-details>div{grid-template-columns:minmax(92px,0.4fr) minmax(0,1fr)}}
