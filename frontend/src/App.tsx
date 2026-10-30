@@ -4266,8 +4266,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                 const modifier = check.modifier >= 0 ? `+${check.modifier}` : String(check.modifier);
                 return <div className={`story-check-result ${check.outcome}`} key={check.check_id} role="group"
                   aria-label={`Automatic check ${check.outcome}: ${subject}, ${difficulty?.label || "difficulty"}`}>
-                  <strong>{check.outcome === "success" ? "Success" : "Failure"} · {subject} · {difficulty?.label || "Check"}</strong>
-                  <small>Dice {check.dice.join(", ")} · modifier {modifier} · total {check.total} · target {check.target}</small>
+                  <strong>{check.outcome === "success" ? "Success" : "Not this time"} · {subject} · {difficulty?.label || "Check"}</strong>
+                  <details className="story-check-math">
+                    <summary>Show dice and math</summary>
+                    <small>Dice {check.dice.join(", ")} · modifier {modifier} · total {check.total} · target {check.target}</small>
+                  </details>
                 </div>;
               })}
               {turn.status === "active" && <details className="story-turn-options">
@@ -4409,7 +4412,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {rpgState.mechanics.skills.length > 0 && <details className="rpg-edit-stats"><summary>Skills and proficiency · {rpgState.mechanics.skills.length}</summary>
             <form onSubmit={(event) => void saveRpgSkills(event)}>{rpgState.mechanics.skills.map((skill) => <label className="field-label" key={skill.skill_id}>{skill.label} · {skill.attribute || "no governing stat"}<input type="number" min={0} max={skill.max_rank} value={editableSkills[skill.skill_id] ?? skill.starting_rank} onChange={(event) => setEditableSkills((ranks) => ({ ...ranks, [skill.skill_id]: Number(event.target.value) }))} /><small>Rank {editableSkills[skill.skill_id] ?? skill.starting_rank} · +{skill.rank_bonus} per rank</small></label>)}<button className="secondary-button full-button" disabled={busy}>Save skill ranks</button></form>
           </details>}
-          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "This world version keeps its original manual XP rules." : `${rpgState.sheet.experience.automatic_xp.toLocaleString()} XP awarded automatically · ${rpgState.sheet.experience.per_completed_turn} per completed player turn`}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} added manually` : ""}</small>
+          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "This world version keeps its original manual XP rules." : "XP is awarded as you complete turns."}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} added manually` : ""}</small>
             {rpgState.mechanics.experience.allow_manual_awards && <form className="rpg-check-fields" onSubmit={(event) => void awardExperience(event)}><label className="field-label">Add XP manually<input type="number" min={1} max={1_000_000} step={1} value={experienceAward} onChange={(event) => setExperienceAward(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy || rpgState.sheet.experience.total_xp >= rpgState.sheet.experience.maximum_xp}>Add XP</button></form>}
           </section>
           {rpgState.sheet.abilities.length > 0 && <section className="rpg-ability-list" aria-labelledby="rpg-abilities-heading">
@@ -4443,9 +4446,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </article>;
             })}
           </section>}
-          {rpgState.mechanics.mode === "narrative_only" ? <p className="field-note">This adventure resolves uncertain moments through the story.</p> : <details className="manual-check-details">
-            <summary>Roll a separate check (advanced)</summary>
-            <p className="field-note">{rpgState.automatic_checks_enabled ? "Lorethra rolls for risky actions automatically. Use this only when you want an additional check." : "This world version keeps its original check rules. Use this when you want a separate check."}</p>
+          {rpgState.mechanics.mode === "narrative_only" ? <p className="field-note">This adventure resolves uncertain moments through the story.</p> : rpgState.automatic_checks_enabled ? <p className="field-note">Lorethra checks risky actions automatically as you play.</p> : <details className="manual-check-details">
+            <summary>Roll a check</summary>
+            <p className="field-note">This world version uses manual checks. Choose what to check and roll using its saved rules.</p>
             <form className="rpg-check-form" onSubmit={(event) => void rollMechanicsCheck(event)}>
               <div className="rpg-check-fields">
                 <label className="field-label">Encounter<select value={rpgState.mechanics.encounter_types.some((item) => item.encounter_type === checkEncounter) ? checkEncounter : rpgState.mechanics.encounter_types[0]?.encounter_type || ""} onChange={(event) => setCheckEncounter(event.target.value)}>{rpgState.mechanics.encounter_types.map((item) => <option key={item.encounter_type} value={item.encounter_type}>{item.label}</option>)}</select></label>
