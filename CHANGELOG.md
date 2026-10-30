@@ -2,6 +2,16 @@
 
 This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v17 results.
 
+## 2026-10-30 — Reviewed NPC relationship progression
+
+- Add an optional, bounded relationship-to-protagonist note to each NPC's adventure-local public profile. It describes the NPC's current stance as narrator guidance, and the story prompt explicitly avoids treating it as knowledge the protagonist automatically has.
+- Let opt-in NPC simulation propose relationship changes only when recent events support them. Changes use the existing review queue, gateway validation, revision history, source-turn invalidation, branch isolation, and adventure package pathways; pending or rejected suggestions do not change the profile.
+- Keep the NPC card focused on its name, role, goal, and (when present) relationship summary. Put full profile fields behind the existing disclosure and explain the relationship field beside its editor, following progressive disclosure and clear-context guidance recorded in the UX research section of `docs/PROJECT_STATUS.md`.
+- No schema migration is required: the optional field uses the existing public-profile JSON, and older records and packages remain valid without it.
+- Regression coverage verifies the 500-character bound, review-before-write behavior, source-turn historical replay, and adventure-package round trip. The full local Windows unit suite passed (190 tests, Python 3.13); `npm run build` and `git diff --check` passed. The local dependency install was temporary and was removed after validation.
+- Conventional commits: `033f90f feat(story): track NPC relationship progression`; `a575ff1 test(story): cover NPC relationship history`.
+- Browser interaction, keyboard and screen-reader behavior, live-provider quality, and clean-machine Windows installation/launch remain unverified. This slice adds a bounded narrative stance note; it does not complete mechanical relationship tracks or the general social graph.
+
 ## 2026-10-30 — Editable imported MNO lorebooks
 
 - Add a collapsed, searchable lorebook editor to imported MNO worlds. It pages long lists, previews source text, and lets users set each entry to always include, match keywords, or stay excluded. A reset action restores that entry's imported activation and keywords.
