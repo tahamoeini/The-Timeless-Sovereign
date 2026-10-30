@@ -1356,6 +1356,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [setupExpanded, setSetupExpanded] = useState(true);
   const [setupStep, setSetupStep] = useState<1 | 2 | 3 | 4>(1);
   const [showWorldCreation, setShowWorldCreation] = useState(false);
+  const [worldCreationStep, setWorldCreationStep] = useState<1 | 2 | 3>(1);
   const [showHeroCreation, setShowHeroCreation] = useState(false);
   const [mainCharacters, setMainCharacters] = useState<Entity[]>([]);
   const [adventureHeroId, setAdventureHeroId] = useState("");
@@ -2388,6 +2389,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const createdId = String(created.world_id || "");
       if (createdId) setSelectedWorldId(createdId);
       setShowWorldCreation(false);
+      setWorldCreationStep(1);
       setSetupStep(2);
     } catch (createError) {
       setLibraryError(createError instanceof Error ? createError.message : "The world could not be created.");
@@ -3229,6 +3231,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       && (creationAllowBelowBaseline || stat.minimum === stat.baseline)
       && stat.point_cost >= 1 && stat.point_cost <= 20)
     && creationAbilitiesValid;
+  const creationLocationNames = parseStoryWorldLocations(worldLocations);
+  const creationStartingLocation = worldStartingLocation.trim();
+  const creationPlacesValid = creationLocationNames !== null
+    && (!creationStartingLocation || creationLocationNames.some((location) => location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase()))
+    && Boolean(worldOpeningSituation.trim()) === Boolean(worldOpeningHook.trim());
 
   return <>
     <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Continue a saved story with a local model, while keeping character knowledge and world facts under your control." />
@@ -3315,13 +3322,23 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <span>Selected: {selectedSetupWorld.name} · world v{selectedSetupWorld.latest_version}</span>
             {selectedSetupCover && <img src={storyWorldCoverUrl(selectedSetupCover)} alt={selectedSetupCover.alt_text || `${selectedSetupWorld.name} cover`} />}
           </div>}
-          <button className="secondary-button" type="button" disabled={busy || worldArchitectBusy} onClick={() => { setShowWorldCreation((visible) => !visible); setCreationError(""); }}>
+          <button className="secondary-button" type="button" disabled={busy || worldArchitectBusy} onClick={() => { setShowWorldCreation((visible) => !visible); setWorldCreationStep(1); setCreationError(""); }}>
             {showWorldCreation ? "Cancel new world" : "Create a new world"}
           </button>
           {showWorldCreation && <form className="story-hub-form story-hub-create-world" onSubmit={(event) => void createWorld(event)}>
           <div className="story-hub-title"><span>＋</span><div><strong>Create a world</strong><small>Start with a small template. Advanced rules stay optional.</small></div></div>
+          <ol className="world-creation-progress" aria-label="World creation progress">
+            {(["Setting", "Places & opening", "Rules & review"] as const).map((label, index) => <li key={label}
+              aria-current={worldCreationStep === index + 1 ? "step" : undefined}
+              className={worldCreationStep > index + 1 ? "complete" : ""}>
+              <span>{index + 1}</span><small>{label}</small>
+            </li>)}
+          </ol>
+          <div className="world-creation-stage">
+          {worldCreationStep === 1 && <>
+          <div className="world-creation-step-heading"><h3>Set the foundation</h3><p>Give your world a name and choose a starting style. The optional local draft can fill in editable details for you.</p></div>
           {worldArchitectBusy && <button className="quiet-button full-button" type="button" onClick={cancelWorldDraft}>Cancel local draft</button>}
-          <label className="field-label">World name<input value={worldName} disabled={worldArchitectBusy} onChange={(event) => { setWorldName(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} placeholder="The Shattered Coast" maxLength={200} required /></label>
+          <label className="field-label">World name<input value={worldName} disabled={worldArchitectBusy} onChange={(event) => { setWorldName(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} placeholder="The Shattered Coast" maxLength={200} required /><small className="field-note">Required before continuing. Changes stay in this form until you save the world.</small></label>
           <label className="field-label">Starting style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
             const nextTemplate = event.target.value;
             const nextTemplateContent = STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content;
@@ -3365,21 +3382,44 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               <button className="secondary-button" type="button" onClick={applyWorldArchitectDraft}>Use this draft in the editable form</button>
             </section>}
           </details>
-          <details className="character-creation-rules">
-            <summary>Starting place and map locations</summary>
+          </>}
+          {worldCreationStep === 2 && <>
+          <div className="world-creation-step-heading"><h3>Choose places and an opening</h3><p>Map locations and the opening scene are optional. The starting location must match one of the places you list.</p></div>
+          <section className="world-creation-fields" aria-labelledby="world-places-heading">
+            <h4 id="world-places-heading">Starting place and map locations</h4>
             <label className="field-label">Starting location<input value={worldStartingLocation} onChange={(event) => { setWorldStartingLocation(event.target.value); setCreationError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
             <label className="field-label">World locations<textarea value={worldLocations} onChange={(event) => { setWorldLocations(event.target.value); setCreationError(""); }} rows={3} maxLength={16000} placeholder="One location per line" /><small className="field-note">Use unique names; if a starting location is set, it must appear in this list.</small></label>
-          </details>
-          <details className="character-creation-rules">
-            <summary>Add an opening scene (optional)</summary>
+          </section>
+          <section className="world-creation-fields" aria-labelledby="world-opening-heading">
+            <h4 id="world-opening-heading">Opening scene <span>Optional</span></h4>
             <p className="field-note">This public scene seed is included with the first generated reply. Describe the situation and its hook; the player still chooses what their hero says and does.</p>
             <label className="field-label">Opening situation<textarea value={worldOpeningSituation} onChange={(event) => { setWorldOpeningSituation(event.target.value); setCreationError(""); }} rows={3} maxLength={4000} placeholder="Where the scene begins and what is already happening" /></label>
             <label className="field-label">Immediate hook<textarea value={worldOpeningHook} onChange={(event) => { setWorldOpeningHook(event.target.value); setCreationError(""); }} rows={2} maxLength={2000} placeholder="A question, pressure, or opportunity for the hero" /></label>
-          </details>
+          </section>
           <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Stored in the local world version and portable package. Lorethra compresses it to a small JPEG, up to 64 KiB.</small></label>
           {worldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(worldCover)} alt={worldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={worldCover.alt_text} onChange={(event) => setWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setWorldCover(null)}>Remove cover</button></div>}
+          {creationLocationNames === null && <p className="inline-error" role="alert">Use no more than 100 unique locations, each up to 150 characters.</p>}
+          {creationLocationNames !== null && creationStartingLocation && !creationLocationNames.some((location) => location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase()) && <p className="inline-error" role="alert">Choose the starting location from your location list, or leave it blank.</p>}
+          {Boolean(worldOpeningSituation.trim()) !== Boolean(worldOpeningHook.trim()) && <p className="inline-error" role="alert">Add both opening-scene fields, or leave both empty.</p>}
+          </>}
+          {worldCreationStep === 3 && <>
+          <div className="world-creation-step-heading"><h3>Review optional rules</h3><p>The defaults are ready for a first adventure. Open advanced rules only if this world needs custom trackers, mechanics, or abilities.</p></div>
+          <section className="story-start-summary world-creation-review" aria-label="World summary before save">
+            <h4>World summary</h4>
+            <strong>{worldName.trim() || "Untitled world"}</strong>
+            <span>{STORY_WORLD_TEMPLATES[worldTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.label || "Custom style"} · Starting place: {creationStartingLocation || "not set"}</span>
+            <p><strong>Public premise:</strong> {worldPremise.trim() || "No public premise added."}</p>
+            <p><strong>Map places:</strong> {creationLocationNames?.length
+              ? `${creationLocationNames.slice(0, 8).join(" · ")}${creationLocationNames.length > 8 ? ` · +${creationLocationNames.length - 8} more` : ""}`
+              : "None"}</p>
+            {worldOpeningSituation.trim() && worldOpeningHook.trim() && <div>
+              <p><strong>Opening situation:</strong> {worldOpeningSituation.trim()}</p>
+              <p><strong>Immediate hook:</strong> {worldOpeningHook.trim()}</p>
+            </div>}
+            {worldCover && <img src={storyWorldCoverUrl(worldCover)} alt={worldCover.alt_text || "World cover preview"} />}
+          </section>
           <details className="character-creation-rules story-world-advanced">
-            <summary>Advanced rules and trackers</summary>
+            <summary>Customize trackers, mechanics, attributes, and abilities</summary>
             <label className="field-label">World-specific trackers<textarea value={creationTrackerText} onChange={(event) => setCreationTrackerText(event.target.value)} rows={3} maxLength={4000} placeholder="health=10/10\nfocus=6/6" /><small className="field-note">One tracker per line as name=current/maximum. Clear the field when this world has no numeric resources.</small></label>
             <StoryMechanicsEditor value={creationMechanics} stats={creationStatDefinitions.map((stat) => stat.key.trim()).filter(Boolean)} onChange={setCreationMechanics} />
           <details className="character-creation-rules">
@@ -3435,9 +3475,16 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             {!creationAbilitiesValid && <p className="field-note" role="status">Complete each ability definition, use a unique lowercase ID, and enter positive resource costs.</p>}
           </details>
           </details>
+          {!creationWorldValid && <p className="inline-error" role="alert">Review the custom stat and ability definitions. Use distinct stat keys, valid baseline bounds, and point costs from 1 to 20.</p>}
+          </>}
           {creationError && <p className="inline-error" role="alert">{creationError}</p>}
-          {!creationWorldValid && <p className="field-note" role="status">Use distinct stat keys, valid baseline bounds, and point costs from 1 to 20.</p>}
-          <button className="secondary-button full-button" disabled={busy || coverPreparing || worldArchitectBusy || !worldName.trim() || !creationWorldValid}>Save world</button>
+          <div className="wizard-actions world-creation-actions">
+            <button className="secondary-button" type="button" disabled={busy || worldCreationStep === 1} onClick={() => { setCreationError(""); setWorldCreationStep((step) => step === 3 ? 2 : 1); }}>Back</button>
+            {worldCreationStep < 3
+              ? <button className="primary-button" type="button" disabled={busy || worldArchitectBusy || (worldCreationStep === 1 && !worldName.trim()) || (worldCreationStep === 2 && (!creationPlacesValid || coverPreparing))} onClick={() => { setCreationError(""); setWorldCreationStep((step) => step === 1 ? 2 : 3); }}>Continue <span>→</span></button>
+              : <button className="primary-button" type="submit" disabled={busy || coverPreparing || worldArchitectBusy || !worldName.trim() || !creationWorldValid}>Save world</button>}
+          </div>
+          </div>
           </form>}
           <div className="wizard-actions">
             <button className="primary-button" type="button" disabled={busy || !selectedSetupWorld || !!selectedSetupWorld.archived_at || !selectedSetupContent} onClick={() => { setLibraryError(""); setSetupStep(2); }}>Continue to hero <span>→</span></button>

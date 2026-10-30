@@ -15,6 +15,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | feat(story): streamline adventure discovery and setup (`80095ba`) | Add an always-visible adventure creation action, progressive disclosure for long libraries, clearer wizard steps, and live point-budget guidance |
 | docs(status): refresh UX and Windows acceptance evidence | Synchronize project status, release gates, operations, and changelog with the verified UI workflow and Windows package |
 | feat(story): add local world architect and opening scenes | Add local Ollama drafting, strict semantic checks, human preview/apply, versioned opening scenes, and public package preservation |
+| feat(story): guide world creation with a focused wizard | Split world authoring into setting, places/opening, and optional rules/review steps with pre-save validation |
 | docs(status): refresh current-head Windows evidence | Record the completed Windows run 43 and its current installer artifact; retain clean-machine desktop and feature-specific acceptance as open |
 | docs(status): record current-head Windows run 47 | Refresh P0 desktop, API, and recovery evidence for the restore-report implementation |
 | fix(packages): validate imported world authoring fields | Apply bounded/unique location and starting-reference validation to world imports, normalize opening-scene text, and preserve legacy map forms |
@@ -50,6 +51,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - Revised the library around persistent search, optional filters and sorting, result counts, empty-state reset, visible resume/use actions, and maintenance controls under “More”. Added responsive sizing and focus indicators for narrow desktop windows.
 - Put **New adventure** beside the library heading and make it open the first setup step. Keep the most recent adventure in its dedicated resume card instead of listing it twice; show the first eight other matches and place the remainder behind a count-labelled disclosure. Search and result counts continue to cover the full library.
 - Renamed the setup progress step to **Build**, aligned its heading and action with attribute allocation, clarified that setup sends no model request, and explain whether remaining points can be left unspent. The point-budget status is announced as it changes.
+- Split world creation into **Setting**, **Places & opening**, and **Rules & review** steps. The first path keeps the required premise and optional local World Architect together; map/opening fields are directly editable on the next step; custom trackers, mechanics, attributes, and abilities remain behind an explicit disclosure on the final step. A review summary precedes the existing canonical save, and invalid location references or incomplete opening scenes block progression.
 
 ### Backup and recovery
 

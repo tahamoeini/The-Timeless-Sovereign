@@ -1236,3 +1236,34 @@
   .story-card-rename{min-width:0;flex-wrap:wrap}
   .story-most-recent{align-items:center}
 }
+
+/* Keep world authoring short at first, then reveal optional mechanics in a final step. */
+.story-world-editor .story-hub-create-world{grid-template-columns:minmax(0,1fr);gap:12px}
+.world-creation-progress{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none}
+.world-creation-progress li{display:grid;justify-items:center;gap:5px;min-width:0;padding:9px 7px;border:1px solid #2e3c38;border-radius:8px;background:#141b1c;color:#86968d;text-align:center}
+.world-creation-progress li>span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#26322d;color:#b8c9bf;font-size:11px;font-weight:700}
+.world-creation-progress li[aria-current=step]{border-color:#628f75;background:#1a2721;color:#d2e6d8}
+.world-creation-progress li[aria-current=step]>span,.world-creation-progress li.complete>span{background:#557b64;color:#fff}
+.world-creation-progress li small{font-size:11px;line-height:1.35}
+.world-creation-stage{display:grid;gap:12px}
+.world-creation-step-heading{display:grid;gap:4px}
+.world-creation-step-heading h3{margin:0;color:#d5e2da;font-size:15px}
+.world-creation-step-heading p{margin:0;color:#9baca2;font-size:12px;line-height:1.5}
+.world-creation-stage>.story-start-summary{padding:10px 12px;border:1px solid #33443b;border-radius:8px;background:#151d19;color:#c3d5ca;font-size:12px;line-height:1.5}
+.world-creation-stage>.story-start-summary strong{color:#e0ece4}
+.world-creation-review{display:grid;gap:5px}
+.world-creation-review h4,.world-creation-review p{margin:0}
+.world-creation-review>div{display:grid;gap:5px}
+.world-creation-review img{display:block;width:min(100%,420px);max-height:210px;object-fit:cover;border:1px solid #35433c;border-radius:8px}
+.world-creation-fields{display:grid;gap:7px;padding:12px;border:1px solid #2e3c38;border-radius:8px;background:#141b1c}
+.world-creation-fields h4{display:flex;align-items:center;gap:8px;margin:0;color:#d2dfd7;font-size:13px}
+.world-creation-fields h4 span{padding:2px 7px;border:1px solid #34443b;border-radius:99px;color:#9eb3a5;font-size:10px;font-weight:500}
+.world-creation-fields .field-note{margin:0;line-height:1.5}
+.world-creation-actions{padding-top:4px;border-top:1px solid #2a3732}
+.world-creation-actions button{min-height:40px;font-size:12px}
+@media(max-width:520px){
+  .world-creation-progress{gap:5px}
+  .world-creation-progress li{padding:7px 4px}
+  .world-creation-progress li small{font-size:10px}
+  .world-creation-actions button{min-width:0;flex:1}
+}
