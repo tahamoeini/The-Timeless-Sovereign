@@ -1778,6 +1778,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }, [providerId, model, reasoningEffort]);
   useEffect(() => {
     let active = true;
+    setSetupExpanded(false);
     setShowHeroProfileEditor(false);
     setHeroProfileDraft({ ...EMPTY_HERO_PROFILE });
     Promise.all([
@@ -1789,7 +1790,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setWorlds(worldRows);
       setAdventures(adventureRows);
       const activeWorldRows = worldRows.filter((item) => !item.archived_at);
-      setSetupExpanded(false);
       setSetupStep(1);
       setShowWorldCreation(activeWorldRows.length === 0);
       setMainCharacters(characterRows.filter((item) => ["character", "person"].includes(item.entity_type)));

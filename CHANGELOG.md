@@ -5,6 +5,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 and 2026-1
 ## 2026-10-30 — Calmer first use and clearer Codex feedback
 
 - Keep adventure setup closed when the library first loads. The primary **Start your first adventure** action opens the existing guided flow; returning users still see their resume choices first.
+- Reset that collapsed state as the workspace loads, before the library request completes, so a quick start click is not overridden by a late response.
 - If a local Lorethra service returns model names without Codex effort metadata, preserve the chosen model, explain how to refresh the service, and use the model's default instead of sending a stale effort. Show effort choices only when the current selected model supports them.
 - Include a bounded Codex app-server reason/status when a request is rejected or a turn fails. Redact common token-like values and local filesystem paths before showing the detail.
 - Lorethra's automatic checks and per-turn XP already apply to new worlds and MNO imports; immutable legacy rules still govern older adventures.
