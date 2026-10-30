@@ -18,6 +18,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | docs(status): refresh current-head Windows evidence | Record the completed Windows run 43 and its current installer artifact; retain clean-machine desktop and feature-specific acceptance as open |
 | fix(packages): validate imported world authoring fields | Apply bounded/unique location and starting-reference validation to world imports, normalize opening-scene text, and preserve legacy map forms |
 | feat(story): cancel local world drafts | Let users stop an in-flight local World Architect request while preserving the no-save draft boundary |
+| feat(backup): show restore verification details | Report the restored workspace count, backup time, schema, database size, and integrity checks |
 
 ### RPG authoring and deterministic play
 
@@ -48,6 +49,10 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - Revised the library around persistent search, optional filters and sorting, result counts, empty-state reset, visible resume/use actions, and maintenance controls under “More”. Added responsive sizing and focus indicators for narrow desktop windows.
 - Put **New adventure** beside the library heading and make it open the first setup step. Keep the most recent adventure in its dedicated resume card instead of listing it twice; show the first eight other matches and place the remainder behind a count-labelled disclosure. Search and result counts continue to cover the full library.
 - Renamed the setup progress step to **Build**, aligned its heading and action with attribute allocation, clarified that setup sends no model request, and explain whether remaining points can be left unspent. The point-budget status is announced as it changes.
+
+### Backup and recovery
+
+- After a successful restore, report the backup timestamp, schema version, database size, restored workspace count, and integrity/foreign-key verification result. If the follow-up workspace refresh fails, say the restore already succeeded and direct the user to Refresh instead of repeating the destructive restore. Browser acceptance of these messages and the separate-device restore drill remain open.
 
 ### Tests and validation in this branch
 

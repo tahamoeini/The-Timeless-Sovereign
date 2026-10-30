@@ -467,12 +467,17 @@ export default function App() {
     }
     if (busy) return;
     setBusy(true);
+    let restoreCompleted = false;
     try {
-      const restored = await request<{ manifest: { created_at: string }; workspaces: Workspace[] }>("/api/v1/backup/restore", {
+      const restored = await request<{
+        manifest: { created_at: string; schema_version: number; database_size: number };
+        workspaces: Workspace[];
+      }>("/api/v1/backup/restore", {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream" },
         body: file,
       });
+      restoreCompleted = true;
       const selected = restored.workspaces.find((workspace) => workspace.workspace_id === workspaceId)?.workspace_id
         || restored.workspaces[0]?.workspace_id
         || "";
@@ -481,6 +486,7 @@ export default function App() {
       setBranchId("main");
       setPage("story");
       setDataEpoch((value) => value + 1);
+      setNotice({ tone: "info", text: "Backup restored and integrity checks passed. Reloading the workspace…" });
       if (selected) {
         await refresh(selected, "main");
       } else {
@@ -492,9 +498,20 @@ export default function App() {
         setRevision(0);
         revisionRef.current = 0;
       }
-      setNotice({ tone: "success", text: `Restored backup from ${new Date(restored.manifest.created_at).toLocaleString()}.` });
+      const workspaceCount = restored.workspaces.length;
+      const workspaceLabel = workspaceCount === 1 ? "workspace" : "workspaces";
+      setNotice({
+        tone: "success",
+        text: `Restored ${workspaceCount} ${workspaceLabel} from ${new Date(restored.manifest.created_at).toLocaleString()}. Schema v${restored.manifest.schema_version} · ${restored.manifest.database_size.toLocaleString()} database bytes. Integrity and foreign-key checks passed.`,
+      });
     } catch (error) {
-      setNotice({ tone: "error", text: error instanceof Error ? error.message : "Backup could not be restored." });
+      const detail = error instanceof Error ? error.message : "The local service could not refresh the workspace.";
+      setNotice({
+        tone: "error",
+        text: restoreCompleted
+          ? `Backup restored and verified, but the workspace could not be refreshed: ${detail}. Use Refresh to reload; you do not need to restore the backup again.`
+          : detail,
+      });
     } finally {
       setBusy(false);
       input.value = "";
