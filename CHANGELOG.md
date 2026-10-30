@@ -2,6 +2,15 @@
 
 This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v17 results.
 
+## 2026-10-30 — Codex generation recovery and a simpler play path
+
+- The supplied HAR showed that Codex model discovery succeeded while story generation returned 503 and the request carried no reasoning effort. It also captured a local World Architect draft failing because two returned place names differed only by case and spacing. The accompanying log contained repeated UI trace output but no separate frontend exception; attachments were treated as diagnostic evidence only.
+- Align Codex generation with the installed app-server schema: remove the unsupported `runtimeWorkspaceRoots` thread field, discover current model effort capabilities, validate a selected model/effort against that catalog, send explicit effort as `turn/start.params.effort`, and preserve the setting on retries. Automatic continues to use the Codex default. Safe operation/error codes now reach the user without exposing raw server error text.
+- Collapse duplicate World Architect place names after case/spacing normalization and map the starting location to the kept spelling. Generated drafts remain preview-only and are not saved automatically.
+- Simplify the default story journey: keep **Play & create** prominent, tuck Knowledge/Journal/Scenario and maintenance under “More”, remove duplicate model setup fields from adventure creation, and place provider/model/reasoning choices in one collapsed **Writing settings** panel. Selecting an available Codex provider automatically loads its local model list.
+- Validation in this environment: all 16 `test_story_providers.py` tests passed; direct duplicate-location normalization, Python compile check, and `git diff --check` passed; `npm run build` passed. Vite reported a 513.55 kB main JavaScript chunk and its standard chunk-size advisory. Authenticated API tests were added but could not run because the sandbox blocks the Windows event loop's local socket-pair initialization. A live Codex turn could not be started because app-server state initialization requires writes outside the permitted workspace. Browser screenshot, keyboard, accessibility, and installed-desktop checks remain open.
+- Conventional commits: `d24889c fix(story): repair Codex effort and draft validation` and `14cfa3c feat(ui): simplify story settings and navigation`. Project status and acceptance evidence are updated below and in `docs/PROJECT_STATUS.md` and `docs/ACCEPTANCE_MATRIX.md`.
+
 ## 2026-10-30 — Reviewed NPC relationship progression
 
 - Add an optional, bounded relationship-to-protagonist note to each NPC's adventure-local public profile. It describes the NPC's current stance as narrator guidance, and the story prompt explicitly avoids treating it as knowledge the protagonist automatically has.
