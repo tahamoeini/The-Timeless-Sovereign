@@ -338,7 +338,7 @@ export type StoryMechanicsProfile = {
   experience: { mode: "manual" | "automatic" | "hybrid"; starting_xp: number; per_completed_turn: number; allow_manual_awards: boolean; maximum_xp: number };
 };
 export type StoryMechanicCheck = {
-  check_id: string; conversation_id: string; actor_entity_id: string; encounter_type: string;
+  check_id: string; conversation_id: string; actor_entity_id: string; source_turn_id: string | null; encounter_type: string;
   stat_name: string; skill_id: string | null; dice: number[]; resolution: "sum" | "highest" | "success_count";
   modifier: number; total: number; target: number; difficulty_id: string; outcome: "success" | "failure";
   rules: Record<string, unknown>; created_revision: number; created_at: string;
@@ -391,6 +391,7 @@ export type RpgState = {
     map_scale?: string;
   } | null;
   mechanics: StoryMechanicsProfile;
+  automatic_checks_enabled: boolean;
   checks: RpgCheck[];
   mechanic_checks: StoryMechanicCheck[];
   proposals: RpgStateProposal[];
