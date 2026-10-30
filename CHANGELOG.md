@@ -2,6 +2,12 @@
 
 This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v18 results.
 
+## 2026-10-30 — Align backup support with schema 18
+
+- Set the supported schema version to 18, matching the latest migration. Fresh databases, migration checks, backup creation, and restore validation now agree on the current version.
+- This fixes backup rejection for valid schema-18 databases. The Windows temporary-file lock errors in the supplied run followed the backup exception and were cleanup fallout.
+- Focused local validation passed all 8 database migration tests and all 5 backup/restore tests. The full suite and isolated API download/restore test stalled at ASGI requests in this local Python environment, so no full-suite or current-head API result is claimed.
+
 ## 2026-10-30 — Calmer first use and clearer Codex feedback
 
 - Keep adventure setup closed when the library first loads. The primary **Start your first adventure** action opens the existing guided flow; returning users still see their resume choices first.

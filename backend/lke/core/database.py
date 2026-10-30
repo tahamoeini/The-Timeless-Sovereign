@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 class Database:
