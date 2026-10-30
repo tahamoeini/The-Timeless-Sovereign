@@ -112,6 +112,10 @@ def restrict_retry_context(
     for key in ("character_sheet", "recent_checks"):
         if key in original_story:
             story[key] = original_story[key]
+    if "hero_profile" in original_story:
+        story["hero_profile"] = original_story["hero_profile"]
+    else:
+        story.pop("hero_profile", None)
     for key, identity_key in (("memories", "memory_id"), ("author_notes", "memory_id"),
                               ("open_threads", "thread_id"), ("public_npcs", "entity_id")):
         original_items = {item.get(identity_key): item for item in original_story.get(key, []) if isinstance(item, dict)}
@@ -139,6 +143,47 @@ def restrict_retry_context(
     return result
 
 
+def _memory_context_snapshot(
+    memories: list[dict[str, Any]],
+    memory_history: dict[str, list[dict[str, Any]]] | None,
+    as_of_revision: int | None,
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Project the latest accepted memory version visible at a revision."""
+    current_by_id = {item["memory_id"]: item for item in memories}
+    histories = memory_history or {}
+    ordered_ids = list(dict.fromkeys([*current_by_id, *histories]))
+    snapshot: list[dict[str, Any]] = []
+    snapshot_history: dict[str, list[dict[str, Any]]] = {}
+
+    for memory_id in ordered_ids:
+        versions = histories.get(memory_id) or (
+            [current_by_id[memory_id]] if memory_id in current_by_id else []
+        )
+        eligible = []
+        for version in sorted(versions, key=lambda item: (item.get("created_revision", 0), item.get("version", 0))):
+            if as_of_revision is not None and version.get("created_revision", 0) > as_of_revision:
+                continue
+            visible = dict(version)
+            reviewed_revision = visible.get("reviewed_revision")
+            if (as_of_revision is not None and reviewed_revision is not None
+                    and reviewed_revision > as_of_revision):
+                visible["review_status"] = "proposed"
+                visible["reviewed_revision"] = None
+            eligible.append(visible)
+        if not eligible:
+            continue
+
+        accepted_indices = [
+            index for index, version in enumerate(eligible)
+            if version.get("review_status") == "accepted"
+        ]
+        selected_index = accepted_indices[-1] if accepted_indices else len(eligible) - 1
+        snapshot.append(eligible[selected_index])
+        snapshot_history[memory_id] = eligible[:selected_index + 1]
+
+    return snapshot, snapshot_history
+
+
 def select_story_memories(
     memories: list[dict[str, Any]],
     *,
@@ -148,11 +193,13 @@ def select_story_memories(
     source_turns: list[dict[str, Any]] | None = None,
     situation_revision: int | None = None,
     memory_history: dict[str, list[dict[str, Any]]] | None = None,
+    as_of_revision: int | None = None,
     max_items: int = 12,
     character_budget: int = 4000,
     author_budget: int = 1500,
 ) -> dict[str, Any]:
     """Filter actor access before ranking; return selected and explained exclusions."""
+    memories, memory_history = _memory_context_snapshot(memories, memory_history, as_of_revision)
     query_terms = _terms(query)
     latest_order = max((item.get("narrative_order", 0) for item in memories), default=0)
     actor_candidates: list[dict[str, Any]] = []

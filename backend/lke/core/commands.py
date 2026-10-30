@@ -133,6 +133,58 @@ def _required_text(value: Any, field: str, limit: int = 500) -> str:
     return value.strip()
 
 
+_CHARACTER_PROFILE_FIELD_LIMITS = {
+    "concept": 200,
+    "background": 4_000,
+    "personality": 500,
+    "goal": 400,
+    "voice": 500,
+    "age": 4_000,
+    "gender": 4_000,
+    "race": 4_000,
+    "appearance": 4_000,
+    "job": 4_000,
+    "persona": 4_000,
+    "extra": 4_000,
+}
+
+
+def _validated_entity_properties(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValidationError("properties must be an object")
+    properties = dict(value)
+    if "character_profile" in properties:
+        profile = properties["character_profile"]
+        if not isinstance(profile, dict):
+            raise ValidationError("character_profile must be an object")
+        unknown_fields = set(profile) - set(_CHARACTER_PROFILE_FIELD_LIMITS)
+        if unknown_fields:
+            raise ValidationError("character_profile contains unsupported fields")
+        clean_profile: dict[str, str] = {}
+        for field, limit in _CHARACTER_PROFILE_FIELD_LIMITS.items():
+            if field not in profile:
+                continue
+            text = profile[field]
+            if not isinstance(text, str):
+                raise ValidationError(f"character_profile.{field} must be text")
+            text = text.strip()
+            if len(text) > limit:
+                raise ValidationError(f"character_profile.{field} is limited to {limit} characters")
+            if text:
+                clean_profile[field] = text
+        if sum(len(text) for text in clean_profile.values()) > 34_000:
+            raise ValidationError("character_profile text is limited to 34,000 characters total")
+        if clean_profile:
+            properties["character_profile"] = clean_profile
+        else:
+            properties.pop("character_profile")
+    try:
+        _json(properties)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("properties must contain JSON-compatible data") from error
+    return properties
+
+
 def _validated_exchange_payload(
     payload: dict[str, Any], workspace_id: str, branch_id: str
 ) -> dict[str, Any]:
@@ -304,7 +356,7 @@ def _validated_world_content(value: Any, *, max_bytes: int | None = None, label:
     if max_bytes is None:
         source_archive = value.get("mno_source")
         if isinstance(source_archive, dict) and source_archive.get("format") == "mno-world" and source_archive.get("version") == 1:
-            max_bytes = 1_500_000
+            max_bytes = 1_950_000
         else:
             max_bytes = 200_000 if value.get("cover_image") is not None else 100_000
     try:
@@ -350,6 +402,85 @@ def _validated_world_content(value: Any, *, max_bytes: int | None = None, label:
             raise ValidationError("World cover images are limited to 64 KiB")
         _validate_image_content(mime_type, content)
     return value
+
+
+def _validated_story_opening_scene(content: dict[str, Any]) -> dict[str, str] | None:
+    """Validate the optional public scene seed pinned to a reusable world version."""
+    if "opening_scene" not in content:
+        return None
+    raw = content["opening_scene"]
+    if not isinstance(raw, dict) or set(raw) != {"situation", "hook"}:
+        raise ValidationError("opening_scene must define a situation and an immediate hook")
+    return {
+        "situation": _required_text(raw["situation"], "opening scene situation", 4000),
+        "hook": _required_text(raw["hook"], "opening scene hook", 2000),
+    }
+
+
+def _validated_mno_lorebook_rules(content: dict[str, Any]) -> None:
+    """Validate local activation overrides against the preserved MNO entry indexes."""
+    metadata = content.get("mno_import")
+    if not isinstance(metadata, dict) or "lorebook_rules" not in metadata:
+        return
+    source = content.get("mno_source")
+    if metadata.get("format") != "mno-world" or type(metadata.get("version")) is not int or metadata["version"] != 1 or not isinstance(source, dict):
+        raise ValidationError("lorebook rules require a preserved MNO world source")
+    entries = source.get("lorebook")
+    if not isinstance(entries, list) or len(entries) > 1000:
+        raise ValidationError("MNO lorebook rules require a source list of at most 1000 entries")
+    rules = metadata["lorebook_rules"]
+    if not isinstance(rules, dict) or len(rules) > len(entries):
+        raise ValidationError("MNO lorebook rules must map source entry indexes to settings")
+    clean: dict[str, dict[str, Any]] = {}
+    for source_index, rule in rules.items():
+        if not isinstance(source_index, str) or not source_index.isdecimal() or str(int(source_index)) != source_index:
+            raise ValidationError("MNO lorebook rule indexes must be canonical non-negative integers")
+        index = int(source_index)
+        if index >= len(entries) or source_index in clean:
+            raise ValidationError("MNO lorebook rule index is outside the preserved source list")
+        if not isinstance(entries[index], dict):
+            raise ValidationError("MNO lorebook rules can only target valid source entries")
+        if not isinstance(rule, dict) or set(rule) != {"activation", "keywords"}:
+            raise ValidationError("Each MNO lorebook rule must define activation and keywords")
+        activation = rule.get("activation")
+        if activation not in {"always", "keywords", "disabled"}:
+            raise ValidationError("MNO lorebook activation must be always, keywords, or disabled")
+        keywords = rule.get("keywords")
+        if not isinstance(keywords, list) or len(keywords) > 50:
+            raise ValidationError("MNO lorebook entries may define at most 50 keywords")
+        clean_keywords = [_required_text(value, "MNO lorebook keyword", 100) for value in keywords]
+        if len({keyword.casefold() for keyword in clean_keywords}) != len(clean_keywords):
+            raise ValidationError("MNO lorebook keywords must be unique regardless of letter case")
+        clean[source_index] = {"activation": activation, "keywords": clean_keywords}
+    metadata["lorebook_rules"] = clean
+    if len(_json(content).encode("utf-8")) > 1_500_000:
+        raise ValidationError("MNO world content including lorebook rules is limited to 1.95 MB")
+
+
+def _validated_story_world_locations(content: dict[str, Any]) -> None:
+    """Check authored world location names and the optional starting-place reference."""
+    starting_location = content.get("starting_location", "")
+    if not isinstance(starting_location, str) or len(starting_location.strip()) > 200:
+        raise ValidationError("starting_location must be text of at most 200 characters")
+    starting_location = starting_location.strip()
+    if "locations" not in content:
+        if "starting_location" in content:
+            content["starting_location"] = starting_location
+        return
+    raw = content["locations"]
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValidationError("World locations must be an array of at most 100 names")
+    locations = [_required_text(item, "world location", 150) for item in raw]
+    location_keys = {item.casefold() for item in locations}
+    if len(location_keys) != len(locations):
+        raise ValidationError("World location names must be unique regardless of letter case")
+    content["locations"] = locations
+    if starting_location and locations and starting_location.casefold() not in location_keys:
+        raise ValidationError("starting_location must match one of the world locations")
+    if starting_location and locations:
+        starting_location = next(item for item in locations if item.casefold() == starting_location.casefold())
+    if "starting_location" in content:
+        content["starting_location"] = starting_location
 
 
 _DEFAULT_STORY_STATS = {"might": 0, "agility": 0, "insight": 0, "presence": 0}
@@ -923,6 +1054,11 @@ def validate_world_package(package: Any) -> dict[str, Any]:
         if not isinstance(description, str) or len(description.strip()) > 4000:
             raise ValidationError("World description must be text of at most 4000 characters")
         content = _validated_world_content(item.get("content"))
+        _validated_mno_lorebook_rules(content)
+        opening_scene = _validated_story_opening_scene(content)
+        if opening_scene is not None:
+            content["opening_scene"] = opening_scene
+        _validated_story_world_locations(content)
         _validated_story_character_creation(content)
         _validated_story_ability_definitions(content)
         _validated_story_mechanics(content)
@@ -1055,11 +1191,15 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         if entity_id in entity_ids:
             raise ValidationError("Adventure entity IDs must be unique")
         entity_ids.add(entity_id)
+        entity_type = _required_text(entity["entity_type"], "entity_type", 100)
+        properties = _validated_entity_properties(entity["properties"])
+        if "character_profile" in properties and entity_type not in {"character", "person"}:
+            raise ValidationError("character_profile must belong to a character")
         clean_entities.append({
             "entity_id": entity_id,
-            "entity_type": _required_text(entity["entity_type"], "entity_type", 100),
+            "entity_type": entity_type,
             "label": _required_text(entity["label"], "entity label", 200),
-            "properties": _validated_world_content(entity["properties"]),
+            "properties": _validated_world_content(properties),
         })
     actor_entity_id = _required_text(adventure["actor_entity_id"], "actor_entity_id", 100)
     actor = next((entity for entity in clean_entities if entity["entity_id"] == actor_entity_id), None)
@@ -1318,7 +1458,9 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         clean_aliases = [_required_text(alias, "NPC alias", 100) for alias in aliases]
         npc_status = _package_choice(npc["review_status"], {"proposed", "accepted", "rejected"}, "NPC review status")
         clean_npcs.append({"npc_entity_id": npc_id, "aliases": clean_aliases,
-                           "public_profile": _validated_world_content(npc["public_profile"]),
+                           "public_profile": _validated_npc_public_profile(
+                               _validated_world_content(npc["public_profile"]), max_bytes=100_000,
+                           ),
                            "private_profile": _validated_world_content(npc["private_profile"]),
                            "review_status": npc_status,
                            "created_at": _package_time(npc["created_at"], "NPC created_at"),
@@ -1436,7 +1578,7 @@ def _public_world_export(package: dict[str, Any]) -> dict[str, Any]:
         content = version["content"]
         visible = {
             key: content[key] for key in
-            ("starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "cover_image") if key in content
+            ("starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "opening_scene", "cover_image") if key in content
         }
         import_metadata = content.get("mno_import")
         if isinstance(import_metadata, dict):
@@ -1704,7 +1846,7 @@ def _adventure_export_report(package: dict[str, Any], mode: str) -> dict[str, An
 
 
 def _world_export_report(package: dict[str, Any], mode: str) -> dict[str, Any]:
-    visible_fields = {"starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "cover_image"}
+    visible_fields = {"starting_location", "stats", "character_creation", "abilities", "game_mechanics", "trackers", "locations", "public_lore", "opening_scene", "cover_image"}
     visible_import_fields = {"format", "version", "stat_definitions", "npc_tracker_definitions", "conversion"}
     unclassified = []
     for version in package["versions"]:
@@ -1756,6 +1898,28 @@ def _validated_trackers(value: Any) -> dict[str, dict[str, int]]:
     return trackers
 
 
+def _validated_npc_public_profile(value: Any, *, max_bytes: int = 20_000) -> dict[str, Any]:
+    """Validate the optional story relationship note in a public NPC profile."""
+    if not isinstance(value, dict):
+        raise ValidationError("NPC public profile must be an object")
+    try:
+        serialized = _json(value)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("NPC public profile must contain JSON-compatible values") from error
+    if len(serialized.encode("utf-8")) > max_bytes:
+        raise ValidationError(f"NPC public profile is limited to {max_bytes // 1_000} KB")
+    profile = dict(value)
+    if "relationship_to_actor" in profile:
+        relationship = profile["relationship_to_actor"]
+        if relationship is None or (isinstance(relationship, str) and not relationship.strip()):
+            profile.pop("relationship_to_actor")
+        else:
+            profile["relationship_to_actor"] = _required_text(
+                relationship, "NPC relationship to protagonist", 500,
+            )
+    return profile
+
+
 def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value or len(value) > 20:
         raise ValidationError("changes must contain between 1 and 20 RPG state changes")
@@ -1775,10 +1939,13 @@ def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
         elif operation == "npc_profile":
             npc_entity_id = _required_text(change.get("npc_entity_id"), "npc_entity_id", 100)
             updates = change.get("updates")
-            allowed_fields = {"motivation", "current_goal", "whereabouts", "memory"}
-            if not isinstance(updates, dict) or not updates or len(updates) > 4 or not set(updates) <= allowed_fields:
+            allowed_fields = {"motivation", "current_goal", "whereabouts", "memory", "relationship_to_actor"}
+            if not isinstance(updates, dict) or not updates or len(updates) > 5 or not set(updates) <= allowed_fields:
                 raise ValidationError("NPC simulation updates must use the supported public profile fields")
-            clean_updates = {key: _required_text(value, f"NPC {key}", 500) for key, value in updates.items()}
+            clean_updates = {
+                key: _required_text(value, f"NPC {key}", 500)
+                for key, value in updates.items()
+            }
             clean.append({"operation": operation, "npc_entity_id": npc_entity_id, "updates": clean_updates})
         elif operation == "add_event_memory":
             context_enabled = change.get("context_enabled", True)
@@ -2633,9 +2800,9 @@ class CommandGateway:
             entity_id = _required_text(payload.get("entity_id") or str(uuid4()), "entity_id", 100)
             entity_type = _required_text(payload.get("entity_type"), "entity_type", 100)
             label = _required_text(payload.get("label"), "label")
-            properties = payload.get("properties", {})
-            if not isinstance(properties, dict):
-                raise ValidationError("properties must be an object")
+            properties = _validated_entity_properties(payload.get("properties", {}))
+            if "character_profile" in properties and entity_type not in {"character", "person"}:
+                raise ValidationError("character_profile must belong to a character")
             properties_json = _json(properties)
             connection.execute(
                 "INSERT INTO entities(workspace_id,branch_id,entity_id,entity_type,label,properties_json,created_revision,updated_revision) "
@@ -2665,9 +2832,11 @@ class CommandGateway:
             }
             entity_type = _required_text(payload.get("entity_type", row["entity_type"]), "entity_type", 100)
             label = _required_text(payload.get("label", row["label"]), "label")
-            properties = payload.get("properties", json.loads(row["properties_json"]))
-            if not isinstance(properties, dict):
-                raise ValidationError("properties must be an object")
+            properties = _validated_entity_properties(
+                payload.get("properties", json.loads(row["properties_json"]))
+            )
+            if "character_profile" in properties and entity_type not in {"character", "person"}:
+                raise ValidationError("character_profile must belong to a character")
             properties_json = _json(properties)
             after = {"entity_type": entity_type, "label": label, "properties": json.loads(properties_json)}
             if after == before:
@@ -3518,6 +3687,11 @@ class CommandGateway:
             if not isinstance(description, str) or len(description.strip()) > 4000:
                 raise ValidationError("description must be text of at most 4000 characters")
             content = _validated_world_content(payload.get("content", {}))
+            _validated_mno_lorebook_rules(content)
+            opening_scene = _validated_story_opening_scene(content)
+            if opening_scene is not None:
+                content["opening_scene"] = opening_scene
+            _validated_story_world_locations(content)
             _validated_story_character_creation(content)
             _validated_story_ability_definitions(content)
             _validated_story_mechanics(content)
@@ -4437,6 +4611,7 @@ class CommandGateway:
                     not isinstance(public_profile, dict) or not isinstance(private_profile, dict) or
                     status not in {"proposed", "accepted", "rejected"}):
                 raise ValidationError("NPC aliases, profiles, or review status are invalid")
+            public_profile = _validated_npc_public_profile(public_profile)
             if len(_json(public_profile).encode("utf-8")) > 20000 or len(_json(private_profile).encode("utf-8")) > 20000:
                 raise ValidationError("NPC profiles are limited to 20 KB each")
             old = connection.execute(
@@ -4478,6 +4653,7 @@ class CommandGateway:
                     not isinstance(public_profile, dict) or not isinstance(private_profile, dict) or
                     status not in {"proposed", "accepted", "rejected"}):
                 raise ValidationError("NPC aliases, profiles, or review status are invalid")
+            public_profile = _validated_npc_public_profile(public_profile)
             if len(_json(public_profile).encode("utf-8")) > 20_000 or len(_json(private_profile).encode("utf-8")) > 20_000:
                 raise ValidationError("NPC profiles are limited to 20 KB each")
             now = _now()
@@ -6407,12 +6583,25 @@ class CommandGateway:
             mechanic_checks = self.db.connection.execute(
                 mechanic_check_query + " ORDER BY created_revision DESC LIMIT 50", check_parameters,
             ).fetchall()
-            proposals = self.db.connection.execute(
+            proposal_query = (
                 "SELECT proposal_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at "
-                "FROM rpg_state_proposals WHERE workspace_id=? AND branch_id=? AND adventure_id=? "
-                "ORDER BY created_revision DESC",
-                (workspace_id, branch_id, adventure_id),
+                "FROM rpg_state_proposals WHERE workspace_id=? AND branch_id=? AND adventure_id=?"
+            )
+            proposal_parameters: tuple[Any, ...] = (workspace_id, branch_id, adventure_id)
+            if as_of_revision is not None:
+                proposal_query += " AND created_revision<=?"
+                proposal_parameters += (as_of_revision,)
+            proposal_rows = self.db.connection.execute(
+                proposal_query + " ORDER BY created_revision DESC", proposal_parameters,
             ).fetchall()
+            proposals = []
+            for row in proposal_rows:
+                proposal = dict(row)
+                if (as_of_revision is not None and proposal["reviewed_revision"] is not None
+                        and proposal["reviewed_revision"] > as_of_revision):
+                    proposal["review_status"] = "proposed"
+                    proposal["reviewed_revision"] = None
+                proposals.append(proposal)
         sheet_data = dict(sheet) if sheet else None
         if historical_sheet is not None and sheet_data is not None:
             for field in ("stats", "trackers", "current_location", "map_region", "map_x", "map_y", "map_scale", "skills", "experience"):
@@ -6453,7 +6642,7 @@ class CommandGateway:
                 for row in mechanic_checks
             ],
             "proposals": [
-                {**dict(row), "changes": json.loads(row["changes_json"])}
+                {**row, "changes": json.loads(row["changes_json"])}
                 for row in proposals
             ],
         }

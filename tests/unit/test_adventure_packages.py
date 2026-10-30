@@ -78,7 +78,10 @@ class AdventurePackageTests(unittest.TestCase):
         })
         self.command("source", "source-adventure", "npc-profile", "update_story_npc", {
             "adventure_id": "source-adventure", "npc_entity_id": "ferryman", "aliases": ["Boatman"],
-            "public_profile": {"appearance": "A gray coat", "current_goal": "Guard the old ferry"},
+            "public_profile": {
+                "appearance": "A gray coat", "current_goal": "Guard the old ferry",
+                "relationship_to_actor": "Cautiously trusts Mira after the storm",
+            },
             "private_profile": {"notes": "Knows the captain's secret."}, "review_status": "accepted",
         })
         revision = self.gateway.current_revision("source", "source-adventure")
@@ -219,6 +222,10 @@ class AdventurePackageTests(unittest.TestCase):
         self.assertEqual(studio["threads"][0]["thread_id"], "missing-sailor")
         npc = self.gateway.list_story_npcs("destination", "imported-adventure", "imported-adventure")[0]
         self.assertEqual(npc["public_profile"]["current_goal"], "Guard the old ferry")
+        self.assertEqual(
+            npc["public_profile"]["relationship_to_actor"],
+            "Cautiously trusts Mira after the storm",
+        )
         asset = self.gateway.list_story_assets("destination", "imported-adventure", "imported-adventure")[0]
         self.assertEqual(asset["target_id"], self.turn_id)
         self.assertEqual(
