@@ -1,6 +1,16 @@
 # Changelog
 
-This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v17 results.
+This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v18 results.
+
+## 2026-10-30 — Simpler play and automatic story checks
+
+- Compared the supplied Lorethra and MNO snapshots with the live MNO entry path. MNO puts **Begin Your Adventure**, **Create world**, and import first; its hero setup still has four tabs and many optional fields. The Lorethra snapshot showed backup/search/filter/export/setup controls together. This is useful direction, not evidence that MNO is perfect or that either saved HTML file's scripts work.
+- Keep the story transcript and next-action composer central. Move each turn's edit/retry/hide actions into a small **Turn options** disclosure, hide the large character/RPG panel behind one **Character details** disclosure, surface pending review counts, and remove revision identifiers and model names from ordinary turn labels.
+- New worlds default to local automatic checks and one XP per completed player turn. MNO world imports explicitly pin Lorethra's d20 defaults and automatic XP; the adapter does not execute or claim parity with MNO formulas, roll logic, or reward rules. Existing worlds without explicit mechanics retain their previous manual behavior.
+- For an uncertain action, the provider may request a check and return success/failure narration together in one response. Lorethra generates dice locally; the command gateway validates the chosen rule IDs, dice range, modifiers, target, and outcome against the pinned world and selects the matching branch. It stores only the selected story text and the linked check atomically, so there is no second provider call and a replay cannot add another turn, check, or XP.
+- Add schema v18 nullable source-turn provenance for configured mechanic checks. Adventure packages preserve the link when available and accept older records without it; selecting a check for export also carries its outcome turn and preceding action. Checks from edited or hidden source turns are excluded from current RPG context.
+- Validation: bundled-Python `python -m compileall -q backend/lke`, `npm run build` (TypeScript plus Vite production build; 514.74 kB main JavaScript chunk), and `git diff --check` passed. Vite reports the existing 500 kB chunk-size advisory. No unit/API tests or rendered-browser interaction were run. A local API session could not start because FastAPI is not installed in the available Python runtime; live-provider behavior and installed Windows desktop acceptance remain open.
+- Conventional commits: `feat(story): add automatic pinned-rule checks and XP`, `feat(ui): simplify active play controls`, and `docs(ux): record MNO comparison and acceptance gaps`.
 
 ## 2026-10-30 — Codex generation recovery and a simpler play path
 

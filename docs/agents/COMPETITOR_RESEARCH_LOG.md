@@ -68,6 +68,23 @@ The supplied JSON files were parsed locally. The world file is 354,548 bytes and
 
 **Practical adaptation:** use separate world and adventure libraries; put Continue first and collapse setup/import tools; keep play central and detail in optional panels; let users select from a reusable world cast; preserve role and author-only distinctions during imports; show coordinate maps with a parallel accessible POI list; and review imported memories/state instead of assuming that old narration is canonical. Search, filters, sorting, lifecycle actions, and a short setup review now exist in Lorethra. Their full browser and installed-desktop acceptance remains open; see docs/PROJECT_STATUS.md.
 
+## Live home-page comparison and saved-story UX audit (2026-10-30)
+
+**Evidence reviewed:** [MNO RPG Engine](https://perchance.org/mnoengine) in its live page, the supplied MNO and Lorethra saved HTML pages, and the two supplied adventure transcripts. The saved HTML was inspected as text and was not executed. The MNO start/setup path was opened without saving a hero or starting a persistent adventure.
+
+MNO's live home page makes three next steps easy to recognize: **Begin Your Adventure**, **Create world**, and import. It gives a short explanation of each and a visible local-storage/backup notice. The world-selection dialog briefly explains that an adventure stays bound to its chosen world. The hero wizard has four tabs—Bio, Avatar, Stats, Review—and still asks for several fields and art choices. That is a useful start-first pattern, not proof that the whole product is simple for every user.
+
+The supplied Lorethra saved page puts repair search, backup/restore, refresh, filters/sort, create/continue, export choices, and the first setup step in the same visible area. That is a high competing-action count for someone who only wants to continue a story. The current source changes reduce turn-level buttons, move character/game controls behind one named disclosure, keep the story composer as the primary task, and expose pending review counts where the review queue is collapsed. Source review cannot establish that people will understand these choices; the local app was not available for a rendered comparison in this inspection.
+
+The MNO adventure transcript visibly presents roll results in the story flow. The transcript is not evidence of MNO's underlying random-number generation, formulas, automatic reward calculation, or state persistence, so this log makes no such parity claim. Lorethra's automatic outcome selection is implemented with its own pinned rules and gateway checks; MNO formulas and source settings remain untrusted preserved text.
+
+**Product decisions:**
+
+- Put the next player action first; move repair, backup, export, and diagnostic controls out of the ordinary play surface.
+- Show a check and its consequences as one story result. Lorethra asks the provider for both possible narrative outcomes in one response, rolls locally, and commits only the matching branch with the validated check, avoiding a second provider call.
+- Use automatic XP by default for new worlds and MNO imports. Preserve the behavior pinned in older worlds rather than silently changing existing adventures.
+- Evaluate beginner comprehension by task completion with a novice, narrow-window rendering, keyboard-only navigation, visible pending reviews, and a reload/branch-isolation check. Those runtime checks remain open.
+
 ## Continuity evaluation references
 
 - [MemGPT](https://arxiv.org/abs/2310.08560) motivates separating bounded active context from longer-term memory.
