@@ -421,6 +421,13 @@ export type StoryHistoryPreview = {
   }>;
 };
 export type OllamaModelStatus = { available: boolean; models: string[] };
+export type CodexModelOption = {
+  model: string;
+  display_name: string;
+  default_reasoning_effort: string;
+  supported_reasoning_efforts: string[];
+  effort_descriptions: Record<string, string>;
+};
 export type StoryProvider = {
   id: "ollama" | "openai" | "claude" | "codex" | "huggingface" | "huggingface_local";
   label: string; local: boolean; available: boolean; models: string[]; default_model: string; setup: string;

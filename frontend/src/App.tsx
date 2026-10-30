@@ -4,7 +4,7 @@ import { buildStoryExport } from "./storyExport";
 import { allocatedCreationPoints, randomizeCharacterAllocation } from "./storyCreation";
 import type { CharacterCreationStat } from "./storyCreation";
 import { defaultStoryMechanics, readStoryMechanics, StoryMechanicsEditor } from "./storyMechanics";
-import { Branch, Claim, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAbilityDefinition, StoryAdventure, StoryAdventureExportMode, StoryAdventureExportPreview, StoryAdventureExportSelection, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryHistoryPreview, StoryMapLocation, StoryMechanicsProfile, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
+import { Branch, Claim, CodexModelOption, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAbilityDefinition, StoryAdventure, StoryAdventureExportMode, StoryAdventureExportPreview, StoryAdventureExportSelection, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryHistoryPreview, StoryMapLocation, StoryMechanicsProfile, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
 
 type Page = "story" | "knowledge" | "journal" | "scenario";
 type Notice = { tone: "error" | "success" | "info"; text: string } | null;
@@ -232,10 +232,10 @@ function uniqueLibraryCopyName(sourceName: string, existingNames: string[]): str
 }
 
 const NAV: { id: Page; title: string; icon: string; sub: string }[] = [
-  { id: "story", title: "Story Studio", icon: "✳", sub: "Worlds and characters" },
-  { id: "knowledge", title: "Knowledge", icon: "⌘", sub: "Sources and relationships" },
-  { id: "journal", title: "Journal", icon: "▤", sub: "Notes and memories" },
-  { id: "scenario", title: "Scenarios", icon: "◇", sub: "Explore what-if branches" },
+  { id: "story", title: "Play & create", icon: "✳", sub: "Stories, worlds, and heroes" },
+  { id: "knowledge", title: "Knowledge Explorer", icon: "⌘", sub: "Sources and facts" },
+  { id: "journal", title: "Journal & Memory", icon: "▤", sub: "Personal notes" },
+  { id: "scenario", title: "What-if scenarios", icon: "◇", sub: "Compare choices safely" },
 ];
 
 export default function App() {
@@ -744,37 +744,56 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">L</div><div><strong>Living Knowledge</strong><span>ENGINE</span></div></div>
-        <div className="workspace-label">WORKSPACE</div>
+        <div className="brand"><div className="brand-mark">L</div><div><strong>Lorethra</strong><span>STORIES & WORLDS</span></div></div>
+        <div className="workspace-label">YOUR SPACE</div>
         <select className="workspace-select" value={workspaceId} disabled={busy} onChange={(event) => { setWorkspaceId(event.target.value); setBranchId("main"); }} aria-label="Select workspace">
-          <option value="">Choose a workspace</option>
+          <option value="">Choose your space</option>
           {workspaces.map((workspace) => <option key={workspace.workspace_id} value={workspace.workspace_id}>{workspace.name}</option>)}
         </select>
         <nav className="primary-nav" aria-label="Main navigation">
-          {NAV.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}>
+          {NAV.filter((item) => item.id === "story").map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}>
             <span className="nav-icon">{item.icon}</span><span><b>{item.title}</b><small>{item.sub}</small></span>
           </button>)}
         </nav>
-        <div className="sidebar-bottom"><span className="privacy-dot" />Local storage <span className="sidebar-version">v0.1</span></div>
+        <details className="sidebar-more-tools" open={page !== "story"}>
+          <summary>More tools <small>Knowledge, notes, and scenarios</small></summary>
+          <nav aria-label="More tools">
+            {NAV.filter((item) => item.id !== "story").map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}>
+              <span className="nav-icon">{item.icon}</span><span><b>{item.title}</b><small>{item.sub}</small></span>
+            </button>)}
+          </nav>
+        </details>
+        <div className="sidebar-bottom"><span className="privacy-dot" />Saved on this device</div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your knowledge space"}</span><span className="crumb-sep">/</span><select className="branch-select" aria-label="Select branch" value={branchId} disabled={busy} onChange={(event) => setBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.branch_id} value={branch.branch_id}>{branch.branch_id === "main" ? "Main" : branch.branch_id}</option>)}</select></div>
-          <div className="top-actions"><span className="revision-chip">Revision {revision}</span><button className="quiet-button" disabled={busy} onClick={() => void rebuildSearch()}>Rebuild search</button><button className="quiet-button" disabled={busy || !workspaceId} onClick={() => void saveBackup()}>Back up</button><button className="quiet-button" disabled={busy} onClick={() => restoreInputRef.current?.click()}>Restore</button><input ref={restoreInputRef} type="file" accept=".lkebackup,application/zip" hidden onChange={(event) => void restoreBackup(event)} /><button className="quiet-button" disabled={busy} onClick={() => void load()}>Refresh</button></div>
+          <div className="breadcrumbs"><span>{activeWorkspace?.name || "Your stories and notes"}</span></div>
+          <details className="project-options">
+            <summary>More project options</summary>
+            <div className="project-options-menu">
+              <label>Current branch<select className="branch-select" aria-label="Select branch" value={branchId} disabled={busy} onChange={(event) => setBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.branch_id} value={branch.branch_id}>{branch.branch_id === "main" ? "Main" : branch.branch_id}</option>)}</select></label>
+              <span className="revision-chip">Revision {revision}</span>
+              <button className="quiet-button" disabled={busy} onClick={() => void rebuildSearch()}>Repair search</button>
+              <button className="quiet-button" disabled={busy || !workspaceId} onClick={() => void saveBackup()}>Make a backup</button>
+              <button className="quiet-button" disabled={busy} onClick={() => restoreInputRef.current?.click()}>Restore a backup</button>
+              <input ref={restoreInputRef} type="file" accept=".lkebackup,application/zip" hidden onChange={(event) => void restoreBackup(event)} />
+              <button className="quiet-button" disabled={busy} onClick={() => void load()}>Refresh</button>
+            </div>
+          </details>
         </header>
         <div className="page-content">
           {notice && <div className={`notice ${notice.tone}`} role="status"><span>{notice.tone === "error" ? "!" : notice.tone === "success" ? "✓" : "·"}</span>{notice.text}<button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
 
           {!workspaceId ? <section className="welcome-card">
-            <div className="eyebrow">A private workspace for connected knowledge</div>
-            <h1>Start with a world, an idea, or a note.</h1>
-            <p>Create a workspace to bring sources, people, stories, and scenarios together. Your information stays on this device.</p>
+            <div className="eyebrow">Welcome to Lorethra</div>
+            <h1>Create your story space</h1>
+            <p>Your adventures, worlds, and notes are saved on this device.</p>
             <form className="inline-create" onSubmit={createWorkspace}>
-              <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="Give your workspace a name" aria-label="Workspace name" maxLength={200} />
-              <button className="primary-button" disabled={busy}>Create workspace <span>↗</span></button>
+              <label className="field-label">Space name<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="For example, My stories" aria-label="Space name" maxLength={200} /></label>
+              <button className="primary-button" disabled={busy}>Create my space <span>↗</span></button>
             </form>
-            <div className="welcome-points"><span>◉ Evidence stays linked</span><span>◈ Explore safely in branches</span><span>⌁ Your data stays yours</span></div>
+            <div className="welcome-points"><span><span className="privacy-dot" />Private to this device</span></div>
           </section> : loadedScope !== selectedScope ? <section className="panel" role="status">
             {loadFailure?.scope === selectedScope ? <>
               <h2>The selected workspace could not be loaded.</h2>
@@ -1476,6 +1495,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [model, setModel] = useState(() => {
     try { return window.localStorage.getItem("lke.story.model") || ""; } catch { return ""; }
   });
+  const [codexModelOptions, setCodexModelOptions] = useState<CodexModelOption[]>([]);
+  const [reasoningEffort, setReasoningEffort] = useState(() => {
+    try { return window.localStorage.getItem("lke.story.reasoning-effort") || ""; } catch { return ""; }
+  });
   const [usingCustomModel, setUsingCustomModel] = useState(false);
   const [modelDiscoveryBusy, setModelDiscoveryBusy] = useState(false);
   const [modelDiscoveryError, setModelDiscoveryError] = useState("");
@@ -1603,10 +1626,21 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const memoryScopeRef = useRef("");
   const storyMounted = useRef(true);
   const storyProviderRef = useRef(providerId);
+  const storyModelRef = useRef(model);
   storyProviderRef.current = providerId;
+  storyModelRef.current = model;
   const selectedStoryProvider = storyProviders.find((provider) => provider.id === providerId);
   const storyProviderAvailable = selectedStoryProvider?.available ?? false;
   const models = selectedStoryProvider?.models ?? [];
+  const selectedCodexModel = codexModelOptions.find((option) => option.model === model);
+  const automaticCodexEffortSets = codexModelOptions
+    .map((option) => option.supported_reasoning_efforts);
+  const automaticCodexEfforts = automaticCodexEffortSets.length
+    ? automaticCodexEffortSets[0].filter((effort) => automaticCodexEffortSets.every((options) => options.includes(effort)))
+    : [];
+  const availableCodexEfforts = model === "auto"
+    ? automaticCodexEfforts
+    : selectedCodexModel?.supported_reasoning_efforts ?? [];
   const localStoryProvider = storyProviders.find((provider) => provider.id === "ollama");
   const localStoryModels = localStoryProvider?.models ?? [];
   const selectedWorldArchitectModel = localStoryModels.includes(worldArchitectModel)
@@ -1634,29 +1668,82 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setExternalProviderConsents(next);
     try { window.localStorage.setItem("lke.external-provider-consents", JSON.stringify(next)); } catch { /* Backend still requires explicit consent on each request. */ }
   }
-  const knownModel = models.includes(model) || (providerId === "codex" && model === "auto");
-  const customModel = usingCustomModel || (!knownModel && Boolean(model)) || (!models.length && providerId !== "codex");
+  const knownModel = models.includes(model) || (providerId === "codex" && (model === "auto" || codexModelOptions.some((option) => option.model === model)));
+  const customModel = providerId !== "codex" && (usingCustomModel || (!knownModel && Boolean(model)));
+  function changeStoryModel(value: string) {
+    if (value === "__custom__") {
+      setUsingCustomModel(true);
+      setModel("");
+      return;
+    }
+    setUsingCustomModel(false);
+    setModel(value);
+    if (providerId === "codex" && reasoningEffort) {
+      const nextEfforts = value === "auto"
+        ? automaticCodexEfforts
+        : codexModelOptions.find((option) => option.model === value)?.supported_reasoning_efforts ?? [];
+      if (!nextEfforts.includes(reasoningEffort)) setReasoningEffort("");
+    }
+  }
+  function codexReasoningControl(label: string, disabled = false) {
+    if (providerId !== "codex") return null;
+    if (!codexModelOptions.length) {
+      return <p className="provider-note">{modelDiscoveryBusy ? "Loading Codex model choices…" : "Choose an effort after refreshing the Codex model list. Automatic uses Codex’s own default."}</p>;
+    }
+    return <label className="field-label">Reasoning effort<select aria-label={label} value={reasoningEffort}
+      disabled={disabled || !availableCodexEfforts.length}
+      onChange={(event) => setReasoningEffort(event.target.value)}>
+      <option value="">Automatic · model default</option>
+      {availableCodexEfforts.map((effort) => <option key={effort} value={effort}>{effort === selectedCodexModel?.default_reasoning_effort ? `${effort} · model default` : effort}</option>)}
+    </select><small className="field-note">Choose a level the selected model supports, or leave it on Automatic.</small></label>;
+  }
   function changeStoryProvider(nextId: StoryProvider["id"]) {
     const next = storyProviders.find((provider) => provider.id === nextId);
     storyProviderRef.current = nextId;
     setProviderId(nextId);
     setUsingCustomModel(false);
     setModelDiscoveryError("");
-    setModel(next?.default_model || next?.models[0] || (nextId === "codex" ? "auto" : ""));
+    setModel(nextId === "codex" ? "auto" : next?.default_model || next?.models[0] || "");
+    setReasoningEffort("");
     setStoryError("");
   }
   async function loadProviderModels(requestedProvider: StoryProvider["id"] = providerId) {
     setModelDiscoveryError("");
     setModelDiscoveryBusy(true);
     try {
-      const response = await request<{ models: string[] }>(`/api/v1/providers/story/${encodeURIComponent(requestedProvider)}/models`, { method: "POST" });
+      const response = await request<{ models: string[]; model_options?: CodexModelOption[] }>(`/api/v1/providers/story/${encodeURIComponent(requestedProvider)}/models`, { method: "POST" });
       if (storyMounted.current) setStoryProviders((providers) => providers.map((provider) => provider.id === requestedProvider ? { ...provider, models: response.models } : provider));
+      if (storyMounted.current && requestedProvider === "codex") {
+        const options = response.model_options ?? [];
+        setCodexModelOptions(options);
+        if (storyProviderRef.current === "codex") {
+          const currentModel = storyModelRef.current;
+          setReasoningEffort((current) => {
+            const optionSets = options.map((option) => option.supported_reasoning_efforts);
+            const automaticEfforts = optionSets.length ? optionSets[0].filter((effort) => optionSets.every((supported) => supported.includes(effort))) : [];
+            const selectedEfforts = currentModel === "auto" ? automaticEfforts : options.find((option) => option.model === currentModel)?.supported_reasoning_efforts ?? [];
+            return selectedEfforts.includes(current) ? current : "";
+          });
+          if (currentModel !== "auto" && !options.some((option) => option.model === currentModel)) setModel("auto");
+        }
+      }
     } catch (error) {
       if (storyMounted.current && storyProviderRef.current === requestedProvider) setModelDiscoveryError(error instanceof Error ? error.message : "Models could not be loaded.");
     } finally {
       if (storyMounted.current) setModelDiscoveryBusy(false);
     }
   }
+  const codexDiscoveryStarted = useRef(false);
+  useEffect(() => {
+    if (providerId !== "codex") {
+      codexDiscoveryStarted.current = false;
+      return;
+    }
+    if (storyProviderAvailable && !codexDiscoveryStarted.current) {
+      codexDiscoveryStarted.current = true;
+      void loadProviderModels("codex");
+    }
+  }, [providerId, storyProviderAvailable]);
   useEffect(() => {
     storyMounted.current = true;
     return () => {
@@ -1668,8 +1755,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     try {
       window.localStorage.setItem("lke.story.provider", providerId);
       window.localStorage.setItem("lke.story.model", model);
+      window.localStorage.setItem("lke.story.reasoning-effort", reasoningEffort);
     } catch { /* Preferences are optional; canonical story data stays in SQLite. */ }
-  }, [providerId, model]);
+  }, [providerId, model, reasoningEffort]);
   useEffect(() => {
     let active = true;
     setShowHeroProfileEditor(false);
@@ -2037,7 +2125,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setStoryError("No story data was sent. Your direction is still here; choose a local provider or approve this provider first.");
       return;
     }
-    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, prompt, order]);
+    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, reasoningEffort, prompt, order]);
     if (pendingStoryRequest.current?.fingerprint !== fingerprint) {
       pendingStoryRequest.current = {
         fingerprint,
@@ -2049,6 +2137,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           provider: providerId,
           external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null,
           model,
+          ...(providerId === "codex" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
           prompt,
           narrative_order: order,
         }),
@@ -2168,7 +2257,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const result = await request<StoryGenerationResult>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/retry`,
         { method: "POST", signal: controller.signal,
-          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model }) },
+          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model, ...(providerId === "codex" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }) },
       );
       setConversation(result.conversation);
       onRevisionChange(result.revision);
@@ -3508,7 +3597,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     && Boolean(worldOpeningSituation.trim()) === Boolean(worldOpeningHook.trim());
 
   return <>
-    <PageHeader kicker="Narrative workspace" title="Story Studio" summary="Continue a saved story with a local model, while keeping character knowledge and world facts under your control." />
+    <PageHeader kicker="Play and create" title="Your stories" summary="Pick up where you left off, or make a new world and hero." />
     <section className="panel story-hub">
       <div className="panel-heading">
         <div><h2>Worlds & adventures</h2><p>Create a world once, then start separate adventures from its pinned version.</p></div>
@@ -3853,29 +3942,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <p className="story-start-summary" aria-live="polite">{selectedSetupWorld && selectedSetupHero
               ? `Ready to play “${adventureName.trim() || selectedSetupWorld.name}” as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
               : "Choose a world and protagonist to review your adventure."}</p>
-            <section className="story-setup-model" aria-labelledby="setup-model-heading">
-              <h3 id="setup-model-heading">Story model</h3>
-              <p className="field-note">Choose a provider and model for story generation. Setup itself stays local; online providers require separate consent before a request is sent.</p>
-              <div className="story-provider-fields">
-                <label className="field-label">AI provider<select aria-label="Setup AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
-                  {storyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}{provider.local ? " · local" : " · online"}</option>)}
-                  {!storyProviders.length && <option value="ollama">Ollama · local</option>}
-                </select></label>
-                <label className="field-label">Model<select aria-label="Setup model" value={customModel ? "__custom__" : model} disabled={generating || memoryQuerying} onChange={(event) => {
-                  if (event.target.value === "__custom__") { setUsingCustomModel(true); setModel(""); }
-                  else { setUsingCustomModel(false); setModel(event.target.value); }
-                }}>
-                  {!model && !customModel && <option value="">Choose a model</option>}
-                  {providerId === "codex" && <option value="auto">Codex default (automatic)</option>}
-                  {models.filter((name) => name !== "auto").map((name) => <option key={name} value={name}>{name}</option>)}
-                  <option value="__custom__">Enter a model ID manually</option>
-                </select></label>
-                {customModel && <label className="field-label">Custom model ID<input aria-label="Setup custom model ID" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} placeholder="Provider model ID" /></label>}
-              </div>
-              {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "Story requests stay on this device." : "Lorethra will show a provider-specific consent prompt before sending story material."}</p>}
-              {!storyProviderAvailable && <p className="provider-note">This provider is not available yet. You can still start the adventure and configure it later.</p>}
-              {storyProviderAvailable && !model.trim() && <p className="provider-note">Choose a model to generate prose. Character sheets and local mechanics remain available without one.</p>}
-            </section>
+            <p className="field-note">You can choose or change the story-writing model after the adventure starts, under <strong>Writing settings</strong>.</p>
             <div className="wizard-actions">
               <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(2)}>Back</button>
               <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Review and continue <span>→</span></button>
@@ -4158,39 +4225,43 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
                 </details>}
               </>}
-            </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Choose a model and describe what should happen next.</p></div>}
+            </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Describe what happens next, and Lorethra will continue the scene.</p></div>}
           </div>
           <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
-            <div className="story-provider-fields">
-              <label className="field-label">AI provider<select aria-label="AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
-                {storyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}{provider.local ? " · local" : " · online"}</option>)}
-                {!storyProviders.length && <option value="ollama">Ollama · local</option>}
-              </select></label>
-              <label className="field-label">Model<select aria-label="Model" value={customModel ? "__custom__" : model} disabled={generating || memoryQuerying} onChange={(event) => {
-                if (event.target.value === "__custom__") { setUsingCustomModel(true); setModel(""); }
-                else { setUsingCustomModel(false); setModel(event.target.value); }
-              }}>
-                {!model && !customModel && <option value="">Choose a model</option>}
-                {providerId === "codex" && <option value="auto">Codex default (automatic)</option>}
-                {models.filter((name) => name !== "auto").map((name) => <option key={name} value={name}>{name}</option>)}
-                <option value="__custom__">Enter a model ID manually</option>
-              </select></label>
-              {customModel && <label className="field-label">Custom model ID<input aria-label="Custom model ID" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} disabled={generating || memoryQuerying} placeholder="Provider model ID" /></label>}
-            </div>
-            {(providerId === "openai" || providerId === "claude" || providerId === "codex") && storyProviderAvailable && <div>
-              <button className="secondary-button" type="button" disabled={modelDiscoveryBusy || generating || memoryQuerying} onClick={() => void loadProviderModels()}>{modelDiscoveryBusy ? "Loading models…" : "Load available models"}</button>
-              <small className="provider-note">{providerId === "codex" ? "Reads the Codex model catalog without sending story text; availability can depend on your account." : "Requests the selected provider's model catalog using your configured API key. Some listed models may not support story text."}</small>
-              {modelDiscoveryError && <p className="inline-error" role="alert">{modelDiscoveryError}</p>}
-            </div>}
-            <details><summary>Advanced story options</summary><label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label></details>
-            <label className="field-label">Your direction<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="What should the scene explore? If you control the character, write the actions or words you want them to take." required /></label>
-            {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "This provider is configured for local inference." : "Story requests require provider-specific consent. Private author notes, private NPC profiles, actor-scoped facts, and non-shared memories are excluded before transmission. Provider data terms and account charges may apply."}</p>}
-            {selectedStoryProvider && EXTERNAL_STORY_PROVIDERS.includes(providerId) && (externalProviderConsents.includes(providerId)
-              ? <button className="link-button provider-consent-revoke" type="button" onClick={() => revokeExternalProviderConsent(providerId)}>Revoke consent for {selectedStoryProvider.label} on this device</button>
-              : <small className="provider-note">This provider has no saved consent on this device. The app will show what leaves Lorethra before the first story or memory request.</small>)}
-            {selectedStoryProvider && !storyProviderAvailable && <p className="provider-note">This provider is not available yet. Check its setup above, then reload the workspace.</p>}
-            {storyProviderAvailable && !model.trim() && <p className="provider-note">Choose a listed model or enter a custom model ID to continue.</p>}
-            <button className="primary-button full-button" disabled={generating || busy || !storyProviderAvailable || !model.trim() || !prompt.trim()}>{generating ? "Writing story…" : `Continue story${selectedStoryProvider ? ` with ${selectedStoryProvider.label}` : ""}`} <span>✳</span></button>
+            <label className="field-label story-direction-label">What happens next?<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="Describe a moment, a question, or what your hero does." required /></label>
+            <details className="story-writing-settings">
+              <summary><span>Writing settings</span><small>{selectedStoryProvider?.label || "Choose a model"} · {model === "auto" ? "Default model" : model || "Model not selected"}{reasoningEffort ? ` · ${reasoningEffort} reasoning` : ""}</small></summary>
+              <div className="story-writing-settings-body">
+                <div className="story-provider-fields">
+                  <label className="field-label">AI provider<select aria-label="AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
+                    {storyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}{provider.local ? " · local" : " · online"}</option>)}
+                    {!storyProviders.length && <option value="ollama">Ollama · local</option>}
+                  </select></label>
+                  <label className="field-label">Model<select aria-label="Model" value={customModel ? "__custom__" : model} disabled={generating || memoryQuerying} onChange={(event) => changeStoryModel(event.target.value)}>
+                    {!model && !customModel && <option value="">Choose a model</option>}
+                    {providerId === "codex" && <option value="auto">Codex default (automatic)</option>}
+                    {providerId === "codex" && model && model !== "auto" && !models.includes(model) && <option value={model} disabled>{modelDiscoveryBusy ? "Loading saved model…" : "Saved model unavailable"}</option>}
+                    {models.filter((name) => name !== "auto").map((name) => <option key={name} value={name}>{name}</option>)}
+                    {providerId !== "codex" && <option value="__custom__">Use a custom model ID</option>}
+                  </select></label>
+                  {customModel && <label className="field-label">Custom model ID<input aria-label="Custom model ID" value={model} onChange={(event) => setModel(event.target.value)} maxLength={200} disabled={generating || memoryQuerying} placeholder="Provider model ID" /></label>}
+                </div>
+                {(providerId === "openai" || providerId === "claude" || providerId === "codex") && storyProviderAvailable && <div>
+                  <button className="secondary-button" type="button" disabled={modelDiscoveryBusy || generating || memoryQuerying} onClick={() => void loadProviderModels()}>{modelDiscoveryBusy ? "Loading models…" : providerId === "codex" ? "Refresh Codex models" : "Load available models"}</button>
+                  <small className="provider-note">{providerId === "codex" ? "Reads the Codex model list without sending story text." : "Requests the provider model list using its configured API key."}</small>
+                  {modelDiscoveryError && <p className="inline-error" role="alert">{modelDiscoveryError}</p>}
+                </div>}
+                {codexReasoningControl("Reasoning effort", generating || memoryQuerying)}
+                {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "Story requests stay on this device." : "Before sending, Lorethra asks what story details will leave this device. Provider terms and charges may apply."}</p>}
+                {selectedStoryProvider && EXTERNAL_STORY_PROVIDERS.includes(providerId) && (externalProviderConsents.includes(providerId)
+                  ? <button className="link-button provider-consent-revoke" type="button" onClick={() => revokeExternalProviderConsent(providerId)}>Revoke consent for {selectedStoryProvider.label} on this device</button>
+                  : <small className="provider-note">Lorethra will ask before the first request to this provider.</small>)}
+                {selectedStoryProvider && !storyProviderAvailable && <p className="provider-note">This provider is not ready yet. Check its setup, then refresh.</p>}
+                {storyProviderAvailable && !model.trim() && <p className="provider-note">Choose a listed model to continue.</p>}
+                <details className="story-advanced-options"><summary>More story options</summary><label className="field-label">Story order<input type="number" min={0} value={order} disabled={memoryQuerying} onChange={(event) => setOrder(Number(event.target.value))} /></label></details>
+              </div>
+            </details>
+            <button className="primary-button full-button" disabled={generating || busy || !storyProviderAvailable || !model.trim() || !prompt.trim()}>{generating ? "Writing your story…" : "Continue story"} <span>✳</span></button>
             {generating && <button className="secondary-button full-button stop-generation" type="button" onClick={stopStoryGeneration}>Stop generation</button>}
             {generating && <small className="provider-note">Stop cancels Lorethra’s request and prevents a partial reply from being saved. A provider may finish work it already accepted, and a remote request may still be billable.</small>}
           </form>

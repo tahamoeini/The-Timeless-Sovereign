@@ -104,6 +104,17 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(response.json(), {"models": ["model-a"]})
         discover.assert_called_once_with("openai")
 
+    def test_codex_model_discovery_returns_supported_effort_choices(self) -> None:
+        options = [{
+            "model": "model-a", "display_name": "Model A", "default_reasoning_effort": "medium",
+            "supported_reasoning_efforts": ["low", "medium", "high"], "effort_descriptions": {},
+        }]
+        with patch("lke.ai.providers.StoryProviderRegistry.discover_model_options", return_value=options) as discover:
+            response = self.request("POST", "/api/v1/providers/story/codex/models", headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"models": ["model-a"], "model_options": options})
+        discover.assert_called_once_with("codex")
+
     def test_unknown_origin_is_rejected(self) -> None:
         response = self.request(
             "GET",
@@ -677,6 +688,73 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request(
             "GET", "/api/v1/workspaces/story-api/revision?branch_id=main", headers=self.headers,
         ).json()["revision"], revision + 1)
+
+    def test_codex_reasoning_effort_is_forwarded_for_generation_and_retry(self) -> None:
+        revision = self.create_story_conversation()
+        generation_body = {
+            "branch_id": "main", "conversation_id": "story-1", "expected_revision": revision,
+            "idempotency_key": "codex-effort-turn", "provider": "codex", "external_provider_consent": "codex",
+            "model": "model-a", "reasoning_effort": "high", "prompt": "Continue the scene.",
+            "narrative_order": 0,
+        }
+        with patch("lke.ai.providers.StoryProviderRegistry.generate", return_value="The door opens.") as generate:
+            response = self.request(
+                "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers, json=generation_body,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(generate.call_args.kwargs["reasoning_effort"], "high")
+
+        assistant_turn = response.json()["conversation"]["turns"][1]
+        retry_body = {
+            "branch_id": "main", "conversation_id": "story-1", "turn_id": assistant_turn["turn_id"],
+            "expected_revision": response.json()["revision"], "idempotency_key": "codex-effort-retry",
+            "provider": "codex", "external_provider_consent": "codex", "model": "model-a",
+            "reasoning_effort": "low",
+        }
+        with patch("lke.ai.providers.StoryProviderRegistry.generate", return_value="The door opens wider.") as retry:
+            retried = self.request(
+                "POST", "/api/v1/workspaces/story-api/story/retry", headers=self.headers, json=retry_body,
+            )
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retry.call_args.kwargs["reasoning_effort"], "low")
+
+    def test_reasoning_effort_is_rejected_for_non_codex_providers(self) -> None:
+        revision = self.create_story_conversation()
+        response = self.request(
+            "POST", "/api/v1/workspaces/story-api/story/generate", headers=self.headers,
+            json={
+                "branch_id": "main", "conversation_id": "story-1", "expected_revision": revision,
+                "idempotency_key": "invalid-effort-provider", "provider": "ollama", "model": "test-model",
+                "reasoning_effort": "high", "prompt": "Continue the scene.", "narrative_order": 0,
+            },
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("only for Codex", response.json()["detail"])
+
+    def test_world_architect_deduplicates_repeated_locations_and_keeps_starting_place(self) -> None:
+        created = self.request(
+            "POST", "/api/v1/workspaces", headers=self.headers,
+            json={"workspace_id": "world-draft-api", "name": "World draft"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        model_draft = {
+            "public_lore": "A silver harbor below a quiet moon.",
+            "starting_location": "MOON   HARBOR",
+            "locations": ["Moon Harbor", " moon   harbor ", "The Glass Orchard"],
+            "opening_scene": {"situation": "Ships wait beneath the moon.", "hook": "One lantern is moving."},
+        }
+        with patch("lke.ai.providers.StoryProviderRegistry.generate_json", return_value=model_draft):
+            response = self.request(
+                "POST", "/api/v1/workspaces/world-draft-api/story/worlds/draft", headers=self.headers,
+                json={"name": "Moon Harbor", "template_key": "fantasy", "brief": "A moonlit port.", "model": "test-model"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["draft"]["locations"], ["Moon Harbor", "The Glass Orchard"])
+        self.assertEqual(response.json()["draft"]["starting_location"], "Moon Harbor")
+        self.assertFalse(response.json()["saved"])
+        self.assertEqual(self.request(
+            "GET", "/api/v1/workspaces/world-draft-api/story/worlds", headers=self.headers,
+        ).json(), [])
 
     def test_aborting_story_request_cancels_provider_work_before_any_commit(self) -> None:
         revision = self.create_story_conversation()

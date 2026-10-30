@@ -1323,3 +1323,70 @@
   min-height: 72px;
   resize: vertical;
 }
+
+/* Keep the everyday path short and readable; less common tools stay available on demand. */
+body{min-width:320px}
+.sidebar-more-tools{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.sidebar-more-tools>summary{display:grid;gap:4px;cursor:pointer;padding:8px 12px;border-radius:9px;color:#c4d1cb;font-size:13px;font-weight:600;list-style-position:inside}
+.sidebar-more-tools>summary:hover,.project-options>summary:hover{background:#1a2224}
+.sidebar-more-tools>summary small{padding-left:20px;color:#899791;font-size:11px;font-weight:400}
+.sidebar-more-tools nav{display:grid;gap:4px;margin-top:5px}
+.sidebar-more-tools .nav-item{width:100%;align-items:center}
+.sidebar-bottom{font-size:12px}
+.brand{padding-bottom:26px}
+.brand strong{font-size:17px}
+.brand span{font-size:9px;letter-spacing:.12em}
+.workspace-label{font-size:11px;letter-spacing:.08em}
+.workspace-select{font-size:13px}
+.topbar{position:relative}
+.project-options{position:relative;flex:none}
+.project-options>summary{cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:8px 11px;color:#c2ccc7;font-size:12px;list-style:none}
+.project-options>summary::-webkit-details-marker{display:none}
+.project-options>summary::after{content:"⌄";padding-left:8px;color:#93a39b}
+.project-options-menu{position:absolute;z-index:10;top:calc(100% + 7px);right:0;display:grid;gap:7px;min-width:225px;padding:12px;border:1px solid #37433f;border-radius:11px;background:#171e20;box-shadow:0 12px 32px #0008}
+.project-options-menu label{display:grid;gap:5px;color:#aab8b1;font-size:12px}
+.project-options-menu .branch-select{width:100%;height:36px;background:#111719;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:0 8px}
+.project-options-menu .quiet-button{text-align:left;min-height:38px;font-size:12px}
+.project-options-menu .revision-chip{justify-self:start;font-size:11px}
+.welcome-card .inline-create{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:end;gap:10px;max-width:640px;margin-top:22px}
+.welcome-card .field-label{font-size:13px}
+.welcome-card .field-label input{height:46px;font-size:15px}
+.welcome-card .primary-button{min-height:46px;font-size:14px}
+.welcome-points{margin-top:18px;color:#a8c7b3;font-size:12px}
+.welcome-points>span{display:flex;align-items:center;gap:7px}
+.page-content .field-label{font-size:12px}
+.page-content input,.page-content select,.page-content textarea{font-size:13px}
+.story-direction-label{gap:8px;font-size:14px!important}
+.story-direction-label textarea{min-height:96px;padding:12px;font-size:15px;line-height:1.55}
+.story-writing-settings{border:1px solid var(--line);border-radius:10px;background:#141b1c;padding:0 12px}
+.story-writing-settings>summary{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px;min-height:44px;cursor:pointer;color:#c5d1ca;font-size:13px;font-weight:600}
+.story-writing-settings>summary small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#85948c;font-size:11px;font-weight:400;text-align:right}
+.story-writing-settings-body{display:grid;gap:10px;padding:0 0 12px}
+.story-writing-settings .provider-note,.story-writing-settings .field-note{font-size:12px;line-height:1.5}
+.story-writing-settings .field-label select{height:40px}
+.story-writing-settings .secondary-button{min-height:40px;font-size:12px}
+.story-writing-settings .story-advanced-options{border-top:1px solid #293633;padding-top:8px}
+.story-writing-settings .story-advanced-options>summary{cursor:pointer;color:#aebbb4;font-size:12px}
+.story-compose-form>.primary-button{min-height:46px;font-size:14px}
+
+@media(max-width:760px){
+  .app-shell{display:block}
+  .sidebar{position:relative;inset:auto;width:100%;min-height:0;border-right:0;border-bottom:1px solid var(--line);padding:14px 16px;gap:0}
+  .brand{padding:0 4px 12px}
+  .workspace-label{padding:0 4px 6px}
+  .workspace-select{max-width:420px;margin-bottom:8px}
+  .primary-nav{display:grid;grid-template-columns:minmax(0,1fr)}
+  .sidebar-more-tools{margin-top:7px;padding-top:7px}
+  .sidebar-bottom{display:none}
+  .main-area{grid-column:auto;min-width:0}
+  .topbar{height:auto;min-height:56px;padding:9px 16px;gap:10px}
+  .page-content{padding:20px 16px 44px}
+}
+@media(max-width:520px){
+  .welcome-card .inline-create{grid-template-columns:1fr}
+  .welcome-card .inline-create .primary-button{width:100%}
+  .topbar{align-items:flex-start}
+  .project-options-menu{position:fixed;top:56px;right:10px;width:min(300px,calc(100vw - 20px))}
+  .page-heading{align-items:flex-start;flex-direction:column}
+  .page-heading h1,.welcome-card h1{font-size:26px}
+}

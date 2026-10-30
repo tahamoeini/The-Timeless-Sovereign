@@ -90,6 +90,7 @@ class StoryGenerateRequest(BaseModel):
     provider: str = Field(default="ollama", min_length=1, max_length=40)
     external_provider_consent: str | None = Field(default=None, min_length=1, max_length=40)
     model: str = Field(min_length=1, max_length=200)
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=40)
     prompt: str = Field(min_length=1, max_length=4000)
     narrative_order: int = Field(ge=0)
 
@@ -103,6 +104,7 @@ class StoryRetryRequest(BaseModel):
     provider: str = Field(default="ollama", min_length=1, max_length=40)
     external_provider_consent: str | None = Field(default=None, min_length=1, max_length=40)
     model: str = Field(min_length=1, max_length=200)
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class StoryWorldRequest(BaseModel):
@@ -215,13 +217,21 @@ def _validated_world_architect_draft(value: Any) -> dict[str, Any]:
     public_lore = draft_text(value["public_lore"], "public setting", 4000)
     if not isinstance(value["locations"], list) or not 1 <= len(value["locations"]) <= 20:
         raise ValidationError("World Architect must return between 1 and 20 locations")
-    locations = [draft_text(item, "location", 150) for item in value["locations"]]
-    if len({item.casefold() for item in locations}) != len(locations):
-        raise ValidationError("World Architect locations must be unique")
+    raw_locations = [draft_text(item, "location", 150) for item in value["locations"]]
+    locations: list[str] = []
+    location_by_key: dict[str, str] = {}
+    for location in raw_locations:
+        key = " ".join(location.split()).casefold()
+        if key and key not in location_by_key:
+            location_by_key[key] = location
+            locations.append(location)
+    if not locations:
+        raise ValidationError("World Architect must return at least one unique location")
     starting_location = draft_text(value["starting_location"], "starting location", 200)
-    location_by_key = {item.casefold(): item for item in locations}
-    if starting_location.casefold() not in location_by_key:
+    starting_key = " ".join(starting_location.split()).casefold()
+    if starting_key not in location_by_key:
         raise ValidationError("World Architect starting location must appear in the location list")
+    starting_location = location_by_key[starting_key]
     scene = value["opening_scene"]
     if not isinstance(scene, dict) or set(scene) != {"situation", "hook"}:
         raise ValidationError("World Architect opening scene must define a situation and a hook")
@@ -271,10 +281,11 @@ def _external_provider_context(context: dict[str, Any]) -> dict[str, Any]:
 
 async def _provider_call_with_disconnect(
     request: Request, provider_call: Any, *args: Any, cancel_detail: str,
+    provider_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     cancel_event = threading.Event()
     worker = asyncio.create_task(
-        run_in_threadpool(provider_call, *args, cancel_event=cancel_event)
+        run_in_threadpool(provider_call, *args, **(provider_kwargs or {}), cancel_event=cancel_event)
     )
 
     def consume_worker_exception(completed: asyncio.Task) -> None:
@@ -454,6 +465,9 @@ def create_app(
     @app.post("/api/v1/providers/story/{provider}/models")
     def discover_story_models(provider: str):
         try:
+            if provider == "codex":
+                model_options = story_provider_registry.discover_model_options(provider)
+                return {"models": [item["model"] for item in model_options], "model_options": model_options}
             return {"models": story_provider_registry.discover_models(provider)}
         except StoryProviderError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -862,11 +876,14 @@ def create_app(
         model = body.model.strip()
         if not prompt:
             raise ValidationError("prompt must contain non-whitespace text")
+        if body.reasoning_effort is not None and body.provider != "codex":
+            raise ValidationError("Reasoning effort is currently available only for Codex.")
         stable_payload = {
             "conversation_id": body.conversation_id,
             "user_content": prompt,
             "provider": body.provider,
             "model": model,
+            "reasoning_effort": body.reasoning_effort,
             "narrative_order": body.narrative_order,
             "context_revision": body.expected_revision,
         }
@@ -915,6 +932,7 @@ def create_app(
             assistant_content = await _provider_call_with_disconnect(
                 request, story_provider_registry.generate, body.provider, model, messages,
                 cancel_detail="Story generation was stopped before it could be saved",
+                provider_kwargs={"reasoning_effort": body.reasoning_effort},
             )
         except StoryProviderError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -997,12 +1015,15 @@ def create_app(
     @app.post("/api/v1/workspaces/{workspace_id}/story/retry")
     async def retry_story_turn(workspace_id: str, body: StoryRetryRequest, request: Request):
         reason = "Retry a saved local story turn"
+        if body.reasoning_effort is not None and body.provider != "codex":
+            raise ValidationError("Reasoning effort is currently available only for Codex.")
         stable_payload = {
             "conversation_id": body.conversation_id,
             "turn_id": body.turn_id,
             "action": "edit",
             "provider": body.provider,
             "model": body.model,
+            "reasoning_effort": body.reasoning_effort,
         }
         prior = gateway.replay(
             workspace_id=workspace_id, branch_id=body.branch_id, idempotency_key=body.idempotency_key,
@@ -1059,6 +1080,7 @@ def create_app(
             assistant_content = await _provider_call_with_disconnect(
                 request, story_provider_registry.generate, body.provider, body.model, messages,
                 cancel_detail="Story retry was stopped before it could be saved",
+                provider_kwargs={"reasoning_effort": body.reasoning_effort},
             )
         except StoryProviderError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error

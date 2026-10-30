@@ -28,6 +28,7 @@ class StoryProviderError(RuntimeError):
 
 _PROVIDER_IDS = {"ollama", "openai", "claude", "codex", "huggingface", "huggingface_local"}
 _MODEL_NAME = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
+_REASONING_EFFORT_NAME = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _DEFAULT_LOCAL_HF_URL = "http://127.0.0.1:8000/v1"
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
@@ -303,7 +304,11 @@ class _CodexAppServer:
         self.timeout_seconds = timeout_seconds
 
     def list_models(self) -> list[str]:
-        """Read the local app-server picker catalog without sending story content."""
+        """Read model names from the local picker catalog without story content."""
+        return [item["model"] for item in self.list_model_options()]
+
+    def list_model_options(self) -> list[dict[str, Any]]:
+        """Read visible models and their supported reasoning effort options."""
         executable = self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")
         if not executable:
             return []
@@ -364,7 +369,8 @@ class _CodexAppServer:
                         "name": "living_knowledge_engine", "title": "Story Studio", "version": "0.1.0"}}})
                     receive(1)
                     send({"method": "initialized", "params": {}})
-                    models: list[str] = []
+                    models: list[dict[str, Any]] = []
+                    seen: set[str] = set()
                     cursor: str | None = None
                     for page in range(10):
                         params: dict[str, Any] = {"limit": 100, "includeHidden": False}
@@ -379,8 +385,32 @@ class _CodexAppServer:
                             if not isinstance(entry, dict) or entry.get("hidden") is True:
                                 continue
                             name = entry.get("model", entry.get("id"))
-                            if isinstance(name, str) and _MODEL_NAME.fullmatch(name) and name not in models:
-                                models.append(name)
+                            if not isinstance(name, str) or not _MODEL_NAME.fullmatch(name) or name in seen:
+                                continue
+                            seen.add(name)
+                            effort_options = entry.get("supportedReasoningEfforts", [])
+                            supported: list[str] = []
+                            descriptions: dict[str, str] = {}
+                            if isinstance(effort_options, list):
+                                for option in effort_options:
+                                    if not isinstance(option, dict):
+                                        continue
+                                    effort = option.get("reasoningEffort")
+                                    if not isinstance(effort, str) or not _REASONING_EFFORT_NAME.fullmatch(effort):
+                                        continue
+                                    if effort not in supported:
+                                        supported.append(effort)
+                                    description = option.get("description")
+                                    if isinstance(description, str) and description.strip():
+                                        descriptions[effort] = description.strip()[:240]
+                            default_effort = entry.get("defaultReasoningEffort")
+                            models.append({
+                                "model": name,
+                                "display_name": (entry.get("displayName") if isinstance(entry.get("displayName"), str) else name)[:120],
+                                "default_reasoning_effort": default_effort if isinstance(default_effort, str) and _REASONING_EFFORT_NAME.fullmatch(default_effort) else "",
+                                "supported_reasoning_efforts": supported,
+                                "effort_descriptions": descriptions,
+                            })
                         next_cursor = result.get("nextCursor")
                         if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
                             break
@@ -392,7 +422,11 @@ class _CodexAppServer:
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise StoryProviderError("Codex model discovery could not start.") from error
 
-    def generate(self, model: str, messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None) -> str:
+    def generate(
+        self, model: str, messages: list[dict[str, str]], *,
+        reasoning_effort: str | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         _raise_if_cancelled(cancel_event)
         executable = self.env.get("LKE_CODEX_APP_SERVER_EXECUTABLE") or shutil.which("codex")
         if not executable:
@@ -435,7 +469,7 @@ class _CodexAppServer:
                 process.stdin.write(json.dumps(value, ensure_ascii=False) + "\n")
                 process.stdin.flush()
 
-            def receive(deadline: float, response_id: int) -> dict[str, Any]:
+            def receive(deadline: float, response_id: int, method: str) -> dict[str, Any]:
                 import time
 
                 while True:
@@ -459,7 +493,10 @@ class _CodexAppServer:
                         continue
                     if event.get("id") == response_id:
                         if "error" in event:
-                            raise StoryProviderError("Codex app-server rejected the request.")
+                            error = event.get("error")
+                            code = error.get("code") if isinstance(error, dict) else None
+                            suffix = f" (error {code})" if type(code) is int else ""
+                            raise StoryProviderError(f"Codex app-server rejected {method}{suffix}.")
                         result = event.get("result")
                         return result if isinstance(result, dict) else {}
                     if "id" in event and "method" in event:
@@ -471,22 +508,74 @@ class _CodexAppServer:
                 send({"id": 1, "method": "initialize", "params": {
                     "clientInfo": {"name": "living_knowledge_engine", "title": "Story Studio", "version": "0.1.0"}
                 }})
-                receive(deadline, 1)
+                receive(deadline, 1, "initialization")
                 send({"method": "initialized", "params": {}})
+
+                model_options: list[dict[str, Any]] = []
+                cursor: str | None = None
+                for page in range(10):
+                    request_id = page + 2
+                    catalog_params: dict[str, Any] = {"limit": 100, "includeHidden": False}
+                    if cursor:
+                        catalog_params["cursor"] = cursor
+                    send({"id": request_id, "method": "model/list", "params": catalog_params})
+                    catalog = receive(deadline, request_id, "model/list")
+                    entries = catalog.get("data", [])
+                    if not isinstance(entries, list):
+                        raise StoryProviderError("Codex returned an invalid model catalog.")
+                    for entry in entries:
+                        if not isinstance(entry, dict) or entry.get("hidden") is True:
+                            continue
+                        name = entry.get("model", entry.get("id"))
+                        if not isinstance(name, str) or not _MODEL_NAME.fullmatch(name):
+                            continue
+                        efforts = entry.get("supportedReasoningEfforts", [])
+                        if not isinstance(efforts, list):
+                            efforts = []
+                        supported = [
+                            option["reasoningEffort"] for option in efforts
+                            if isinstance(option, dict)
+                            and isinstance(option.get("reasoningEffort"), str)
+                            and _REASONING_EFFORT_NAME.fullmatch(option["reasoningEffort"])
+                        ]
+                        model_options.append({"model": name, "supported_reasoning_efforts": list(dict.fromkeys(supported))})
+                    next_cursor = catalog.get("nextCursor")
+                    if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+                        break
+                    cursor = next_cursor
+
+                requested_model = model.strip()
+                selected_efforts: set[str] | None = None
+                if requested_model and requested_model.lower() != "auto":
+                    selected = next((item for item in model_options if item["model"] == requested_model), None)
+                    if selected is None:
+                        raise StoryProviderError("The selected Codex model is no longer available. Reload the model list and try again.")
+                    selected_efforts = set(selected["supported_reasoning_efforts"])
+                elif reasoning_effort:
+                    effort_sets = [set(item["supported_reasoning_efforts"]) for item in model_options]
+                    selected_efforts = set.intersection(*effort_sets) if effort_sets else set()
+                if reasoning_effort:
+                    if not _REASONING_EFFORT_NAME.fullmatch(reasoning_effort):
+                        raise StoryProviderError("Choose a valid Codex reasoning effort.")
+                    if selected_efforts is None or reasoning_effort not in selected_efforts:
+                        raise StoryProviderError("That reasoning effort is not supported by the selected Codex model. Choose a listed option or use the model default.")
+
                 params: dict[str, Any] = {
                     "cwd": scratch, "sandbox": "read-only", "approvalPolicy": "never",
                     "ephemeral": True, "baseInstructions": instructions,
-                    "runtimeWorkspaceRoots": [],
                 }
-                if model.strip() and model.strip().lower() != "auto":
-                    params["model"] = _validated_model(model)
-                thread = receive_after_send(send, receive, deadline, "thread/start", 2, params)
+                if requested_model and requested_model.lower() != "auto":
+                    params["model"] = _validated_model(requested_model)
+                thread = receive_after_send(send, receive, deadline, "thread/start", 12, params)
                 thread_id = thread.get("thread", {}).get("id") if isinstance(thread.get("thread"), dict) else None
                 if not isinstance(thread_id, str):
                     raise StoryProviderError("Codex app-server did not create a story turn.")
-                send({"id": 3, "method": "turn/start", "params": {
-                    "threadId": thread_id, "input": [{"type": "text", "text": transcript}]
-                }})
+                turn_params: dict[str, Any] = {
+                    "threadId": thread_id, "input": [{"type": "text", "text": transcript}],
+                }
+                if reasoning_effort:
+                    turn_params["effort"] = reasoning_effort
+                send({"id": 13, "method": "turn/start", "params": turn_params})
                 chunks: list[str] = []
                 while True:
                     _raise_if_cancelled(cancel_event)
@@ -507,9 +596,12 @@ class _CodexAppServer:
                         continue
                     if not isinstance(event, dict):
                         continue
-                    if event.get("id") == 3:
+                    if event.get("id") == 13:
                         if "error" in event:
-                            raise StoryProviderError("Codex app-server rejected the turn.")
+                            error = event.get("error")
+                            code = error.get("code") if isinstance(error, dict) else None
+                            suffix = f" (error {code})" if type(code) is int else ""
+                            raise StoryProviderError(f"Codex app-server rejected turn/start{suffix}.")
                         continue
                     if event.get("method") == "item/agentMessage/delta":
                         delta = event.get("params", {}).get("delta")
@@ -536,7 +628,7 @@ class _CodexAppServer:
 
 def receive_after_send(send: Any, receive: Any, deadline: float, method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
     send({"id": request_id, "method": method, "params": params})
-    return receive(deadline, request_id)
+    return receive(deadline, request_id, method)
 
 
 class StoryProviderRegistry:
@@ -627,9 +719,16 @@ class StoryProviderRegistry:
             return models
         raise StoryProviderError("Model discovery is not available for this provider.")
 
+    def discover_model_options(self, provider: str) -> list[dict[str, Any]]:
+        """Return the Codex picker metadata needed to offer supported effort levels."""
+        if provider == "codex":
+            return self.codex.list_model_options()
+        return []
+
     def generate(
         self, provider: str, model: str, messages: list[dict[str, str]],
-        *, cancel_event: threading.Event | None = None,
+        *, reasoning_effort: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> str:
         _raise_if_cancelled(cancel_event)
         if provider not in _PROVIDER_IDS:
@@ -661,7 +760,7 @@ class StoryProviderRegistry:
             return _chat_completion(base_url=base_url, model=model, messages=messages,
                                     api_key=self.env.get("LKE_HF_LOCAL_API_KEY"), follow_redirects=False,
                                     cancel_event=cancel_event)
-        return self.codex.generate(model, messages, cancel_event=cancel_event)
+        return self.codex.generate(model, messages, reasoning_effort=reasoning_effort, cancel_event=cancel_event)
 
     def generate_json(
         self, provider: str, model: str, messages: list[dict[str, str]],
