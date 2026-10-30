@@ -15,6 +15,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | feat(story): streamline adventure discovery and setup (`80095ba`) | Add an always-visible adventure creation action, progressive disclosure for long libraries, clearer wizard steps, and live point-budget guidance |
 | docs(status): refresh UX and Windows acceptance evidence | Synchronize project status, release gates, operations, and changelog with the verified UI workflow and Windows package |
 | feat(story): add local world architect and opening scenes | Add local Ollama drafting, strict semantic checks, human preview/apply, versioned opening scenes, and public package preservation |
+| docs(status): refresh current-head Windows evidence | Record the completed Windows run 43 and its current installer artifact; retain clean-machine desktop and feature-specific acceptance as open |
 
 ### RPG authoring and deterministic play
 
@@ -52,6 +53,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - The Story Studio browser check verified the header action opens setup, a 32-adventure library initially shows eight additional cards, expansion exposes the rest, and search still returns the correct one-of-32 result. At 700 × 900, compact navigation and library controls remained usable.
 - GitHub Actions Windows run 40 at schema-v17 commit `851a1b1` passed all 190 core/API tests in 12.610 seconds, story-export privacy, and frontend type/build checks. The bundled API passed health, token authentication, isolated command persistence, Unicode, and audit smoke checks. MSI and NSIS installers (26.57 MiB and 25.46 MiB) were uploaded as artifact `lke-windows-installers` (ID `12917692947`, 54,329,028 bytes; expires 2027-01-27).
 - GitHub Actions Windows run 41 at UI commit `80095ba` passed all 190 core/API tests in 12.454 seconds, story-export privacy, frontend type/build, bundled API smoke, MSI/NSIS build, and artifact upload. Its `lke-windows-installers` artifact (ID `12920110955`, 54,331,297 bytes) expires on 2027-01-27. Run 40 at `851a1b1` provides the published per-installer sizes: MSI 26.57 MiB and NSIS 25.46 MiB.
+- GitHub Actions Windows run 43 at implementation commit `98bdbed` passed the full core/authenticated API suite, story-export privacy, frontend type/build, bundled API smoke, MSI/NSIS build, and artifact upload. Its `lke-windows-installers` artifact (ID `12921408725`, 54,343,530 bytes; SHA-256 `5d65ef222a3cdf15b99e392998fccd7fba0ec1cc30d286cae5d683d69d0a0e60`) expires on 2027-01-27. The full suite passed, but the new World Architect and opening-scene paths still need focused browser and live-local-model acceptance; packaging does not prove clean-machine GUI lifecycle.
 - Full lifecycle browser acceptance, hostile-file UI checks, live provider behavior, clean-machine installation and launch, and separate-device recovery remain open. See docs/PROJECT_STATUS.md and docs/ACCEPTANCE_MATRIX.md.
 
 ### Documentation
