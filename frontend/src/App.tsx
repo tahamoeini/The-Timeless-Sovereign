@@ -267,7 +267,14 @@ export default function App() {
     setBusy(true);
     try {
       const result = await runCommand(commandType, payload, reason);
-      setNotice({ tone: "success", text: commandType === "create_conversation" ? "Story started on this branch." : commandType === "add_belief" ? "Character knowledge saved to this branch." : "RPG state saved." });
+      const successText = commandType === "create_conversation"
+        ? "Story started on this branch."
+        : commandType === "add_belief"
+          ? "Character knowledge saved to this branch."
+          : commandType === "update_entity"
+            ? "Character identity saved to this adventure only."
+            : "Adventure state saved.";
+      setNotice({ tone: "success", text: successText });
       return result;
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "The change could not be saved." });
@@ -1409,6 +1416,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [showHeroCreation, setShowHeroCreation] = useState(false);
   const [showHeroProfileEditor, setShowHeroProfileEditor] = useState(false);
   const [heroProfileDraft, setHeroProfileDraft] = useState<HeroProfileDraft>({ ...EMPTY_HERO_PROFILE });
+  const [showAdventureHeroProfileEditor, setShowAdventureHeroProfileEditor] = useState(false);
+  const [adventureHeroProfileDraft, setAdventureHeroProfileDraft] = useState<HeroProfileDraft>({ ...EMPTY_HERO_PROFILE });
   const [mainCharacters, setMainCharacters] = useState<Entity[]>([]);
   const [adventureHeroId, setAdventureHeroId] = useState("");
   const [selectedWorldId, setSelectedWorldId] = useState("");
@@ -1636,6 +1645,16 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     return () => { active = false; };
   }, [selectedWorldId, workspaceId]);
   const activeAdventure = adventures.find((item) => item.branch_id === branchId && item.conversation_id === conversationId) || null;
+  const activeAdventureHero = activeAdventure
+    ? entities.find((item) => item.entity_id === activeAdventure.actor_entity_id)
+    : undefined;
+  const activeAdventureHeroProfile = readHeroProfile(activeAdventureHero);
+  const activeAdventureHeroProfileEntries = heroProfileEntries(activeAdventureHeroProfile);
+  const activeAdventureImportedProfileEntries = heroProfileEntries(activeAdventureHeroProfile, true);
+  useEffect(() => {
+    setShowAdventureHeroProfileEditor(false);
+    setAdventureHeroProfileDraft({ ...EMPTY_HERO_PROFILE });
+  }, [activeAdventure?.branch_id, activeAdventure?.actor_entity_id]);
   useEffect(() => {
     if (!activeAdventure) {
       setRpgState(null);
@@ -2709,6 +2728,25 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       }
     } catch (saveError) {
       setLibraryError(saveError instanceof Error ? saveError.message : "The hero identity could not be saved.");
+    }
+  }
+
+  async function saveAdventureHeroProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeAdventureHero) return;
+    try {
+      const properties = { ...activeAdventureHero.properties };
+      const characterProfile = buildHeroProfile(adventureHeroProfileDraft, true);
+      if (Object.keys(characterProfile).length) properties.character_profile = characterProfile;
+      else delete properties.character_profile;
+      await onCommit("update_entity", {
+        entity_id: activeAdventureHero.entity_id,
+        properties,
+      }, "Update this adventure's character identity");
+      setShowAdventureHeroProfileEditor(false);
+      setRpgError("");
+    } catch (saveError) {
+      setRpgError(saveError instanceof Error ? saveError.message : "The adventure character identity could not be saved.");
     }
   }
 
@@ -3993,6 +4031,37 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         <div className="panel-heading"><div><h2>Character & game state</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} v${activeAdventure.world_version}` : "State appears here when you play a world-based adventure."}</p></div><span className="privacy-tag">{rpgState?.mechanics.mode.replaceAll("_", " ") || "RPG"}</span></div>
         {activeAdventure && rpgState?.sheet ? <>
           <div className="rpg-location"><small>Current location</small><strong dir="auto">{rpgState.sheet.current_location || "Not set"}</strong></div>
+          {activeAdventureHero && <details className="rpg-edit-stats rpg-hero-identity">
+            <summary>Hero identity</summary>
+            <p className="field-note">Notes guide local identity and voice without overriding story controls. This adventure keeps its own copy; edits do not affect your reusable hero or other adventures. Hosted providers do not receive these notes.</p>
+            {activeAdventureHeroProfileEntries.length > 0
+              ? <dl className="hero-profile-review-list">{activeAdventureHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+              : <p className="empty-hint">No identity notes saved for this adventure.</p>}
+            {activeAdventureImportedProfileEntries.length > 0 && <details className="hero-profile-review">
+              <summary>Imported MNO details · {activeAdventureImportedProfileEntries.length}</summary>
+              <dl>{activeAdventureImportedProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+            </details>}
+            {!showAdventureHeroProfileEditor
+              ? <button className="link-button" type="button" disabled={busy} onClick={() => { setRpgError(""); setAdventureHeroProfileDraft(activeAdventureHeroProfile); setShowAdventureHeroProfileEditor(true); }}>
+                  {activeAdventureHeroProfileEntries.length || activeAdventureImportedProfileEntries.length ? "Edit identity notes" : "Add identity notes"}
+                </button>
+              : <form className="hero-identity-form" onSubmit={(event) => void saveAdventureHeroProfile(event)}>
+                  <div className="hero-profile-fields">
+                    {HERO_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={adventureHeroProfileDraft[key]} onChange={(event) => setAdventureHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
+                  </div>
+                  {activeAdventureImportedProfileEntries.length > 0 && <details className="hero-profile-details">
+                    <summary>Edit imported MNO details · {activeAdventureImportedProfileEntries.length}</summary>
+                    <p className="field-note">Clear an imported field and save to remove it from this adventure profile.</p>
+                    <div className="hero-profile-fields">
+                      {HERO_IMPORTED_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={adventureHeroProfileDraft[key]} onChange={(event) => setAdventureHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
+                    </div>
+                  </details>}
+                  <div className="wizard-actions">
+                    <button className="primary-button" disabled={busy}>Save identity</button>
+                    <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowAdventureHeroProfileEditor(false)}>Cancel</button>
+                  </div>
+                </form>}
+          </details>}
           <div className="rpg-stat-list"><strong>Stats</strong><div>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <span key={name}>{activeStatLabel(name)}<b>{value >= 0 ? `+${value}` : value}</b></span>)}</div></div>
           <details className="rpg-edit-stats"><summary>Edit stat modifiers</summary><form onSubmit={(event) => void saveRpgStats(event)}>{Object.entries(rpgState.sheet.stats).map(([name, value]) => <label className="field-label" key={name}>{name}<input type="number" min={-10} max={10} value={editableStats[name] ?? value} onChange={(event) => setEditableStats((stats) => ({ ...stats, [name]: Number(event.target.value) }))} /></label>)}<button className="secondary-button full-button" disabled={busy}>Save stats</button></form></details>
           <div className="rpg-tracker-list"><strong>Trackers</strong>{Object.entries(rpgState.sheet.trackers).map(([name, tracker]) => <div key={name}><span>{name}</span><b>{tracker.value} / {tracker.max}</b><meter min={0} max={Math.max(1, tracker.max)} value={tracker.value} /></div>)}</div>
