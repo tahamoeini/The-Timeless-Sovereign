@@ -1408,18 +1408,15 @@ def _story_adventure_context(
     memory_state = gateway.get_story_memories(workspace_id, branch_id, adventure["adventure_id"])
     generation_history = conversation["turns"] if turns is None else turns
     story_turns = _story_context_turns(generation_history)
-    eligible_memories = [
-        memory for memory in memory_state["memories"]
-        if knowledge_revision is None or memory["created_revision"] <= knowledge_revision
-    ]
     selected_memories = select_story_memories(
-        eligible_memories,
+        memory_state["memories"],
         actor_entity_id=conversation["actor_entity_id"],
         as_of_narrative_order=as_of_narrative_order,
         query=query,
         source_turns=story_turns,
         situation_revision=situation_dependency_revision(story_turns, sheet, memory_state["threads"]),
-        memory_history={memory["memory_id"]: memory_state["history"][memory["memory_id"]] for memory in eligible_memories},
+        memory_history=memory_state["history"],
+        as_of_revision=knowledge_revision,
     )
     episode_recall = select_story_episodes(
         story_turns,

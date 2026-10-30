@@ -24,6 +24,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | fix(continuity): respect revision cutoffs in RPG proposals (`41e2c3e`) | Hide proposals created after an as-of revision and restore pending status before later review decisions |
 | docs(status): record current-head Windows run 50 (`40c5cc9`) | Record the completed current implementation checks and installer artifact; keep clean-machine and focused feature acceptance open |
 | docs(status): clarify implementation validation head | Tie run 50 claims to the latest implementation commit while distinguishing the later documentation-only branch head |
+| fix(continuity): preserve accepted memories in historical contexts | Reconstruct the newest accepted memory visible at a retry revision, keeping later reviews and drafts out of past context |
 
 ### RPG authoring and deterministic play
 
@@ -40,6 +41,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 
 - Editing or hiding a turn now supersedes later turns from canonical transcript order. Historical RPG reconstruction covers supported character-sheet, accepted NPC-profile, and map-location changes while preserving direct player edits.
 - Historical RPG snapshots exclude proposals created after the requested revision and show accepted/rejected proposals as pending when their review happened later. Focused as-of proposal acceptance remains open.
+- Historical retry context now selects the newest accepted memory version visible at the saved revision. A later pending or rejected memory revision no longer removes the previously accepted content from that historical view; actor access, review status, narrative order, and source-turn checks still apply.
 - Adventure scenes create sourced, actor-scoped event-memory proposals that wait for review. Stale source turns exclude their memories from later retrieval.
 - Added provider-matched consent checks to external generation, retry, and memory requests. Remote context removes non-public claims, author notes, private profiles, actor-scoped facts, unshared or unreviewed memories, and unclassified lore or thread data.
 - Propagated cancellation to Ollama, hosted HTTP, and Codex app-server adapters. Tested cancellation closes local work before canonical commit; idempotent replay covers a response lost after a successful commit. A hosted service may still continue processing or billing after Lorethra closes its request.
