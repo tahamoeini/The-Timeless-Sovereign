@@ -1430,6 +1430,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const pendingStoryRequest = useRef<{ fingerprint: string; body: string } | null>(null);
   const memoryQueryRequest = useRef(0);
   const generationAbort = useRef<AbortController | null>(null);
+  const worldArchitectAbort = useRef<AbortController | null>(null);
   const memoryScopeRef = useRef("");
   const storyMounted = useRef(true);
   const storyProviderRef = useRef(providerId);
@@ -1489,7 +1490,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
   useEffect(() => {
     storyMounted.current = true;
-    return () => { storyMounted.current = false; };
+    return () => {
+      storyMounted.current = false;
+      worldArchitectAbort.current?.abort();
+    };
   }, []);
   useEffect(() => {
     try {
@@ -2219,6 +2223,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
 
   async function generateWorldDraft() {
+    if (worldArchitectAbort.current) return;
     const name = worldName.trim();
     const brief = worldArchitectBrief.trim();
     if (!name || !brief) {
@@ -2232,19 +2237,38 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setCreationError("");
     setWorldArchitectMessage("");
     setWorldArchitectDraft(null);
+    const controller = new AbortController();
+    worldArchitectAbort.current = controller;
     setWorldArchitectBusy(true);
     try {
       const response = await request<{ draft: StoryWorldArchitectDraft; saved: false }>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds/draft`,
-        { method: "POST", body: JSON.stringify({ name, template_key: worldTemplate, brief, model: selectedWorldArchitectModel }) },
+        {
+          method: "POST",
+          body: JSON.stringify({ name, template_key: worldTemplate, brief, model: selectedWorldArchitectModel }),
+          signal: controller.signal,
+        },
       );
+      if (!storyMounted.current) return;
       setWorldArchitectDraft(response.draft);
       setWorldArchitectMessage("Local draft ready. Review it, then choose whether to use it in the editable world form.");
     } catch (error) {
+      if (!storyMounted.current) return;
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setWorldArchitectMessage("Draft cancelled. No world data was saved.");
+        return;
+      }
       setCreationError(error instanceof Error ? error.message : "The local world draft could not be generated.");
     } finally {
-      setWorldArchitectBusy(false);
+      if (worldArchitectAbort.current === controller) worldArchitectAbort.current = null;
+      if (storyMounted.current) setWorldArchitectBusy(false);
     }
+  }
+
+  function cancelWorldDraft() {
+    if (!worldArchitectAbort.current) return;
+    setWorldArchitectMessage("Stopping the local draft…");
+    worldArchitectAbort.current.abort();
   }
 
   function applyWorldArchitectDraft() {
@@ -3279,6 +3303,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </button>
           {showWorldCreation && <form className="story-hub-form story-hub-create-world" onSubmit={(event) => void createWorld(event)}>
           <div className="story-hub-title"><span>＋</span><div><strong>Create a world</strong><small>Start with a small template. Advanced rules stay optional.</small></div></div>
+          {worldArchitectBusy && <button className="quiet-button full-button" type="button" onClick={cancelWorldDraft}>Cancel local draft</button>}
           <label className="field-label">World name<input value={worldName} disabled={worldArchitectBusy} onChange={(event) => { setWorldName(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} placeholder="The Shattered Coast" maxLength={200} required /></label>
           <label className="field-label">Starting style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
             const nextTemplate = event.target.value;
