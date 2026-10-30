@@ -49,6 +49,18 @@
 .story-asset-row img{width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #34423c}
 .story-asset-row small{display:block;color:#819087;font-size:7px;margin-top:3px}
 .story-turn-art{display:block;max-width:min(100%,520px);max-height:360px;object-fit:contain;border-radius:10px;margin:10px auto;border:1px solid #34423c}
+.story-check-result{display:grid;gap:4px;margin:10px 0;padding:10px 12px;border:1px solid #48584e;border-inline-start:3px solid #a9c38c;border-radius:8px;background:#18211d;color:#d8e5dc}
+.story-check-result.failure{border-inline-start-color:#d4a46f}.story-check-result strong{font-size:13px}.story-check-result small{font-size:12px;line-height:1.45;color:#b4c4b8}
+.manual-check-details{margin-block:10px;border:1px solid #34423c;border-radius:8px;background:#151d1d}
+.manual-check-details>summary{display:flex;align-items:center;min-height:44px;padding:8px 11px;color:#c8d7ce;font-size:12px;cursor:pointer}
+.manual-check-details>p{margin:0;padding:0 11px;font-size:12px;line-height:1.5;color:#aebfb5}
+.manual-check-details .rpg-check-form{margin:10px;border:0;padding:0;background:transparent}
+.story-turn-options{margin-top:8px}.story-turn-options>summary{width:max-content;min-height:44px;padding:8px 10px;color:#aebfb5;font-size:12px;cursor:pointer}
+.story-turn-options .story-turn-actions button{min-height:44px;padding:8px 12px;font-size:12px}
+.rpg-character-details{margin-top:12px;border:1px solid #34423c;border-radius:9px;background:#151d1d}
+.rpg-character-details>summary{display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:48px;padding:9px 12px;color:#d8e5dc;font-size:13px;cursor:pointer}
+.rpg-character-details>summary small{color:#aebfb5;font-size:11px;text-align:end}
+.rpg-character-details-content{display:grid;gap:12px;padding:0 10px 10px}
 .story-character-art{max-width:160px;max-height:210px;object-fit:cover;border-radius:10px}
 .story-turn-edit{display:grid;gap:8px}.story-turn.deleted,.story-turn.superseded{opacity:.55;border-style:dashed}
 .story-history-toggle{margin:8px 0;color:#92a198}
