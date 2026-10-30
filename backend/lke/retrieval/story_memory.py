@@ -112,6 +112,10 @@ def restrict_retry_context(
     for key in ("character_sheet", "recent_checks"):
         if key in original_story:
             story[key] = original_story[key]
+    if "hero_profile" in original_story:
+        story["hero_profile"] = original_story["hero_profile"]
+    else:
+        story.pop("hero_profile", None)
     for key, identity_key in (("memories", "memory_id"), ("author_notes", "memory_id"),
                               ("open_threads", "thread_id"), ("public_npcs", "entity_id")):
         original_items = {item.get(identity_key): item for item in original_story.get(key, []) if isinstance(item, dict)}

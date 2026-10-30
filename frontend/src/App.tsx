@@ -12,6 +12,41 @@ const EXTERNAL_STORY_PROVIDERS: StoryProvider["id"][] = ["openai", "claude", "co
 type StoryWorldCover = { mime_type: "image/jpeg" | "image/png" | "image/webp"; data_base64: string; alt_text: string };
 type StoryOpeningScene = { situation: string; hook: string };
 type StoryWorldArchitectDraft = { public_lore: string; starting_location: string; locations: string[]; opening_scene: StoryOpeningScene };
+const HERO_PROFILE_FIELDS = [
+  { key: "concept", label: "Character concept", maxLength: 200, rows: 2, placeholder: "A few words that capture the character." },
+  { key: "background", label: "Background", maxLength: 1_000, rows: 3, placeholder: "Important history the hero already knows." },
+  { key: "personality", label: "Personality", maxLength: 500, rows: 2, placeholder: "Traits and tendencies, not fixed decisions." },
+  { key: "goal", label: "Current goal", maxLength: 400, rows: 2, placeholder: "What the hero is pursuing right now." },
+  { key: "voice", label: "Voice", maxLength: 500, rows: 2, placeholder: "Speech style, vocabulary, or language preferences." },
+] as const;
+type HeroProfileKey = typeof HERO_PROFILE_FIELDS[number]["key"];
+type HeroProfileDraft = Record<HeroProfileKey, string>;
+const EMPTY_HERO_PROFILE: HeroProfileDraft = {
+  concept: "", background: "", personality: "", goal: "", voice: "",
+};
+
+function readHeroProfile(entity: Entity | null | undefined): HeroProfileDraft {
+  const value = entity?.properties.character_profile;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...EMPTY_HERO_PROFILE };
+  const profile = value as Record<string, unknown>;
+  return Object.fromEntries(HERO_PROFILE_FIELDS.map(({ key }) => [
+    key, typeof profile[key] === "string" ? profile[key] as string : "",
+  ])) as HeroProfileDraft;
+}
+
+function buildHeroProfile(profile: HeroProfileDraft): Partial<HeroProfileDraft> {
+  return Object.fromEntries(HERO_PROFILE_FIELDS.flatMap(({ key }) => {
+    const value = profile[key].trim();
+    return value ? [[key, value]] : [];
+  })) as Partial<HeroProfileDraft>;
+}
+
+function heroProfileEntries(profile: HeroProfileDraft) {
+  return HERO_PROFILE_FIELDS.flatMap(({ key, label }) => {
+    const value = profile[key].trim();
+    return value ? [{ key, label, value }] : [];
+  });
+}
 
 function readStoryOpeningScene(value: unknown): StoryOpeningScene {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { situation: "", hook: "" };
@@ -1358,6 +1393,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [showWorldCreation, setShowWorldCreation] = useState(false);
   const [worldCreationStep, setWorldCreationStep] = useState<1 | 2 | 3>(1);
   const [showHeroCreation, setShowHeroCreation] = useState(false);
+  const [showHeroProfileEditor, setShowHeroProfileEditor] = useState(false);
+  const [heroProfileDraft, setHeroProfileDraft] = useState<HeroProfileDraft>({ ...EMPTY_HERO_PROFILE });
   const [mainCharacters, setMainCharacters] = useState<Entity[]>([]);
   const [adventureHeroId, setAdventureHeroId] = useState("");
   const [selectedWorldId, setSelectedWorldId] = useState("");
@@ -1521,6 +1558,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }, [providerId, model]);
   useEffect(() => {
     let active = true;
+    setShowHeroProfileEditor(false);
+    setHeroProfileDraft({ ...EMPTY_HERO_PROFILE });
     Promise.all([
       request<StoryWorld[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/worlds`),
       request<StoryAdventure[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/adventures`),
@@ -2598,20 +2637,64 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     const label = heroName.trim();
     if (!label) return;
     try {
+      const characterProfile = buildHeroProfile(heroProfileDraft);
+      const heroId = newId("hero");
+      const properties = {
+        role: "protagonist",
+        ...(Object.keys(characterProfile).length ? { character_profile: characterProfile } : {}),
+      };
       const created = await onMainCommit("create_entity", {
-        entity_id: newId("hero"), entity_type: "character", label, properties: { role: "protagonist" },
+        entity_id: heroId, entity_type: "character", label, properties,
       }, "Create the protagonist for Story Studio");
       setHeroName("");
-      const rows = await request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/entities?branch_id=main`);
-      const characters = rows.filter((item) => ["character", "person"].includes(item.entity_type));
-      setMainCharacters(characters);
-      const createdId = String(created.entity_id || "");
-      setAdventureHeroId(createdId || characters[0]?.entity_id || "");
-      setActor(createdId || characters[0]?.entity_id || "");
+      setHeroProfileDraft({ ...EMPTY_HERO_PROFILE });
+      const createdId = String(created.entity_id || heroId);
+      const savedHero: Entity = {
+        entity_id: createdId, entity_type: "character", label, properties,
+        created_revision: 0, updated_revision: 0,
+      };
+      setMainCharacters((current) => [...current.filter((item) => item.entity_id !== createdId), savedHero]);
+      setAdventureHeroId(createdId);
+      setActor(createdId);
       setShowHeroCreation(false);
+      setShowHeroProfileEditor(false);
       setSetupStep(3);
+      try {
+        const rows = await request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/entities?branch_id=main`);
+        setMainCharacters(rows.filter((item) => ["character", "person"].includes(item.entity_type)));
+      } catch {
+        setLibraryError("Hero saved. Refresh the workspace if the library does not show the updated list.");
+      }
     } catch (createError) {
       setLibraryError(createError instanceof Error ? createError.message : "The protagonist could not be created.");
+    }
+  }
+
+  async function saveHeroProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedSetupHero) return;
+    try {
+      const properties = { ...selectedSetupHero.properties };
+      const characterProfile = buildHeroProfile(heroProfileDraft);
+      if (Object.keys(characterProfile).length) properties.character_profile = characterProfile;
+      else delete properties.character_profile;
+      await onMainCommit("update_entity", {
+        entity_id: selectedSetupHero.entity_id,
+        properties,
+      }, "Update reusable hero identity notes");
+      setMainCharacters((current) => current.map((item) => item.entity_id === selectedSetupHero.entity_id
+        ? { ...item, properties }
+        : item));
+      setShowHeroProfileEditor(false);
+      setLibraryError("");
+      try {
+        const rows = await request<Entity[]>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/entities?branch_id=main`);
+        setMainCharacters(rows.filter((item) => ["character", "person"].includes(item.entity_type)));
+      } catch {
+        setLibraryError("Identity saved. Refresh the workspace if the library does not show the updated profile.");
+      }
+    } catch (saveError) {
+      setLibraryError(saveError instanceof Error ? saveError.message : "The hero identity could not be saved.");
     }
   }
 
@@ -3156,6 +3239,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const additionalAdventureRows = visibleAdventureRows.slice(STORY_LIBRARY_PREVIEW_COUNT);
   const selectedSetupWorld = worlds.find((item) => item.world_id === selectedWorldId);
   const selectedSetupHero = mainCharacters.find((item) => item.entity_id === adventureHeroId);
+  const selectedHeroProfile = readHeroProfile(selectedSetupHero);
+  const selectedHeroProfileEntries = heroProfileEntries(selectedHeroProfile);
   const selectedSetupContent = selectedWorldDetail?.world_id === selectedWorldId
     ? selectedWorldDetail.versions.find((item) => item.version === selectedSetupWorld?.latest_version)?.content || null
     : null;
@@ -3492,12 +3577,42 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </section>}
         {setupStep === 2 && <section className="story-hub-form">
           <div className="story-hub-title"><span>02</span><div><strong>Choose or create a hero</strong><small>The hero can be reused; every adventure gets separate state.</small></div></div>
-          {mainCharacters.length > 0 && <label className="field-label">Choose an existing hero<select value={adventureHeroId} onChange={(event) => setAdventureHeroId(event.target.value)}>{mainCharacters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>}
-          {mainCharacters.length > 0 && !showHeroCreation && <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowHeroCreation(true)}>Create another hero</button>}
+          {mainCharacters.length > 0 && <label className="field-label">Choose an existing hero<select value={adventureHeroId} onChange={(event) => { setAdventureHeroId(event.target.value); setShowHeroCreation(false); setShowHeroProfileEditor(false); }}>{mainCharacters.map((item) => <option key={item.entity_id} value={item.entity_id}>{item.label}</option>)}</select></label>}
+          {mainCharacters.length > 0 && !showHeroCreation && <button className="secondary-button" type="button" disabled={busy} onClick={() => { setHeroProfileDraft({ ...EMPTY_HERO_PROFILE }); setShowHeroProfileEditor(false); setShowHeroCreation(true); }}>Create another hero</button>}
           {(showHeroCreation || mainCharacters.length === 0) && <>
             <p className="empty-hint">{mainCharacters.length ? "Add a hero to the workspace library." : "Create your first protagonist here. No Knowledge Explorer setup is needed."}</p>
-            <form className="story-hero-create" onSubmit={(event) => void createHero(event)}><input value={heroName} onChange={(event) => setHeroName(event.target.value)} placeholder="Protagonist name" aria-label="Protagonist name" maxLength={200} required /><button className="secondary-button" disabled={busy}>Create hero</button></form>
+            <form className="hero-identity-form" onSubmit={(event) => void createHero(event)}>
+              <label className="field-label">Hero name<input value={heroName} onChange={(event) => setHeroName(event.target.value)} placeholder="Protagonist name" maxLength={200} required /></label>
+              <details className="hero-profile-details">
+                <summary>Character details (optional)</summary>
+                <p className="field-note">These notes guide local story context and stay on this device. Hosted providers do not receive them.</p>
+                <div className="hero-profile-fields">
+                  {HERO_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={heroProfileDraft[key]} onChange={(event) => setHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
+                </div>
+              </details>
+              <button className="secondary-button" disabled={busy}>Create hero</button>
+            </form>
+            {mainCharacters.length > 0 && <button className="link-button" type="button" disabled={busy} onClick={() => setShowHeroCreation(false)}>Use an existing hero</button>}
           </>}
+          {selectedSetupHero && !showHeroCreation && <div className="hero-identity-section">
+            {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review">
+              <summary>Review saved identity · {selectedHeroProfileEntries.length} notes</summary>
+              <dl>{selectedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+            </details>}
+            {!showHeroProfileEditor
+              ? <button className="link-button" type="button" disabled={busy} onClick={() => { setHeroProfileDraft(selectedHeroProfile); setShowHeroProfileEditor(true); }}>Edit saved identity</button>
+              : <form className="hero-identity-form" onSubmit={(event) => void saveHeroProfile(event)}>
+                  <strong>Edit {selectedSetupHero.label}</strong>
+                  <p className="field-note">These notes guide local story context and stay on this device. Hosted providers do not receive them.</p>
+                  <div className="hero-profile-fields">
+                    {HERO_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={heroProfileDraft[key]} onChange={(event) => setHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
+                  </div>
+                  <div className="wizard-actions">
+                    <button className="primary-button" disabled={busy}>Save identity</button>
+                    <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowHeroProfileEditor(false)}>Cancel</button>
+                  </div>
+                </form>}
+          </div>}
           <p className="field-note">Reusing a hero starts a new isolated adventure branch with a fresh sheet from the selected world. Other adventures, checks, and trackers are not copied.</p>
           <div className="wizard-actions">
             <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(1)}>Back</button>
@@ -3575,6 +3690,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <p className="story-start-summary" role="status">{selectedSetupWorld && selectedSetupHero
             ? `“${adventureName.trim() || selectedSetupWorld.name}” starts as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
             : "Choose a world and hero before starting."}</p>
+          {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review" open>
+            <summary>Review hero identity · {selectedHeroProfileEntries.length} notes</summary>
+            <dl>{selectedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+            <p className="field-note">Identity notes are included in local story context and excluded from hosted-provider requests.</p>
+          </details>}
           {hasSelectedSetupOpeningScene && <details className="character-creation-review">
             <summary>Review the opening scene</summary>
             <p>{selectedSetupOpeningScene.situation}</p>

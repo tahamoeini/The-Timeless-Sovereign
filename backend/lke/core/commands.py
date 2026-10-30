@@ -133,6 +133,49 @@ def _required_text(value: Any, field: str, limit: int = 500) -> str:
     return value.strip()
 
 
+_CHARACTER_PROFILE_FIELD_LIMITS = {
+    "concept": 200,
+    "background": 1_000,
+    "personality": 500,
+    "goal": 400,
+    "voice": 500,
+}
+
+
+def _validated_entity_properties(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValidationError("properties must be an object")
+    properties = dict(value)
+    if "character_profile" in properties:
+        profile = properties["character_profile"]
+        if not isinstance(profile, dict):
+            raise ValidationError("character_profile must be an object")
+        unknown_fields = set(profile) - set(_CHARACTER_PROFILE_FIELD_LIMITS)
+        if unknown_fields:
+            raise ValidationError("character_profile contains unsupported fields")
+        clean_profile: dict[str, str] = {}
+        for field, limit in _CHARACTER_PROFILE_FIELD_LIMITS.items():
+            if field not in profile:
+                continue
+            text = profile[field]
+            if not isinstance(text, str):
+                raise ValidationError(f"character_profile.{field} must be text")
+            text = text.strip()
+            if len(text) > limit:
+                raise ValidationError(f"character_profile.{field} is limited to {limit} characters")
+            if text:
+                clean_profile[field] = text
+        if clean_profile:
+            properties["character_profile"] = clean_profile
+        else:
+            properties.pop("character_profile")
+    try:
+        _json(properties)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("properties must contain JSON-compatible data") from error
+    return properties
+
+
 def _validated_exchange_payload(
     payload: dict[str, Any], workspace_id: str, branch_id: str
 ) -> dict[str, Any]:
@@ -1098,11 +1141,15 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         if entity_id in entity_ids:
             raise ValidationError("Adventure entity IDs must be unique")
         entity_ids.add(entity_id)
+        entity_type = _required_text(entity["entity_type"], "entity_type", 100)
+        properties = _validated_entity_properties(entity["properties"])
+        if "character_profile" in properties and entity_type not in {"character", "person"}:
+            raise ValidationError("character_profile must belong to a character")
         clean_entities.append({
             "entity_id": entity_id,
-            "entity_type": _required_text(entity["entity_type"], "entity_type", 100),
+            "entity_type": entity_type,
             "label": _required_text(entity["label"], "entity label", 200),
-            "properties": _validated_world_content(entity["properties"]),
+            "properties": _validated_world_content(properties),
         })
     actor_entity_id = _required_text(adventure["actor_entity_id"], "actor_entity_id", 100)
     actor = next((entity for entity in clean_entities if entity["entity_id"] == actor_entity_id), None)
@@ -2676,9 +2723,9 @@ class CommandGateway:
             entity_id = _required_text(payload.get("entity_id") or str(uuid4()), "entity_id", 100)
             entity_type = _required_text(payload.get("entity_type"), "entity_type", 100)
             label = _required_text(payload.get("label"), "label")
-            properties = payload.get("properties", {})
-            if not isinstance(properties, dict):
-                raise ValidationError("properties must be an object")
+            properties = _validated_entity_properties(payload.get("properties", {}))
+            if "character_profile" in properties and entity_type not in {"character", "person"}:
+                raise ValidationError("character_profile must belong to a character")
             properties_json = _json(properties)
             connection.execute(
                 "INSERT INTO entities(workspace_id,branch_id,entity_id,entity_type,label,properties_json,created_revision,updated_revision) "
@@ -2708,9 +2755,11 @@ class CommandGateway:
             }
             entity_type = _required_text(payload.get("entity_type", row["entity_type"]), "entity_type", 100)
             label = _required_text(payload.get("label", row["label"]), "label")
-            properties = payload.get("properties", json.loads(row["properties_json"]))
-            if not isinstance(properties, dict):
-                raise ValidationError("properties must be an object")
+            properties = _validated_entity_properties(
+                payload.get("properties", json.loads(row["properties_json"]))
+            )
+            if "character_profile" in properties and entity_type not in {"character", "person"}:
+                raise ValidationError("character_profile must belong to a character")
             properties_json = _json(properties)
             after = {"entity_type": entity_type, "label": label, "properties": json.loads(properties_json)}
             if after == before:
