@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { buildStoryExport } from "./storyExport";
-import { allocatedCreationPoints, randomizeCharacterAllocation } from "./storyCreation";
+import { allocatedCreationPoints, balancedCharacterAllocation, randomizeCharacterAllocation } from "./storyCreation";
 import type { CharacterCreationStat } from "./storyCreation";
 import { defaultStoryMechanics, readStoryMechanics, StoryMechanicsEditor } from "./storyMechanics";
 import { Branch, Claim, CodexModelOption, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAbilityDefinition, StoryAdventure, StoryAdventureExportMode, StoryAdventureExportPreview, StoryAdventureExportSelection, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryHistoryPreview, StoryMapLocation, StoryMechanicsProfile, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
@@ -1521,7 +1521,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [renamingAdventureId, setRenamingAdventureId] = useState("");
   const [renamingAdventureName, setRenamingAdventureName] = useState("");
   const [setupExpanded, setSetupExpanded] = useState(false);
-  const [setupStep, setSetupStep] = useState<1 | 2 | 3 | 4>(1);
+  const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
   const [showWorldCreation, setShowWorldCreation] = useState(false);
   const [worldCreationStep, setWorldCreationStep] = useState<1 | 2 | 3>(1);
   const [showHeroCreation, setShowHeroCreation] = useState(false);
@@ -1538,7 +1538,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [worldName, setWorldName] = useState("");
   const [worldPremise, setWorldPremise] = useState("");
   const [worldStartingLocation, setWorldStartingLocation] = useState("The Crossroads");
-  const [worldLocations, setWorldLocations] = useState("The Crossroads");
+  const [worldLocations, setWorldLocations] = useState("");
   const [worldOpeningSituation, setWorldOpeningSituation] = useState("");
   const [worldOpeningHook, setWorldOpeningHook] = useState("");
   const [worldArchitectBrief, setWorldArchitectBrief] = useState("");
@@ -1821,10 +1821,23 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const baselines = updatedLatest?.content.stats && typeof updatedLatest.content.stats === "object" && !Array.isArray(updatedLatest.content.stats)
         ? updatedLatest.content.stats as Record<string, number>
         : {};
+      const allocationStats = creation
+        ? Object.entries(creation.stats).map(([key, rule]) => ({
+          key,
+          ...rule,
+          baseline: baselines[key],
+          minimum: creation.allow_below_baseline ? rule.minimum : Math.max(rule.minimum, baselines[key]),
+        }))
+        : [];
+      const balancedAllocation = creation
+        ? balancedCharacterAllocation(allocationStats, creation.point_budget, creation.allow_unspent_points)
+        : null;
       setAdventureAllocation(creation
-        ? Object.fromEntries(Object.keys(creation.stats).map((key) => [key, baselines[key]]))
+        ? balancedAllocation || Object.fromEntries(Object.keys(creation.stats).map((key) => [key, baselines[key]]))
         : {});
-      setAdventureAllocationMessage("");
+      setAdventureAllocationMessage(creation
+        ? balancedAllocation ? "Balanced starting attributes are ready. You can customize them before you start." : "Customize the attributes to meet this world's point rules before you start."
+        : "");
       setEditWorldName(detail.name);
       setEditWorldDescription(updatedLatest?.description || "");
       setEditWorldPremise(typeof updatedLatest?.content.public_lore === "string" ? updatedLatest.content.public_lore : "");
@@ -2399,8 +2412,18 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
 
   function resetAdventureAllocation() {
-    setAdventureAllocation(Object.fromEntries(selectedSetupStatDefinitions.map((stat) => [stat.key, stat.baseline])));
-    setAdventureAllocationMessage("Allocation reset to the world baselines.");
+    if (!selectedSetupCreation) return;
+    const balanced = balancedCharacterAllocation(
+      selectedSetupStatDefinitions,
+      selectedSetupCreation.point_budget,
+      selectedSetupCreation.allow_unspent_points,
+    );
+    if (!balanced) {
+      setAdventureAllocationMessage("This world has no valid balanced starting sheet. Adjust the attributes to meet its rules.");
+      return;
+    }
+    setAdventureAllocation(balanced);
+    setAdventureAllocationMessage("Balanced starting attributes restored.");
   }
 
   function randomizeAdventureAllocation() {
@@ -2570,7 +2593,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (!worldArchitectDraft) return;
     setWorldPremise(worldArchitectDraft.public_lore);
     setWorldStartingLocation(worldArchitectDraft.starting_location);
-    setWorldLocations(worldArchitectDraft.locations.join("\n"));
+    const startingKey = worldArchitectDraft.starting_location.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+    setWorldLocations(worldArchitectDraft.locations.filter((location) =>
+      location.trim().replace(/\s+/g, " ").toLocaleLowerCase() !== startingKey,
+    ).join("\n"));
     setWorldOpeningSituation(worldArchitectDraft.opening_scene.situation);
     setWorldOpeningHook(worldArchitectDraft.opening_scene.hook);
     setWorldArchitectDraft(null);
@@ -2591,15 +2617,21 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setCreationError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
       return;
     }
-    const locations = parseStoryWorldLocations(worldLocations);
-    if (!locations) {
-      setCreationError("Use up to 100 unique location names, each no longer than 150 characters.");
+    const additionalLocations = parseStoryWorldLocations(worldLocations);
+    if (!additionalLocations) {
+      setCreationError("Use up to 100 unique additional places, each no longer than 150 characters.");
       return;
     }
     const requestedStartingLocation = worldStartingLocation.trim();
-    const startingLocation = locations.find((location) => location.toLocaleLowerCase() === requestedStartingLocation.toLocaleLowerCase()) || "";
-    if (requestedStartingLocation && !startingLocation) {
-      setCreationError("Choose a starting location from the world’s location list, or leave it blank.");
+    const startingLocation = additionalLocations.find((location) =>
+      location.toLocaleLowerCase() === requestedStartingLocation.toLocaleLowerCase(),
+    ) || requestedStartingLocation;
+    const locations = [
+      ...(startingLocation ? [startingLocation] : []),
+      ...additionalLocations.filter((location) => location.toLocaleLowerCase() !== startingLocation.toLocaleLowerCase()),
+    ];
+    if (locations.length > 100) {
+      setCreationError("Keep the starting place and map to 100 places or fewer.");
       return;
     }
     const openingSituation = worldOpeningSituation.trim();
@@ -2654,7 +2686,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setWorldPremise("");
       const defaultStartingLocation = typeof template.content.starting_location === "string" ? template.content.starting_location : "";
       setWorldStartingLocation(defaultStartingLocation);
-      setWorldLocations(defaultStartingLocation);
+      setWorldLocations("");
       setWorldOpeningSituation("");
       setWorldOpeningHook("");
       setWorldArchitectBrief("");
@@ -3068,10 +3100,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       return;
     }
     setLibraryError("");
-    if (setupStep === 3) {
-      setSetupStep(4);
-      return;
-    }
     try {
       await onCreateAdventure({
         idempotency_key: newId("start-adventure"),
@@ -3544,7 +3572,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     ? selectedSetupContent.stats as Record<string, number>
     : {};
   const selectedSetupStatDefinitions: CharacterCreationStat[] = selectedSetupCreation
-    ? Object.entries(selectedSetupCreation.stats).map(([key, rule]) => ({ key, ...rule, baseline: selectedSetupBaselines[key] }))
+    ? Object.entries(selectedSetupCreation.stats).map(([key, rule]) => ({
+      key,
+      ...rule,
+      baseline: selectedSetupBaselines[key],
+      minimum: selectedSetupCreation.allow_below_baseline ? rule.minimum : Math.max(rule.minimum, selectedSetupBaselines[key]),
+    }))
     : [];
   const adventurePointsSpent = allocatedCreationPoints(selectedSetupStatDefinitions, adventureAllocation);
   const adventurePointsRemaining = (selectedSetupCreation?.point_budget || 0) - adventurePointsSpent;
@@ -3597,8 +3630,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       && (ability.cooldown_turns === null || (Number.isInteger(ability.cooldown_turns)
         && ability.cooldown_turns >= 0 && ability.cooldown_turns <= 1_000_000))
       && [ability.duration, ability.range].every((value) => value === null || value.length <= 200));
-  const creationWorldValid = Number.isInteger(creationPointBudget) && creationPointBudget >= 0 && creationPointBudget <= 200
-    && creationStatDefinitions.length > 0 && creationStatDefinitions.length <= 20
+  const creationPointBudgetValid = Number.isInteger(creationPointBudget) && creationPointBudget >= 0 && creationPointBudget <= 200;
+  const creationStatsValid = creationStatDefinitions.length > 0 && creationStatDefinitions.length <= 20
     && creationKeys.every((key, index) => !!key && creationKeys.indexOf(key) === index)
     && creationStatDefinitions.every((stat) => !!stat.key.trim() && stat.key.trim().length <= 40
       && !!stat.label.trim() && stat.label.trim().length <= 80
@@ -3606,12 +3639,28 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       && Number.isInteger(stat.point_cost) && stat.minimum >= -10 && stat.maximum <= 10
       && stat.minimum <= stat.baseline && stat.baseline <= stat.maximum
       && (creationAllowBelowBaseline || stat.minimum === stat.baseline)
-      && stat.point_cost >= 1 && stat.point_cost <= 20)
-    && creationAbilitiesValid;
-  const creationLocationNames = parseStoryWorldLocations(worldLocations);
+       && stat.point_cost >= 1 && stat.point_cost <= 20);
+  const creationHasValidStartingAllocation = creationPointBudgetValid && creationStatsValid
+    && !!balancedCharacterAllocation(creationStatDefinitions.map((stat) => ({
+      ...stat,
+      minimum: creationAllowBelowBaseline ? stat.minimum : Math.max(stat.minimum, stat.baseline),
+    })), creationPointBudget, creationAllowUnspentPoints);
+  const creationWorldValid = creationPointBudgetValid && creationStatsValid
+    && creationHasValidStartingAllocation && creationAbilitiesValid;
+  const additionalCreationLocations = parseStoryWorldLocations(worldLocations);
   const creationStartingLocation = worldStartingLocation.trim();
+  const creationLocationNames = additionalCreationLocations === null ? null : (() => {
+    const matchingStartingPlace = additionalCreationLocations.find((location) =>
+      location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase(),
+    );
+    const startingPlace = matchingStartingPlace || creationStartingLocation;
+    const locations = [
+      ...(startingPlace ? [startingPlace] : []),
+      ...additionalCreationLocations.filter((location) => location.toLocaleLowerCase() !== startingPlace.toLocaleLowerCase()),
+    ];
+    return locations.length <= 100 ? locations : null;
+  })();
   const creationPlacesValid = creationLocationNames !== null
-    && (!creationStartingLocation || creationLocationNames.some((location) => location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase()))
     && Boolean(worldOpeningSituation.trim()) === Boolean(worldOpeningHook.trim());
   const lastManualMechanicCheck = rpgState?.mechanic_checks.find((check) => check.source_turn_id === null);
   const pendingRpgReviewCount = rpgState?.proposals.filter((item) => item.review_status === "proposed").length ?? 0;
@@ -3686,9 +3735,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </article>) : <div className="story-library-empty"><p className="empty-hint">{worlds.length ? "No worlds match this search and these filters." : "Create or import a world to begin."}</p>{worlds.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}</div>
       </details>
       <details id="story-adventure-setup" className="story-world-editor story-hub-setup" open={setupExpanded} onToggle={(event) => setSetupExpanded(event.currentTarget.open)}>
-        <summary>Set up an adventure · step {setupStep} of 4</summary>
+        <summary>Set up an adventure · step {setupStep} of 3</summary>
         <ol className="story-setup-progress" aria-label="Adventure setup progress">
-          {(["World", "Hero", "Build", "Review"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
+          {(["World", "Hero", "Review"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
             <span>{index + 1}</span><small>{label}</small>
           </li>)}
         </ol>
@@ -3709,7 +3758,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {showWorldCreation && <form className="story-hub-form story-hub-create-world" onSubmit={(event) => void createWorld(event)}>
           <div className="story-hub-title"><span>＋</span><div><strong>Create a world</strong><small>Start with a small template. Advanced rules stay optional.</small></div></div>
           <ol className="world-creation-progress" aria-label="World creation progress">
-            {(["Setting", "Places & opening", "Rules & review"] as const).map((label, index) => <li key={label}
+            {(["Name & idea", "Beginning", "Review & create"] as const).map((label, index) => <li key={label}
               aria-current={worldCreationStep === index + 1 ? "step" : undefined}
               className={worldCreationStep > index + 1 ? "complete" : ""}>
               <span>{index + 1}</span><small>{label}</small>
@@ -3717,17 +3766,17 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </ol>
           <div className="world-creation-stage">
           {worldCreationStep === 1 && <>
-          <div className="world-creation-step-heading"><h3>Set the foundation</h3><p>Give your world a name and choose a starting style. The optional local draft can fill in editable details for you.</p></div>
+          <div className="world-creation-step-heading"><h3>Name your world</h3><p>Choose a style and add a short idea. You can keep it simple and add more details later.</p></div>
           {worldArchitectBusy && <button className="quiet-button full-button" type="button" onClick={cancelWorldDraft}>Cancel local draft</button>}
           <label className="field-label">World name<input value={worldName} disabled={worldArchitectBusy} onChange={(event) => { setWorldName(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} placeholder="The Shattered Coast" maxLength={200} required /><small className="field-note">Required before continuing. Changes stay in this form until you save the world.</small></label>
-          <label className="field-label">Starting style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
+          <label className="field-label">World style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
             const nextTemplate = event.target.value;
             const nextTemplateContent = STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content;
             const defaultStartingLocation = typeof nextTemplateContent?.starting_location === "string" ? nextTemplateContent.starting_location : "";
             const nextStats = defaultCharacterCreationStats(nextTemplate);
             setWorldTemplate(nextTemplate);
             setWorldStartingLocation(defaultStartingLocation);
-            setWorldLocations(defaultStartingLocation);
+            setWorldLocations("");
             setCreationStatDefinitions(nextStats);
             setCreationTrackerText(trackerDefinitionsText(
               STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content.trackers,
@@ -3737,7 +3786,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             setWorldArchitectDraft(null);
             setWorldArchitectMessage("");
           }}>{Object.entries(STORY_WORLD_TEMPLATES).map(([key, template]) => <option key={key} value={key}>{template.label}</option>)}</select></label>
-          <label className="field-label">Public setting premise<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Share setting details that are safe for the hero to know." /></label>
+          <label className="field-label">World idea (optional)<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="A floating city where people trade memories" /><small className="field-note">A sentence is enough. This helps the storyteller understand your world.</small></label>
           <details className="character-creation-rules">
             <summary>Draft with the local World Architect (optional)</summary>
             <p className="field-note">Uses only the local Ollama model selected here. It receives the world name, style, and brief. Drafts are not saved or canonical until you review, apply, edit, and save the world.</p>
@@ -3765,22 +3814,24 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </details>
           </>}
           {worldCreationStep === 2 && <>
-          <div className="world-creation-step-heading"><h3>Choose places and an opening</h3><p>Map locations and the opening scene are optional. The starting location must match one of the places you list.</p></div>
-          <section className="world-creation-fields" aria-labelledby="world-places-heading">
-            <h4 id="world-places-heading">Starting place and map locations</h4>
-            <label className="field-label">Starting location<input value={worldStartingLocation} onChange={(event) => { setWorldStartingLocation(event.target.value); setCreationError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
-            <label className="field-label">World locations<textarea value={worldLocations} onChange={(event) => { setWorldLocations(event.target.value); setCreationError(""); }} rows={3} maxLength={16000} placeholder="One location per line" /><small className="field-note">Use unique names; if a starting location is set, it must appear in this list.</small></label>
-          </section>
-          <section className="world-creation-fields" aria-labelledby="world-opening-heading">
-            <h4 id="world-opening-heading">Opening scene <span>Optional</span></h4>
-            <p className="field-note">This public scene seed is included with the first generated reply. Describe the situation and its hook; the player still chooses what their hero says and does.</p>
-            <label className="field-label">Opening situation<textarea value={worldOpeningSituation} onChange={(event) => { setWorldOpeningSituation(event.target.value); setCreationError(""); }} rows={3} maxLength={4000} placeholder="Where the scene begins and what is already happening" /></label>
-            <label className="field-label">Immediate hook<textarea value={worldOpeningHook} onChange={(event) => { setWorldOpeningHook(event.target.value); setCreationError(""); }} rows={2} maxLength={2000} placeholder="A question, pressure, or opportunity for the hero" /></label>
-          </section>
-          <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Stored in the local world version and portable package. Lorethra compresses it to a small JPEG, up to 64 KiB.</small></label>
+          <div className="world-creation-step-heading"><h3>Choose a starting place</h3><p>Keep the suggested place and continue, or add a few details if you like.</p></div>
+          <label className="field-label">Starting place<input value={worldStartingLocation} onChange={(event) => { setWorldStartingLocation(event.target.value); setCreationError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
+          <details className="character-creation-rules">
+            <summary>Add places to the map (optional)</summary>
+            <label className="field-label">Other places<textarea value={worldLocations} onChange={(event) => { setWorldLocations(event.target.value); setCreationError(""); }} rows={3} maxLength={16000} placeholder="One place per line" /><small className="field-note">The starting place is added to the map automatically.</small></label>
+          </details>
+          <details className="character-creation-rules">
+            <summary>Add an opening scene (optional)</summary>
+            <p className="field-note">Describe what is happening and a hook for the hero. The player still chooses what their hero says and does.</p>
+            <label className="field-label">What is happening?<textarea value={worldOpeningSituation} onChange={(event) => { setWorldOpeningSituation(event.target.value); setCreationError(""); }} rows={3} maxLength={4000} placeholder="The harbor bells ring as a storm rolls in" /></label>
+            <label className="field-label">What draws the hero in?<textarea value={worldOpeningHook} onChange={(event) => { setWorldOpeningHook(event.target.value); setCreationError(""); }} rows={2} maxLength={2000} placeholder="A missing ship sends a familiar signal" /></label>
+          </details>
+          <details className="character-creation-rules">
+            <summary>Add a world cover (optional)</summary>
+            <label className="field-label">Choose an image<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Saved on this device and included in exported world packages.</small></label>
+          </details>
           {worldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(worldCover)} alt={worldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={worldCover.alt_text} onChange={(event) => setWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setWorldCover(null)}>Remove cover</button></div>}
           {creationLocationNames === null && <p className="inline-error" role="alert">Use no more than 100 unique locations, each up to 150 characters.</p>}
-          {creationLocationNames !== null && creationStartingLocation && !creationLocationNames.some((location) => location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase()) && <p className="inline-error" role="alert">Choose the starting location from your location list, or leave it blank.</p>}
           {Boolean(worldOpeningSituation.trim()) !== Boolean(worldOpeningHook.trim()) && <p className="inline-error" role="alert">Add both opening-scene fields, or leave both empty.</p>}
           </>}
           {worldCreationStep === 3 && <>
@@ -3856,7 +3907,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             {!creationAbilitiesValid && <p className="field-note" role="status">Complete each ability definition, use a unique lowercase ID, and enter positive resource costs.</p>}
           </details>
           </details>
-          {!creationWorldValid && <p className="inline-error" role="alert">Review the custom stat and ability definitions. Use distinct stat keys, valid baseline bounds, and point costs from 1 to 20.</p>}
+          {!creationWorldValid && <p className="inline-error" role="alert">{!creationStatsValid || !creationPointBudgetValid
+            ? "Review the point budget and attribute rules. Use distinct names, valid bounds, and point costs from 1 to 20."
+            : !creationHasValidStartingAllocation
+              ? "These rules cannot make a valid starting sheet. Adjust the available points or attribute limits."
+              : "Review the ability definitions, costs, and unique IDs."}</p>}
           </>}
           {creationError && <p className="inline-error" role="alert">{creationError}</p>}
           <div className="wizard-actions world-creation-actions">
@@ -3923,59 +3978,19 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <p className="field-note">Reusing a hero starts a new isolated adventure branch with a fresh sheet from the selected world. Other adventures, checks, and trackers are not copied.</p>
           <div className="wizard-actions">
             <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(1)}>Back</button>
-            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Build your hero <span>→</span></button>
+            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Review adventure <span>→</span></button>
           </div>
         </section>}
-        {setupStep === 3 && <form className="story-hub-form story-start-adventure" onSubmit={(event) => void startAdventure(event)}>
-          <div className="story-hub-title"><span>03</span><div><strong>Build your hero and choose a story model</strong><small>Set starting attributes here. Setup does not send anything to a model.</small></div></div>
-          {selectedSetupWorld && selectedSetupHero && <p className="story-start-summary">{selectedSetupHero.label} · {selectedSetupWorld.name} · pinned world version {selectedSetupWorld.latest_version}</p>}
-            {selectedSetupCreation && <section className="character-creation-allocation" aria-labelledby="character-creation-heading">
-              <div className="story-hub-title"><span>03</span><div><strong id="character-creation-heading">Allocate starting attributes</strong><small>World-defined baselines, limits, and point costs.</small></div></div>
-              <div className="character-creation-allocation-list">
-                {selectedSetupStatDefinitions.map((stat) => {
-                  const value = adventureAllocation[stat.key] ?? stat.baseline;
-                  return <div className="character-creation-allocation-row" key={stat.key}>
-                    <span><strong>{stat.label}</strong><small>{stat.baseline} baseline · {stat.minimum}–{stat.maximum} · {stat.point_cost} point{stat.point_cost === 1 ? "" : "s"} per increase</small></span>
-                    <div><button type="button" className="secondary-button" aria-label={`Decrease ${stat.label}`} disabled={busy || value <= stat.minimum} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value - 1 }))}>−</button>
-                      <output aria-label={`${stat.label} allocation`}>{value}</output>
-                      <button type="button" className="secondary-button" aria-label={`Increase ${stat.label}`} disabled={busy || value >= stat.maximum || adventurePointsRemaining < stat.point_cost} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value + 1 }))}>+</button></div>
-                  </div>;
-                })}
-              </div>
-              <div className="character-creation-allocation-actions">
-                <button type="button" className="link-button" disabled={busy} onClick={resetAdventureAllocation}>Reset to baseline</button>
-                <button type="button" className="link-button" disabled={busy} onClick={randomizeAdventureAllocation}>Randomize</button>
-                <strong aria-live="polite">{adventurePointsRemaining} / {selectedSetupCreation.point_budget} points remaining</strong>
-              </div>
-              {adventureAllocationMessage && <p className="field-note" role="status">{adventureAllocationMessage}</p>}
-              <details className="character-creation-review">
-                <summary>Review final character sheet</summary>
-                <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {stat.baseline} baseline → {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
-              </details>
-              <p className="field-note" role="status" aria-live="polite">{adventurePointsRemaining < 0
-                ? "This allocation exceeds the world’s point budget. Reduce an attribute before continuing."
-                : adventurePointsRemaining > 0 && selectedSetupCreation.allow_unspent_points
-                  ? `You may leave these ${adventurePointsRemaining} point${adventurePointsRemaining === 1 ? "" : "s"} unspent or use them before starting.`
-                  : adventurePointsRemaining > 0
-                    ? `Spend all ${adventurePointsRemaining} remaining point${adventurePointsRemaining === 1 ? "" : "s"} before continuing.`
-                    : "All creation points are allocated."}</p>
-            </section>}
-            <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={selectedSetupWorld?.name || "First adventure"} maxLength={200} /></label>
-            <p className="story-start-summary" aria-live="polite">{selectedSetupWorld && selectedSetupHero
-              ? `Ready to play “${adventureName.trim() || selectedSetupWorld.name}” as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
-              : "Choose a world and protagonist to review your adventure."}</p>
-            <p className="field-note">You can choose or change the story-writing model after the adventure starts, under <strong>Writing settings</strong>.</p>
-            <div className="wizard-actions">
-              <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(2)}>Back</button>
-              <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Review and continue <span>→</span></button>
-            </div>
-        </form>}
-        {setupStep === 4 && <section className="story-hub-form">
-          <div className="story-hub-title"><span>04</span><div><strong>Review and start this adventure</strong><small>Confirm the world, hero, and starting sheet before play.</small></div></div>
+        {setupStep === 3 && <section className="story-hub-form story-start-adventure">
+          <div className="story-hub-title"><span>03</span><div><strong>Review and start</strong><small>Your world and hero are ready. You can customize starting attributes if you want.</small></div></div>
           <p className="story-start-summary" role="status">{selectedSetupWorld && selectedSetupHero
             ? `“${adventureName.trim() || selectedSetupWorld.name}” starts as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
             : "Choose a world and hero before starting."}</p>
-          {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review" open>
+          <details className="character-creation-rules">
+            <summary>Change adventure name (optional)</summary>
+            <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={selectedSetupWorld?.name || "First adventure"} maxLength={200} /></label>
+          </details>
+          {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review">
             <summary>Review hero identity · {selectedHeroProfileEntries.length} notes</summary>
             <dl>{selectedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
             <p className="field-note">Identity notes guide style only; you choose what the hero says and does. Hosted providers do not receive them.</p>
@@ -3990,14 +4005,44 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <p><strong>Immediate hook:</strong> {selectedSetupOpeningScene.hook}</p>
             <small className="field-note">This guides the first generated reply. You choose your hero’s response when you begin play.</small>
           </details>}
-          {selectedSetupCreation && <details className="character-creation-review" open>
-            <summary>Starting attributes · {adventurePointsSpent} / {selectedSetupCreation.point_budget} points spent</summary>
-            <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
-          </details>}
+          {selectedSetupCreation && <>
+            <p className="field-note" role="status" aria-live="polite">{adventureAllocationValid
+              ? "Balanced starting attributes are ready. Open the option below only if you want to customize them."
+              : "This world needs a valid starting attribute allocation. Open the option below to adjust it."}</p>
+            <details className="character-creation-review">
+              <summary>Customize starting attributes · {adventurePointsSpent} of {selectedSetupCreation.point_budget} points used</summary>
+              <section className="character-creation-allocation" aria-labelledby="character-creation-heading">
+                <div className="story-hub-title"><div><strong id="character-creation-heading">Starting attributes</strong><small>World rules set the limits and point costs.</small></div></div>
+                <div className="character-creation-allocation-list">
+                  {selectedSetupStatDefinitions.map((stat) => {
+                    const value = adventureAllocation[stat.key] ?? stat.baseline;
+                    return <div className="character-creation-allocation-row" key={stat.key}>
+                      <span><strong>{stat.label}</strong><small>{stat.baseline} baseline · {stat.minimum}–{stat.maximum} · {stat.point_cost} point{stat.point_cost === 1 ? "" : "s"} per increase</small></span>
+                      <div><button type="button" className="secondary-button" aria-label={`Decrease ${stat.label}`} disabled={busy || value <= stat.minimum} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value - 1 }))}>−</button>
+                        <output aria-label={`${stat.label} allocation`}>{value}</output>
+                        <button type="button" className="secondary-button" aria-label={`Increase ${stat.label}`} disabled={busy || value >= stat.maximum || adventurePointsRemaining < stat.point_cost} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value + 1 }))}>+</button></div>
+                    </div>;
+                  })}
+                </div>
+                <div className="character-creation-allocation-actions">
+                  <button type="button" className="link-button" disabled={busy} onClick={resetAdventureAllocation}>Restore balanced defaults</button>
+                  <button type="button" className="link-button" disabled={busy} onClick={randomizeAdventureAllocation}>Try random attributes</button>
+                  <strong aria-live="polite">{adventurePointsRemaining} points remaining</strong>
+                </div>
+                {adventureAllocationMessage && <p className="field-note" role="status">{adventureAllocationMessage}</p>}
+                <p className="field-note" role="status" aria-live="polite">{adventurePointsRemaining < 0
+                  ? "This allocation exceeds the world’s point budget. Reduce an attribute before continuing."
+                  : adventurePointsRemaining > 0 && selectedSetupCreation.allow_unspent_points
+                    ? `You may leave these ${adventurePointsRemaining} point${adventurePointsRemaining === 1 ? "" : "s"} unspent or use them before starting.`
+                    : adventurePointsRemaining > 0
+                      ? `Spend all ${adventurePointsRemaining} remaining point${adventurePointsRemaining === 1 ? "" : "s"} before starting.`
+                      : "All creation points are allocated."}</p>
+              </section>
+            </details>
+          </>}
           <p className="field-note">Each start creates a fresh adventure branch and world-specific character sheet. Reusing a hero does not copy another adventure’s turns, checks, trackers, or memories.</p>
-          <p className="provider-note">Story model: {selectedStoryProvider?.label || providerId} · {model.trim() || "not selected"}{!storyProviderAvailable ? " · unavailable until configured" : ""}</p>
           <form className="wizard-actions" onSubmit={(event) => void startAdventure(event)}>
-            <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(3)}>Back to review</button>
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(2)}>Back</button>
             <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Start adventure <span>↗</span></button>
           </form>
         </section>}

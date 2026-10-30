@@ -11,10 +11,18 @@ This file is the readable change history for Lorethra. The 2026-10-29 and 2026-1
 - Lorethra's automatic checks and per-turn XP already apply to new worlds and MNO imports; immutable legacy rules still govern older adventures.
 - Validation: all 18 `test_story_providers.py` tests pass; `npm run build` and `git diff --check` pass. Vite reports the main JavaScript chunk at 516.68 kB, above its 500 kB advisory threshold. The local preview timed out in the in-app browser, so first-use browser/novice review remains open; live Codex generation was not exercised.
 
+## 2026-10-30 — Three-step setup and optional world details
+
+- Shorten adventure setup to **World → Hero → Review**. A deterministic, balanced character sheet is prepared when the selected immutable world's point rules allow one, so a new player can start without allocating points by hand. Attribute tuning and randomization remain optional under a disclosure; impossible legacy/imported rules show a prompt to adjust before starting.
+- Simplify world creation to name, style, and an optional idea, followed by a suggested starting place. The starting place is added to the map automatically. Extra map places, opening-scene writing, cover art, and custom mechanics stay optional and collapsed until requested.
+- Prevent saving a new world through the UI when its point total and attribute limits cannot produce a legal starting sheet; show the author which rule group needs adjustment.
+- Make the final review start-ready by default; adventure naming and saved hero notes are optional disclosures. No provider or model choice is required before play.
+- Validation: `npm run build` passed (TypeScript and Vite; main JavaScript bundle 516.43 kB); direct Node checks of the allocation helper passed for exact budgets, allowed unspent points, and unreachable totals; `git diff --check` passed. This slice has no unit/API or rendered-browser run. The in-app browser could not reach Lorethra's local preview, so novice, keyboard, narrow-window, and installed-desktop acceptance remain open.
+
 ## 2026-10-30 — Readable story text and keyboard targets
 
 - Add shared type tokens and raise core text sizes: story and reader text is 18px at normal widths and 16px on narrow screens; secondary text is at least 14px; form controls use 16px text.
-- Set buttons, text fields, and disclosures to 44px minimum targets; checkbox/radio rows receive 44px hit areas. Add a consistent visible keyboard focus outline and let the four-step setup indicator wrap into two columns on narrow screens.
+- Set buttons, text fields, and disclosures to 44px minimum targets; checkbox/radio rows receive 44px hit areas. Add a consistent visible keyboard focus outline and let the setup indicator wrap into two columns on narrow screens.
 - Keep the existing responsive layout and 320px minimum viewport. This source change does not establish visual or accessibility acceptance: the in-app browser could not reach the local Vite preview, so screenshot, keyboard, zoom, contrast, RTL, screen-reader, and installed Windows webview checks remain open.
 
 ## 2026-10-30 — Focus active story play
