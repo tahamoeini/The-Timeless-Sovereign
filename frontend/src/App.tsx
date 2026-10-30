@@ -1502,6 +1502,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [usingCustomModel, setUsingCustomModel] = useState(false);
   const [modelDiscoveryBusy, setModelDiscoveryBusy] = useState(false);
   const [modelDiscoveryError, setModelDiscoveryError] = useState("");
+  const [modelDiscoveryNotice, setModelDiscoveryNotice] = useState("");
   const [title, setTitle] = useState("");
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -1519,7 +1520,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [storyWorldStatusFilter, setStoryWorldStatusFilter] = useState<"active" | "archived" | "all">("active");
   const [renamingAdventureId, setRenamingAdventureId] = useState("");
   const [renamingAdventureName, setRenamingAdventureName] = useState("");
-  const [setupExpanded, setSetupExpanded] = useState(true);
+  const [setupExpanded, setSetupExpanded] = useState(false);
   const [setupStep, setSetupStep] = useState<1 | 2 | 3 | 4>(1);
   const [showWorldCreation, setShowWorldCreation] = useState(false);
   const [worldCreationStep, setWorldCreationStep] = useState<1 | 2 | 3>(1);
@@ -1641,6 +1642,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const availableCodexEfforts = model === "auto"
     ? automaticCodexEfforts
     : selectedCodexModel?.supported_reasoning_efforts ?? [];
+  const effectiveCodexReasoningEffort = providerId === "codex" && availableCodexEfforts.includes(reasoningEffort)
+    ? reasoningEffort
+    : "";
   const localStoryProvider = storyProviders.find((provider) => provider.id === "ollama");
   const localStoryModels = localStoryProvider?.models ?? [];
   const selectedWorldArchitectModel = localStoryModels.includes(worldArchitectModel)
@@ -1688,9 +1692,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   function codexReasoningControl(label: string, disabled = false) {
     if (providerId !== "codex") return null;
     if (!codexModelOptions.length) {
-      return <p className="provider-note">{modelDiscoveryBusy ? "Loading Codex model choices…" : "Choose an effort after refreshing the Codex model list. Automatic uses Codex’s own default."}</p>;
+      return <p className="provider-note">{modelDiscoveryBusy ? "Loading Codex model choices…" : "Codex will use its model default until reasoning choices are available."}</p>;
     }
-    return <label className="field-label">Reasoning effort<select aria-label={label} value={reasoningEffort}
+    if (!availableCodexEfforts.length) {
+      return <p className="provider-note">{model === "auto" ? "Codex chooses the model and reasoning default. Choose a specific model to see its supported effort levels." : "This model does not list adjustable reasoning levels. Codex will use its default."}</p>;
+    }
+    return <label className="field-label">Reasoning effort<select aria-label={label} value={effectiveCodexReasoningEffort}
       disabled={disabled || !availableCodexEfforts.length}
       onChange={(event) => setReasoningEffort(event.target.value)}>
       <option value="">Automatic · model default</option>
@@ -1703,28 +1710,39 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setProviderId(nextId);
     setUsingCustomModel(false);
     setModelDiscoveryError("");
+    setModelDiscoveryNotice("");
     setModel(nextId === "codex" ? "auto" : next?.default_model || next?.models[0] || "");
     setReasoningEffort("");
     setStoryError("");
   }
   async function loadProviderModels(requestedProvider: StoryProvider["id"] = providerId) {
     setModelDiscoveryError("");
+    setModelDiscoveryNotice("");
     setModelDiscoveryBusy(true);
     try {
       const response = await request<{ models: string[]; model_options?: CodexModelOption[] }>(`/api/v1/providers/story/${encodeURIComponent(requestedProvider)}/models`, { method: "POST" });
       if (storyMounted.current) setStoryProviders((providers) => providers.map((provider) => provider.id === requestedProvider ? { ...provider, models: response.models } : provider));
       if (storyMounted.current && requestedProvider === "codex") {
-        const options = response.model_options ?? [];
+        const hasReasoningMetadata = Array.isArray(response.model_options);
+        const options: CodexModelOption[] = Array.isArray(response.model_options) ? response.model_options : [];
+        const discoveredModels = Array.isArray(response.models) ? response.models : [];
         setCodexModelOptions(options);
+        if (!hasReasoningMetadata) {
+          setModelDiscoveryNotice(discoveredModels.length
+            ? "Lorethra received model names without reasoning details. Restart or update Lorethra to enable effort choices; Codex will use its default for now."
+            : "Lorethra could not read Codex reasoning details. Restart or update Lorethra, then refresh the model list.");
+        }
         if (storyProviderRef.current === "codex") {
           const currentModel = storyModelRef.current;
-          setReasoningEffort((current) => {
-            const optionSets = options.map((option) => option.supported_reasoning_efforts);
-            const automaticEfforts = optionSets.length ? optionSets[0].filter((effort) => optionSets.every((supported) => supported.includes(effort))) : [];
-            const selectedEfforts = currentModel === "auto" ? automaticEfforts : options.find((option) => option.model === currentModel)?.supported_reasoning_efforts ?? [];
-            return selectedEfforts.includes(current) ? current : "";
-          });
-          if (currentModel !== "auto" && !options.some((option) => option.model === currentModel)) setModel("auto");
+          if (hasReasoningMetadata) {
+            setReasoningEffort((current) => {
+              const optionSets = options.map((option) => option.supported_reasoning_efforts);
+              const automaticEfforts = optionSets.length ? optionSets[0].filter((effort) => optionSets.every((supported) => supported.includes(effort))) : [];
+              const selectedEfforts = currentModel === "auto" ? automaticEfforts : options.find((option) => option.model === currentModel)?.supported_reasoning_efforts ?? [];
+              return selectedEfforts.includes(current) ? current : "";
+            });
+            if (currentModel !== "auto" && !discoveredModels.includes(currentModel)) setModel("auto");
+          }
         }
       }
     } catch (error) {
@@ -1771,7 +1789,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setWorlds(worldRows);
       setAdventures(adventureRows);
       const activeWorldRows = worldRows.filter((item) => !item.archived_at);
-      setSetupExpanded(!adventureRows.some((item) => item.parent_branch_id === "main"));
+      setSetupExpanded(false);
       setSetupStep(1);
       setShowWorldCreation(activeWorldRows.length === 0);
       setMainCharacters(characterRows.filter((item) => ["character", "person"].includes(item.entity_type)));
@@ -2125,7 +2143,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setStoryError("No story data was sent. Your direction is still here; choose a local provider or approve this provider first.");
       return;
     }
-    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, reasoningEffort, prompt, order]);
+    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, effectiveCodexReasoningEffort, prompt, order]);
     if (pendingStoryRequest.current?.fingerprint !== fingerprint) {
       pendingStoryRequest.current = {
         fingerprint,
@@ -2137,7 +2155,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           provider: providerId,
           external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null,
           model,
-          ...(providerId === "codex" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+          ...(effectiveCodexReasoningEffort ? { reasoning_effort: effectiveCodexReasoningEffort } : {}),
           prompt,
           narrative_order: order,
         }),
@@ -2257,7 +2275,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const result = await request<StoryGenerationResult>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/retry`,
         { method: "POST", signal: controller.signal,
-          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model, ...(providerId === "codex" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }) },
+          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model, ...(effectiveCodexReasoningEffort ? { reasoning_effort: effectiveCodexReasoningEffort } : {}) }) },
       );
       setConversation(result.conversation);
       onRevisionChange(result.revision);
@@ -3639,7 +3657,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <div><strong>{mainAdventures.length ? "Continue playing" : "Start your first adventure"}</strong>
             <small role="status" aria-live="polite">{visibleAdventures.length === mainAdventures.length ? `${mainAdventures.length} saved` : `Showing ${visibleAdventures.length} of ${mainAdventures.length} adventures`}</small></div>
           <button className="primary-button story-new-adventure" type="button" disabled={busy} aria-controls="story-adventure-setup" aria-expanded={setupExpanded} onClick={openAdventureSetup}>
-            {mainAdventures.length ? "New adventure" : "Create first adventure"}
+            {mainAdventures.length ? "New adventure" : "Start your first adventure"}
           </button>
         </div>
         {visibleMostRecentAdventure && <div className="story-most-recent"><div><strong>Pick up where you left off</strong><small>{visibleMostRecentAdventure.name} · {visibleMostRecentAdventure.world_name} v{visibleMostRecentAdventure.world_version} · {visibleMostRecentAdventure.actor_label}</small></div><button className="secondary-button" type="button" disabled={busy} onClick={() => onSelectBranch(visibleMostRecentAdventure.branch_id)}>Resume</button></div>}
@@ -3668,7 +3686,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </article>) : <div className="story-library-empty"><p className="empty-hint">{worlds.length ? "No worlds match this search and these filters." : "Create or import a world to begin."}</p>{worlds.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}</div>
       </details>
       <details id="story-adventure-setup" className="story-world-editor story-hub-setup" open={setupExpanded} onToggle={(event) => setSetupExpanded(event.currentTarget.open)}>
-        <summary>Adventure setup · step {setupStep} of 4</summary>
+        <summary>Set up an adventure · step {setupStep} of 4</summary>
         <ol className="story-setup-progress" aria-label="Adventure setup progress">
           {(["World", "Hero", "Build", "Review"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
             <span>{index + 1}</span><small>{label}</small>
@@ -4254,7 +4272,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
             <label className="field-label story-direction-label">What happens next?<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="Describe a moment, a question, or what your hero does." required /></label>
             <details className="story-writing-settings">
-              <summary><span>Writing settings</span><small>{selectedStoryProvider?.label || "Choose a model"} · {model === "auto" ? "Default model" : model || "Model not selected"}{reasoningEffort ? ` · ${reasoningEffort} reasoning` : ""}</small></summary>
+              <summary><span>Writing settings</span><small>{selectedStoryProvider?.label || "Choose a model"} · {model === "auto" ? "Default model" : model || "Model not selected"}{effectiveCodexReasoningEffort ? ` · ${effectiveCodexReasoningEffort} reasoning` : ""}</small></summary>
               <div className="story-writing-settings-body">
                 <div className="story-provider-fields">
                   <label className="field-label">AI provider<select aria-label="AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
@@ -4274,6 +4292,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   <button className="secondary-button" type="button" disabled={modelDiscoveryBusy || generating || memoryQuerying} onClick={() => void loadProviderModels()}>{modelDiscoveryBusy ? "Loading models…" : providerId === "codex" ? "Refresh Codex models" : "Load available models"}</button>
                   <small className="provider-note">{providerId === "codex" ? "Reads the Codex model list without sending story text." : "Requests the provider model list using its configured API key."}</small>
                   {modelDiscoveryError && <p className="inline-error" role="alert">{modelDiscoveryError}</p>}
+                  {modelDiscoveryNotice && <p className="provider-note" role="status" aria-live="polite">{modelDiscoveryNotice}</p>}
                 </div>}
                 {codexReasoningControl("Reasoning effort", generating || memoryQuerying)}
                 {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "Story requests stay on this device." : "Before sending, Lorethra asks what story details will leave this device. Provider terms and charges may apply."}</p>}

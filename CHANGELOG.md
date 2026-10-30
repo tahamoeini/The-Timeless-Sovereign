@@ -2,6 +2,14 @@
 
 This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v18 results.
 
+## 2026-10-30 — Calmer first use and clearer Codex feedback
+
+- Keep adventure setup closed when the library first loads. The primary **Start your first adventure** action opens the existing guided flow; returning users still see their resume choices first.
+- If a local Lorethra service returns model names without Codex effort metadata, preserve the chosen model, explain how to refresh the service, and use the model's default instead of sending a stale effort. Show effort choices only when the current selected model supports them.
+- Include a bounded Codex app-server reason/status when a request is rejected or a turn fails. Redact common token-like values and local filesystem paths before showing the detail.
+- Lorethra's automatic checks and per-turn XP already apply to new worlds and MNO imports; immutable legacy rules still govern older adventures.
+- Validation: all 18 `test_story_providers.py` tests pass; `npm run build` and `git diff --check` pass. Vite reports the main JavaScript chunk at 516.68 kB, above its 500 kB advisory threshold. The local preview timed out in the in-app browser, so first-use browser/novice review remains open; live Codex generation was not exercised.
+
 ## 2026-10-30 — Readable story text and keyboard targets
 
 - Add shared type tokens and raise core text sizes: story and reader text is 18px at normal widths and 16px on narrow screens; secondary text is at least 14px; form controls use 16px text.
