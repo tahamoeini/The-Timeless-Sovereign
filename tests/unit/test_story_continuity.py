@@ -165,7 +165,10 @@ class StoryContinuityTests(unittest.TestCase):
         npc = self.command("create-ferryman", self.revision, "create_story_npc", {
             "adventure_id": "adventure", "npc_entity_id": "ferryman", "label": "The Ferryman",
             "aliases": ["Boatman"],
-            "public_profile": {"motivation": "Protect the harbor", "current_goal": "Guard the old ferry"},
+            "public_profile": {
+                "motivation": "Protect the harbor", "current_goal": "Guard the old ferry",
+                "relationship_to_actor": "Keeps Mira at a distance",
+            },
             "private_profile": {}, "review_status": "accepted",
         }, branch="adventure")
         turn = self.append_turn(
@@ -175,7 +178,10 @@ class StoryContinuityTests(unittest.TestCase):
             "adventure_id": "adventure", "source_turn_id": turn["assistant_turn_id"],
             "changes": [{
                 "operation": "npc_profile", "npc_entity_id": "ferryman",
-                "updates": {"current_goal": "Bury the fallen at the ferry"},
+                "updates": {
+                    "current_goal": "Bury the fallen at the ferry",
+                    "relationship_to_actor": "Trusts Mira after she defended the ferry",
+                },
             }],
         }, branch="adventure", actor="ai:local")
         accepted = self.command("accept-ferryman-death", proposal["revision"], "review_rpg_state_proposal", {
@@ -185,6 +191,10 @@ class StoryContinuityTests(unittest.TestCase):
             self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]["public_profile"]["current_goal"],
             "Bury the fallen at the ferry",
         )
+        self.assertEqual(
+            self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]["public_profile"]["relationship_to_actor"],
+            "Trusts Mira after she defended the ferry",
+        )
 
         edited = self.command("rewrite-ferryman-battle", accepted["revision"], "edit_story_turn", {
             "conversation_id": "conversation", "turn_id": turn["assistant_turn_id"],
@@ -192,6 +202,7 @@ class StoryContinuityTests(unittest.TestCase):
         }, branch="adventure")
         current_npc = self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]
         self.assertEqual(current_npc["public_profile"]["current_goal"], "Guard the old ferry")
+        self.assertEqual(current_npc["public_profile"]["relationship_to_actor"], "Keeps Mira at a distance")
         self.assertIn("npc_profiles", edited["state_reconstruction"]["changed_fields"])
         self.assertEqual(edited["state_reconstruction"]["changed_npc_profiles"], ["ferryman"])
 
@@ -355,24 +366,46 @@ class StoryContinuityTests(unittest.TestCase):
         }, branch="adventure")
         profile = self.command("npc-profile", npc["revision"], "update_story_npc", {
             "adventure_id": "adventure", "npc_entity_id": "ferryman", "aliases": ["Boatman"],
-            "public_profile": {"appearance": "A gray coat", "current_goal": "Guard the old ferry"},
+            "public_profile": {
+                "appearance": "A gray coat", "current_goal": "Guard the old ferry",
+                "relationship_to_actor": "Wary of Mira after a public accusation",
+            },
             "private_profile": {"notes": "Knows the captain's secret."}, "review_status": "accepted",
         }, branch="adventure")
+        with self.assertRaisesRegex(ValidationError, "at most 500 characters"):
+            self.command("npc-profile-too-long", profile["revision"], "update_story_npc", {
+                "adventure_id": "adventure", "npc_entity_id": "ferryman",
+                "public_profile": {"relationship_to_actor": "x" * 501},
+            }, branch="adventure")
         turn = self.append_turn("npc-turn", profile["revision"], "Ask about the ferry", "The ferryman turns away.")
         source_turn = self.gateway.get_conversation(self.workspace_id, "adventure", "conversation")["turns"][-1]["turn_id"]
         proposed = self.command("npc-simulation", turn["revision"], "propose_rpg_state", {
             "adventure_id": "adventure", "source_turn_id": source_turn, "changes": [
-                {"operation": "npc_profile", "npc_entity_id": "ferryman", "updates": {"current_goal": "Find the lost key"}},
+                {
+                    "operation": "npc_profile", "npc_entity_id": "ferryman",
+                    "updates": {
+                        "current_goal": "Find the lost key",
+                        "relationship_to_actor": "Willing to hear Mira out after she returned the token",
+                    },
+                },
                 {"operation": "add_event_memory", "content": "The ferryman turned away from Mira.", "context_enabled": True},
             ],
         }, branch="adventure", actor="ai:local")
         before = self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]
         self.assertEqual(before["public_profile"]["current_goal"], "Guard the old ferry")
+        self.assertEqual(
+            before["public_profile"]["relationship_to_actor"],
+            "Wary of Mira after a public accusation",
+        )
         self.command("review-npc-simulation", proposed["revision"], "review_rpg_state_proposal", {
             "proposal_id": proposed["proposal_id"], "review_status": "accepted",
         }, branch="adventure")
         after = self.gateway.list_story_npcs(self.workspace_id, "adventure", "adventure")[0]
         self.assertEqual(after["public_profile"]["current_goal"], "Find the lost key")
+        self.assertEqual(
+            after["public_profile"]["relationship_to_actor"],
+            "Willing to hear Mira out after she returned the token",
+        )
         memories = self.gateway.get_story_memories(self.workspace_id, "adventure", "adventure")["memories"]
         self.assertEqual(memories[0]["kind"], "event")
         self.assertEqual(memories[0]["review_status"], "accepted")
