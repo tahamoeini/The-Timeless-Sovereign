@@ -3600,12 +3600,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const pendingMemoryReviewCount = studioData?.memories.memories.filter((memory) => memory.review_status === "proposed").length ?? 0;
 
   return <>
-    <PageHeader kicker="Play and create" title="Your stories" summary="Pick up where you left off, or make a new world and hero." />
-    <section className="panel story-hub">
-      <div className="panel-heading">
-        <div><h2>Worlds & adventures</h2><p>Create a world once, then start separate adventures from its pinned version.</p></div>
+    <PageHeader kicker="Play and create" title="Your stories" summary={activeAdventure ? "Your open adventure is below. You can switch stories or start another when you need to." : "Pick up where you left off, or make a new world and hero."} />
+    <details className="panel story-hub story-hub-disclosure" open={!activeAdventure}>
+      <summary className="panel-heading story-hub-summary">
+        <div><h2>Worlds & adventures</h2><p>{activeAdventure ? "Switch stories, create a world, or start another adventure." : "Create a world once, then start separate adventures from its pinned version."}</p></div>
         <span className="privacy-tag">LOCAL</span>
-      </div>
+      </summary>
+      <div className="story-hub-content">
       <div className="story-library-tools">
         <div className="story-library-search-row">
           <input aria-label="Search worlds and adventures" value={storyLibraryQuery} onChange={(event) => setStoryLibraryQuery(event.target.value)} placeholder="Search worlds and adventures" />
@@ -4138,7 +4139,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       </details>}
       {libraryError && <p className="inline-error" role="alert">{libraryError}</p>}
       {branchId !== "main" && <p className="story-branch-note">This adventure is isolated from the main world. New adventures start from the latest main-workspace snapshot.</p>}
-    </section>
+      </div>
+    </details>
     <div className="story-grid">
       <section className="panel story-canvas">
         <div className="scene-topline"><span className="scene-indicator">WORLD</span><span>{activeAdventure ? `Adventure: ${activeAdventure.name}` : branchId === "main" ? "Main story" : "Legacy story"}</span></div>
@@ -4211,16 +4213,16 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   <button type="button" disabled={busy || generating} onClick={() => { setEditingTurnId(turn.turn_id); setEditedTurnText(turn.content); }}>Edit</button>
                   {turn.role === "assistant" && <button type="button" disabled={busy || generating || !model.trim() || !storyProviderAvailable} onClick={() => void retryStoryTurn(turn)}>Try again</button>}
                   <button type="button" disabled={busy || generating} onClick={() => void deleteStoryTurn(turn)}>Hide</button>
-                  {turn.role === "assistant" && activeAdventure && studioData?.memories.memories.some((memory) => memory.kind === "event" && memory.source_turn_id === turn.turn_id) && <small>A story memory suggestion is ready to review in Adventure details.</small>}
+                  {turn.role === "assistant" && activeAdventure && studioData?.memories.memories.some((memory) => memory.kind === "event" && memory.source_turn_id === turn.turn_id) && <small>A story memory suggestion is ready to review in Adventure details &amp; tools.</small>}
                 </div>
               </details>}
               {studioData?.assets.filter((asset) => asset.target_kind === "scene" && asset.target_id === turn.turn_id).map((asset) => assetData[asset.asset_id] && <img className="story-turn-art" key={asset.asset_id} src={assetData[asset.asset_id]} alt={asset.display_name} />)}
-              {turn.role === "assistant" && <>
-                {turn.metadata?.source_format === "mno-adv"
-                  ? <small>Imported story text. It does not change the adventure state.</small>
-                  : <small>Saved story text. World facts change only after you review a suggestion.</small>}
-                {turn.context_manifest && <details className="story-context-details">
-                  <summary>Context used · {turn.context_manifest.included.length} reviewed facts · {turn.context_manifest.excluded.length} excluded</summary>
+              {turn.role === "assistant" && <details className="story-context-details">
+                  <summary>{turn.metadata?.source_format === "mno-adv" ? "Imported turn details" : "Turn details"}{turn.context_manifest ? ` · ${turn.context_manifest.included.length} reviewed facts · ${turn.context_manifest.excluded.length} excluded` : ""}</summary>
+                  <p>{turn.metadata?.source_format === "mno-adv"
+                    ? "Imported story text. It does not change the adventure state."
+                    : "Saved story text. World facts change only after you review a suggestion."}</p>
+                  {turn.context_manifest && <>
                   {turn.context_manifest.included.map((fact) => <div className="story-context-fact" key={fact.claim_id}>
                     <strong>{fact.subject} · {fact.predicate} {fact.object}</strong>
                     <small>{fact.actor_stance} · {fact.evidence_ids.length} linked sources</small>
@@ -4245,8 +4247,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                     {(turn.context_manifest.story.public_npcs ?? []).map((npc) => <small key={npc.entity_id}>Approved NPC · {npc.name} · {JSON.stringify(npc.profile)}</small>)}
                   </div>}
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
+                  </>}
                 </details>}
-              </>}
             </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Describe what happens next, and Lorethra will continue the scene.</p></div>}
           </div>
           <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
@@ -4290,6 +4292,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </>}
         {storyError && <p className="inline-error" role="alert">{storyError}</p>}
       </section>
+      <details className="story-adventure-tools">
+        <summary className="story-adventure-tools-summary">
+          <span><strong>Adventure details &amp; tools</strong><small>{activeAdventure
+            ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} · ${rpgState?.sheet?.current_location || "Location not set"} · ${rpgState?.sheet?.experience.total_xp.toLocaleString() ?? 0} XP${rpgState?.sheet?.experience.mode === "manual" ? " · manual rules" : " · automatic rewards"}`
+            : "Character, memory, map, and story details"}</small></span>
+          {pendingRpgReviewCount + pendingMemoryReviewCount > 0 && <span className="story-review-count" role="status" aria-live="polite">{pendingRpgReviewCount + pendingMemoryReviewCount} to review</span>}
+        </summary>
       <div className="story-side-panels">
       <section className="panel rpg-state-panel">
         <div className="panel-heading"><div><h2>Your adventure</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name}` : "Start an adventure to see your character here."}</p></div></div>
@@ -4336,8 +4345,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {rpgState.mechanics.skills.length > 0 && <details className="rpg-edit-stats"><summary>Skills and proficiency · {rpgState.mechanics.skills.length}</summary>
             <form onSubmit={(event) => void saveRpgSkills(event)}>{rpgState.mechanics.skills.map((skill) => <label className="field-label" key={skill.skill_id}>{skill.label} · {skill.attribute || "no governing stat"}<input type="number" min={0} max={skill.max_rank} value={editableSkills[skill.skill_id] ?? skill.starting_rank} onChange={(event) => setEditableSkills((ranks) => ({ ...ranks, [skill.skill_id]: Number(event.target.value) }))} /><small>Rank {editableSkills[skill.skill_id] ?? skill.starting_rank} · +{skill.rank_bonus} per rank</small></label>)}<button className="secondary-button full-button" disabled={busy}>Save skill ranks</button></form>
           </details>}
-          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "Manual awards" : `${rpgState.sheet.experience.automatic_xp.toLocaleString()} automatic XP · ${rpgState.sheet.experience.per_completed_turn} per completed player turn`}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} manual` : ""}</small>
-            {rpgState.mechanics.experience.allow_manual_awards && <form className="rpg-check-fields" onSubmit={(event) => void awardExperience(event)}><label className="field-label">Manual XP award<input type="number" min={1} max={1_000_000} step={1} value={experienceAward} onChange={(event) => setExperienceAward(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy || rpgState.sheet.experience.total_xp >= rpgState.sheet.experience.maximum_xp}>Award XP</button></form>}
+          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "This world version keeps its original manual XP rules." : `${rpgState.sheet.experience.automatic_xp.toLocaleString()} XP awarded automatically · ${rpgState.sheet.experience.per_completed_turn} per completed player turn`}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} added manually` : ""}</small>
+            {rpgState.mechanics.experience.allow_manual_awards && <form className="rpg-check-fields" onSubmit={(event) => void awardExperience(event)}><label className="field-label">Add XP manually<input type="number" min={1} max={1_000_000} step={1} value={experienceAward} onChange={(event) => setExperienceAward(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy || rpgState.sheet.experience.total_xp >= rpgState.sheet.experience.maximum_xp}>Add XP</button></form>}
           </section>
           {rpgState.sheet.abilities.length > 0 && <section className="rpg-ability-list" aria-labelledby="rpg-abilities-heading">
             <strong id="rpg-abilities-heading">Exceptional abilities</strong>
@@ -4371,8 +4380,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             })}
           </section>}
           {rpgState.mechanics.mode === "narrative_only" ? <p className="field-note">This adventure resolves uncertain moments through the story.</p> : <details className="manual-check-details">
-            <summary>Roll manually</summary>
-            <p className="field-note">{rpgState.automatic_checks_enabled ? "Lorethra rolls for risky actions automatically. Use this only for an extra roll." : "This world's rules were not set to roll automatically. Use this when you want a separate check."}</p>
+            <summary>Roll a separate check (advanced)</summary>
+            <p className="field-note">{rpgState.automatic_checks_enabled ? "Lorethra rolls for risky actions automatically. Use this only when you want an additional check." : "This world version keeps its original check rules. Use this when you want a separate check."}</p>
             <form className="rpg-check-form" onSubmit={(event) => void rollMechanicsCheck(event)}>
               <div className="rpg-check-fields">
                 <label className="field-label">Encounter<select value={rpgState.mechanics.encounter_types.some((item) => item.encounter_type === checkEncounter) ? checkEncounter : rpgState.mechanics.encounter_types[0]?.encounter_type || ""} onChange={(event) => setCheckEncounter(event.target.value)}>{rpgState.mechanics.encounter_types.map((item) => <option key={item.encounter_type} value={item.encounter_type}>{item.label}</option>)}</select></label>
@@ -4626,8 +4635,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </div>}
       </section>
       </div>
+      </details>
     </div>
-    <ExternalExchangePanel workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onCommit={onCommit} />
+    <details className="story-secondary-import">
+      <summary>Import an older conversation</summary>
+      <ExternalExchangePanel workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onCommit={onCommit} />
+    </details>
   </>;
 }
 

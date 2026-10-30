@@ -4,6 +4,7 @@ import App from "./App";
 import "./styles.css";
 import "./workflow.css";
 import "./story-studio.css";
+import "./accessibility.css";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

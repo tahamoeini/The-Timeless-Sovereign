@@ -2,6 +2,20 @@
 
 This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v18 results.
 
+## 2026-10-30 — Readable story text and keyboard targets
+
+- Add shared type tokens and raise core text sizes: story and reader text is 18px at normal widths and 16px on narrow screens; secondary text is at least 14px; form controls use 16px text.
+- Set buttons, text fields, and disclosures to 44px minimum targets; checkbox/radio rows receive 44px hit areas. Add a consistent visible keyboard focus outline and let the four-step setup indicator wrap into two columns on narrow screens.
+- Keep the existing responsive layout and 320px minimum viewport. This source change does not establish visual or accessibility acceptance: the in-app browser could not reach the local Vite preview, so screenshot, keyboard, zoom, contrast, RTL, screen-reader, and installed Windows webview checks remain open.
+
+## 2026-10-30 — Focus active story play
+
+- When an adventure is open, collapse the full worlds/adventures library and setup behind the section heading. Group character, mechanics, memory, NPC, map, and context tools under **Adventure details & tools**, with a visible count when RPG or memory suggestions need review.
+- Fold repeated saved/context provenance under **Turn details** and put older-conversation import behind a separate disclosure. The story transcript and next-action composer remain the main path.
+- Keep automatic checks and per-turn XP as defaults for new worlds and MNO imports. Preserve manual rules in older pinned worlds; their extra check and XP actions remain available in the detail panel.
+- `npm run build` (TypeScript plus Vite) and `git diff --check` passed. Vite reports a 515.96 kB main JavaScript chunk, above its 500 kB advisory threshold. No unit/API tests or rendered-browser/desktop acceptance were run for this UI slice.
+- Conventional commit: `feat(ui): simplify play and improve accessibility`.
+
 ## 2026-10-30 — Simpler play and automatic story checks
 
 - Compared the supplied Lorethra and MNO snapshots with the live MNO entry path. MNO puts **Begin Your Adventure**, **Create world**, and import first; its hero setup still has four tabs and many optional fields. The Lorethra snapshot showed backup/search/filter/export/setup controls together. This is useful direction, not evidence that MNO is perfect or that either saved HTML file's scripts work.

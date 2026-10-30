@@ -1,0 +1,244 @@
+:root {
+  --type-reading: 1.125rem;
+  --type-body: 1rem;
+  --type-secondary: 0.875rem;
+  --target-size: 2.75rem;
+  --focus-ring: #a9dfbf;
+}
+
+#root {
+  font-size: var(--type-body);
+}
+
+body {
+  min-width: 320px;
+}
+
+#root :is(.eyebrow, .field-label, .field-note, .provider-note, .control-choice,
+  .empty-hint, .privacy-tag, .story-turn-label, .story-context-details summary,
+  .story-private-turn summary, .story-turn-options summary, .manual-check-details summary) {
+  font-size: var(--type-secondary);
+  line-height: 1.5;
+}
+
+#root small,
+#root label,
+#root summary,
+#root .page-heading p,
+#root .panel-heading p {
+  font-size: var(--type-secondary);
+  line-height: 1.5;
+}
+
+#root .page-content p {
+  font-size: var(--type-secondary);
+  line-height: 1.65;
+}
+
+#root .story-turn p,
+#root .story-reader p {
+  font-size: var(--type-reading);
+  line-height: 1.75;
+}
+
+#root .story-hub :is(.story-hub-title strong, .story-hub-title small,
+  .story-adventure-list-heading strong, .story-adventure-card strong,
+  .story-adventure-card small, .story-branch-note),
+#root .story-detail-content :is(span, strong, b, dt, dd, p, pre),
+#root .rpg-stat-list :is(span, strong, b),
+#root .rpg-tracker-list :is(span, strong, b),
+#root .story-npc-details :is(dt, dd),
+#root .rpg-proposal :is(strong, small),
+#root .rpg-location strong,
+#root .story-turn-label span,
+#root .story-context-fact strong,
+#root .story-check-result strong,
+#root .story-npc-heading strong,
+#root .story-npc-section-label,
+#root .story-setup-progress li span {
+  font-size: var(--type-secondary);
+  line-height: 1.55;
+}
+
+#root .story-detail-panel > summary::after,
+#root .story-hub-setup > summary::after {
+  font-size: var(--type-secondary);
+}
+
+#root .nav-item b,
+#root .breadcrumbs,
+#root .top-actions,
+#root .project-options > summary,
+#root .sidebar-more-tools > summary,
+#root legend {
+  font-size: var(--type-secondary);
+}
+
+#root input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+#root select,
+#root textarea {
+  min-height: var(--target-size);
+  font-size: var(--type-body);
+}
+
+#root textarea {
+  line-height: 1.55;
+}
+
+#root pre {
+  font-size: var(--type-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+#root input[type="checkbox"],
+#root input[type="radio"] {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+#root label:has(> input[type="checkbox"]),
+#root label:has(> input[type="radio"]) {
+  min-height: var(--target-size);
+  padding-block: 0.4rem;
+}
+
+#root button,
+#root summary {
+  min-height: var(--target-size);
+}
+
+#root button {
+  font-size: var(--type-secondary);
+  line-height: 1.4;
+}
+
+#root :is(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+#root .story-hub-disclosure > .story-hub-summary,
+#root .story-adventure-tools > .story-adventure-tools-summary,
+#root .story-secondary-import > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3.5rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+#root .story-hub-disclosure > .story-hub-summary::-webkit-details-marker,
+#root .story-adventure-tools > .story-adventure-tools-summary::-webkit-details-marker,
+#root .story-secondary-import > summary::-webkit-details-marker {
+  display: none;
+}
+
+#root .story-hub-disclosure > .story-hub-summary::after,
+#root .story-adventure-tools > .story-adventure-tools-summary::after,
+#root .story-secondary-import > summary::after {
+  content: "▾";
+  flex: none;
+  font-size: 1.125rem;
+}
+
+#root .story-hub-disclosure:not([open]) > .story-hub-summary::after,
+#root .story-adventure-tools:not([open]) > .story-adventure-tools-summary::after,
+#root .story-secondary-import:not([open]) > summary::after {
+  content: "▸";
+}
+
+#root .story-hub-disclosure > .story-hub-summary > div,
+#root .story-adventure-tools-summary > span:first-child {
+  min-width: 0;
+}
+
+#root .story-adventure-tools-summary > span:first-child {
+  display: grid;
+  gap: 0.2rem;
+}
+
+#root .story-adventure-tools-summary strong,
+#root .story-hub-summary h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+#root .story-adventure-tools-summary small,
+#root .story-hub-summary p {
+  margin: 0;
+  color: #aebfb5;
+}
+
+#root .story-adventure-tools,
+#root .story-secondary-import {
+  margin-block: 1rem;
+  border: 1px solid #34423c;
+  border-radius: 0.75rem;
+  background: #151d1d;
+}
+
+#root .story-grid:has(> .story-adventure-tools:not([open])) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#root .story-adventure-tools-summary,
+#root .story-secondary-import > summary {
+  padding: 0.5rem 0.875rem;
+}
+
+#root .story-review-count {
+  flex: none;
+  border: 1px solid #675533;
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  color: #f0d28d;
+  font-weight: 600;
+}
+
+#root .story-side-panels {
+  padding: 0.875rem;
+  border-top: 1px solid #34423c;
+}
+
+#root .story-secondary-import > .external-exchange-panel {
+  margin: 0 0.875rem 0.875rem;
+}
+
+@media (max-width: 520px) {
+  #root .story-hub-summary,
+  #root .story-adventure-tools-summary,
+  #root .story-secondary-import > summary {
+    align-items: flex-start;
+  }
+
+  #root .story-review-count {
+    white-space: normal;
+    text-align: center;
+  }
+
+  #root .story-session-bar {
+    flex-wrap: wrap;
+  }
+
+  #root .story-session-bar > .field-label {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  #root .story-setup-progress {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #root .story-setup-progress li small {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  #root .story-turn p {
+    font-size: var(--type-body);
+  }
+}

@@ -76,7 +76,7 @@ MNO's live home page makes three next steps easy to recognize: **Begin Your Adve
 
 The supplied Lorethra saved page puts repair search, backup/restore, refresh, filters/sort, create/continue, export choices, and the first setup step in the same visible area. That is a high competing-action count for someone who only wants to continue a story. The current source changes reduce turn-level buttons, move character/game controls behind one named disclosure, keep the story composer as the primary task, and expose pending review counts where the review queue is collapsed. Source review cannot establish that people will understand these choices; the local app was not available for a rendered comparison in this inspection.
 
-The MNO adventure transcript visibly presents roll results in the story flow. The transcript is not evidence of MNO's underlying random-number generation, formulas, automatic reward calculation, or state persistence, so this log makes no such parity claim. Lorethra's automatic outcome selection is implemented with its own pinned rules and gateway checks; MNO formulas and source settings remain untrusted preserved text.
+The supplied 33-turn MNO adventure transcript visibly presents `Roll` results and `EXPERIENCE` cues in the story flow. This establishes how those events appear in the supplied transcript, not MNO's underlying random-number generation, formulas, automatic reward calculation, or state persistence, so this log makes no such parity claim. Lorethra's automatic outcome selection is implemented with its own pinned rules and gateway checks; MNO formulas and source settings remain untrusted preserved text. In the current web text extraction, the live Perchance page exposed its outer prompt and an iframe, but not the embedded RPG interface; the supplied saved page and transcript were inspected statically and their scripts were not executed.
 
 **Product decisions:**
 
@@ -84,6 +84,8 @@ The MNO adventure transcript visibly presents roll results in the story flow. Th
 - Show a check and its consequences as one story result. Lorethra asks the provider for both possible narrative outcomes in one response, rolls locally, and commits only the matching branch with the validated check, avoiding a second provider call.
 - Use automatic XP by default for new worlds and MNO imports. Preserve the behavior pinned in older worlds rather than silently changing existing adventures.
 - Evaluate beginner comprehension by task completion with a novice, narrow-window rendering, keyboard-only navigation, visible pending reviews, and a reload/branch-isolation check. Those runtime checks remain open.
+
+**Implementation follow-up (2026-10-30):** The active Story Studio now collapses the worlds/adventures library and setup while an adventure is open, groups character, mechanics, memory, NPC, map, and context panels under **Adventure details & tools**, folds repeated save/context provenance under **Turn details**, and moves older-conversation import behind its own disclosure. The active story and composer remain on the main path; review counts remain visible. Manual roll/XP controls are retained only for pinned world rules that permit them. The source build passes, but this follow-up has not had rendered-browser, novice, keyboard, or installed-desktop review.
 
 ## Continuity evaluation references
 
