@@ -98,15 +98,27 @@ class StoryProviderTests(unittest.TestCase):
         writer = CapturingInput()
         responses = [
             {"id": 1, "result": {}},
-            {"id": 2, "result": {"data": [{"model": "model-a"}, {"model": "hidden-model", "hidden": True}, {"model": "invalid model"}], "nextCursor": "page-two"}},
-            {"id": 3, "result": {"data": [{"model": "model-b"}, {"model": "model-a"}], "nextCursor": None}},
+            {"id": 2, "result": {"data": [
+                {"model": "model-a", "displayName": "Model A", "defaultReasoningEffort": "medium",
+                 "supportedReasoningEfforts": [{"reasoningEffort": "low", "description": "Faster"},
+                                                {"reasoningEffort": "medium", "description": "Balanced"}]},
+                {"model": "hidden-model", "hidden": True}, {"model": "invalid model"},
+            ], "nextCursor": "page-two"}},
+            {"id": 3, "result": {"data": [
+                {"model": "model-b", "defaultReasoningEffort": "high",
+                 "supportedReasoningEfforts": [{"reasoningEffort": "high", "description": "Deeper"}]},
+                {"model": "model-a"},
+            ], "nextCursor": None}},
         ]
         process = Mock(stdin=writer, stdout=io.StringIO("".join(json.dumps(item) + "\n" for item in responses)))
         process.poll.return_value = None
         with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch("lke.ai.providers.subprocess.Popen", return_value=process) as start:
             directory.return_value.__enter__.return_value = "scratch"
-            models = _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex", "OPENAI_API_KEY": "secret"}).list_models()
-        self.assertEqual(models, ["model-a", "model-b"])
+            models = _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex", "OPENAI_API_KEY": "secret"}).list_model_options()
+        self.assertEqual([item["model"] for item in models], ["model-a", "model-b"])
+        self.assertEqual(models[0]["supported_reasoning_efforts"], ["low", "medium"])
+        self.assertEqual(models[0]["default_reasoning_effort"], "medium")
+        self.assertEqual(models[0]["effort_descriptions"]["low"], "Faster")
         sent = [json.loads(line) for line in writer.sent.splitlines()]
         self.assertEqual(sent[2]["method"], "model/list")
         self.assertEqual(sent[3]["params"]["cursor"], "page-two")
@@ -122,6 +134,68 @@ class StoryProviderTests(unittest.TestCase):
         self.assertEqual(stop_tree.call_args.args[0], ["taskkill", "/PID", "1234", "/T", "/F"])
         process.kill.assert_called_once()
 
+    def test_codex_generation_sends_catalog_validated_effort_and_current_turn_shape(self):
+        class CapturingInput(io.StringIO):
+            def close(self):
+                self.sent = self.getvalue()
+                super().close()
+
+        writer = CapturingInput()
+        responses = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": [{
+                "model": "model-a", "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": "Faster"},
+                    {"reasoningEffort": "high", "description": "Deeper"},
+                ],
+            }], "nextCursor": None}},
+            {"id": 12, "result": {"thread": {"id": "thread-1"}}},
+            {"id": 13, "result": {}},
+            {"method": "item/agentMessage/delta", "params": {"delta": "The story continues."}},
+            {"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
+        ]
+        process = Mock(stdin=writer, stdout=io.StringIO("".join(json.dumps(item) + "\n" for item in responses)))
+        process.poll.return_value = None
+        with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch(
+            "lke.ai.providers.subprocess.Popen", return_value=process,
+        ):
+            directory.return_value.__enter__.return_value = "scratch"
+            result = _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"}).generate(
+                "model-a", [{"role": "user", "content": "Continue the scene."}], reasoning_effort="high",
+            )
+
+        self.assertEqual(result, "The story continues.")
+        sent = [json.loads(line) for line in writer.sent.splitlines()]
+        requests = {message["method"]: message for message in sent if "method" in message}
+        self.assertNotIn("runtimeWorkspaceRoots", requests["thread/start"]["params"])
+        self.assertEqual(requests["turn/start"]["params"]["effort"], "high")
+
+    def test_codex_generation_rejects_an_effort_the_selected_model_does_not_support(self):
+        class CapturingInput(io.StringIO):
+            def close(self):
+                self.sent = self.getvalue()
+                super().close()
+
+        writer = CapturingInput()
+        responses = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": [{
+                "model": "model-a", "supportedReasoningEfforts": [{"reasoningEffort": "low", "description": "Faster"}],
+            }], "nextCursor": None}},
+        ]
+        process = Mock(stdin=writer, stdout=io.StringIO("".join(json.dumps(item) + "\n" for item in responses)))
+        process.poll.return_value = None
+        with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch(
+            "lke.ai.providers.subprocess.Popen", return_value=process,
+        ):
+            directory.return_value.__enter__.return_value = "scratch"
+            with self.assertRaisesRegex(StoryProviderError, "not supported"):
+                _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"}).generate(
+                    "model-a", [{"role": "user", "content": "Continue the scene."}], reasoning_effort="ultra",
+                )
+        sent = [json.loads(line) for line in writer.sent.splitlines()]
+        self.assertNotIn("thread/start", [message.get("method") for message in sent])
+
     def test_codex_cancellation_stops_the_ephemeral_app_server(self):
         responses = queue.Queue()
         turn_started = threading.Event()
@@ -134,8 +208,10 @@ class StoryProviderTests(unittest.TestCase):
                 message = json.loads(line)
                 if message.get("method") == "initialize":
                     responses.put(json.dumps({"id": 1, "result": {}}) + "\n")
+                elif message.get("method") == "model/list":
+                    responses.put(json.dumps({"id": 2, "result": {"data": [{"model": "model-a", "supportedReasoningEfforts": []}], "nextCursor": None}}) + "\n")
                 elif message.get("method") == "thread/start":
-                    responses.put(json.dumps({"id": 2, "result": {"thread": {"id": "thread-1"}}}) + "\n")
+                    responses.put(json.dumps({"id": 12, "result": {"thread": {"id": "thread-1"}}}) + "\n")
                 elif message.get("method") == "turn/start":
                     turn_started.set()
 
