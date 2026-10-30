@@ -10,7 +10,7 @@ Each version may contain point-buy rules, configurable game mechanics, exception
 
 Public-world export preserves the opening scene along with the other explicitly public world fields. The package is still untrusted input; providers receive the scene only during first-response generation and, for remote providers, only after provider-specific consent.
 
-World imports accept the exact supported v1 schema and v2. The importer validates the package, rejects credential-like keys and unknown fields, then upcasts v1 in memory. It creates a new world identity and preserves the version sequence through one audited, revision-checked, idempotent command. Replacing an existing world is not supported. Imported story text remains untrusted; inspect private notes and the preview before sharing. A world package does not restore conversations, protagonist records, adventure state, or the full database.
+World imports accept the exact supported v1 schema and v2. The importer validates each version's location names and starting-location reference, normalizes an optional public opening scene, rejects credential-like keys and unknown fields, then upcasts v1 in memory. Location names must be bounded and unique; when the map list is non-empty, its starting location must match a listed name. Legacy packages may omit map fields or retain an empty map. The importer creates a new world identity and preserves the version sequence through one audited, revision-checked, idempotent command. Replacing an existing world is not supported. Imported story text remains untrusted; inspect private notes and the preview before sharing. A world package does not restore conversations, protagonist records, adventure state, or the full database.
 
 ## Current formats
 

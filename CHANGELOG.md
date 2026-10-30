@@ -16,6 +16,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | docs(status): refresh UX and Windows acceptance evidence | Synchronize project status, release gates, operations, and changelog with the verified UI workflow and Windows package |
 | feat(story): add local world architect and opening scenes | Add local Ollama drafting, strict semantic checks, human preview/apply, versioned opening scenes, and public package preservation |
 | docs(status): refresh current-head Windows evidence | Record the completed Windows run 43 and its current installer artifact; retain clean-machine desktop and feature-specific acceptance as open |
+| fix(packages): validate imported world authoring fields | Apply bounded/unique location and starting-reference validation to world imports, normalize opening-scene text, and preserve legacy map forms |
 
 ### RPG authoring and deterministic play
 
@@ -25,6 +26,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 - Added reviewable setup and play surfaces for mechanics, abilities, experience, and starting attributes. Added a bounded, validated local world cover image with alt text.
 - Added an optional local-Ollama World Architect. Its strict draft schema checks bounded text, unique location names, and a matching starting location; the user previews and applies the draft to editable fields, then explicitly saves through the world command. It creates no canonical write and never calls an external provider.
 - Added an optional, structured opening-scene seed to immutable world versions. Setup requires situation and hook together, displays the exact seed during final review, and the provider context includes it only for the first generated response; public world packages preserve the seed.
+- Validate portable world location names and starting-place references with the same rules used by the world editor, and normalize opening-scene text before imported versions become canonical. Legacy v1 packages and empty-map formats remain supported.
 
 ### Continuity and providers
 

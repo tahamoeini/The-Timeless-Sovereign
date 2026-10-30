@@ -962,7 +962,10 @@ def validate_world_package(package: Any) -> dict[str, Any]:
         if not isinstance(description, str) or len(description.strip()) > 4000:
             raise ValidationError("World description must be text of at most 4000 characters")
         content = _validated_world_content(item.get("content"))
-        _validated_story_opening_scene(content)
+        opening_scene = _validated_story_opening_scene(content)
+        if opening_scene is not None:
+            content["opening_scene"] = opening_scene
+        _validated_story_world_locations(content)
         _validated_story_character_creation(content)
         _validated_story_ability_definitions(content)
         _validated_story_mechanics(content)
@@ -3558,7 +3561,9 @@ class CommandGateway:
             if not isinstance(description, str) or len(description.strip()) > 4000:
                 raise ValidationError("description must be text of at most 4000 characters")
             content = _validated_world_content(payload.get("content", {}))
-            _validated_story_opening_scene(content)
+            opening_scene = _validated_story_opening_scene(content)
+            if opening_scene is not None:
+                content["opening_scene"] = opening_scene
             _validated_story_world_locations(content)
             _validated_story_character_creation(content)
             _validated_story_ability_definitions(content)
