@@ -16,6 +16,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 | docs(status): refresh UX and Windows acceptance evidence | Synchronize project status, release gates, operations, and changelog with the verified UI workflow and Windows package |
 | feat(story): add local world architect and opening scenes | Add local Ollama drafting, strict semantic checks, human preview/apply, versioned opening scenes, and public package preservation |
 | feat(story): guide world creation with a focused wizard | Split world authoring into setting, places/opening, and optional rules/review steps with pre-save validation |
+| fix(continuity): respect revision cutoffs in RPG proposals | Hide proposals created after an as-of revision and restore pending status before later review decisions |
 | docs(status): refresh current-head Windows evidence | Record the completed Windows run 43 and its current installer artifact; retain clean-machine desktop and feature-specific acceptance as open |
 | docs(status): record current-head Windows run 47 | Refresh P0 desktop, API, and recovery evidence for the restore-report implementation |
 | fix(packages): validate imported world authoring fields | Apply bounded/unique location and starting-reference validation to world imports, normalize opening-scene text, and preserve legacy map forms |
@@ -36,6 +37,7 @@ This file is the readable change history for Lorethra. The 2026-10-29 section de
 ### Continuity and providers
 
 - Editing or hiding a turn now supersedes later turns from canonical transcript order. Historical RPG reconstruction covers supported character-sheet, accepted NPC-profile, and map-location changes while preserving direct player edits.
+- Historical RPG snapshots exclude proposals created after the requested revision and show accepted/rejected proposals as pending when their review happened later. Focused as-of proposal acceptance remains open.
 - Adventure scenes create sourced, actor-scoped event-memory proposals that wait for review. Stale source turns exclude their memories from later retrieval.
 - Added provider-matched consent checks to external generation, retry, and memory requests. Remote context removes non-public claims, author notes, private profiles, actor-scoped facts, unshared or unreviewed memories, and unclassified lore or thread data.
 - Propagated cancellation to Ollama, hosted HTTP, and Codex app-server adapters. Tested cancellation closes local work before canonical commit; idempotent replay covers a response lost after a successful commit. A hosted service may still continue processing or billing after Lorethra closes its request.

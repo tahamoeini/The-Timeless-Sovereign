@@ -6454,12 +6454,25 @@ class CommandGateway:
             mechanic_checks = self.db.connection.execute(
                 mechanic_check_query + " ORDER BY created_revision DESC LIMIT 50", check_parameters,
             ).fetchall()
-            proposals = self.db.connection.execute(
+            proposal_query = (
                 "SELECT proposal_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at "
-                "FROM rpg_state_proposals WHERE workspace_id=? AND branch_id=? AND adventure_id=? "
-                "ORDER BY created_revision DESC",
-                (workspace_id, branch_id, adventure_id),
+                "FROM rpg_state_proposals WHERE workspace_id=? AND branch_id=? AND adventure_id=?"
+            )
+            proposal_parameters: tuple[Any, ...] = (workspace_id, branch_id, adventure_id)
+            if as_of_revision is not None:
+                proposal_query += " AND created_revision<=?"
+                proposal_parameters += (as_of_revision,)
+            proposal_rows = self.db.connection.execute(
+                proposal_query + " ORDER BY created_revision DESC", proposal_parameters,
             ).fetchall()
+            proposals = []
+            for row in proposal_rows:
+                proposal = dict(row)
+                if (as_of_revision is not None and proposal["reviewed_revision"] is not None
+                        and proposal["reviewed_revision"] > as_of_revision):
+                    proposal["review_status"] = "proposed"
+                    proposal["reviewed_revision"] = None
+                proposals.append(proposal)
         sheet_data = dict(sheet) if sheet else None
         if historical_sheet is not None and sheet_data is not None:
             for field in ("stats", "trackers", "current_location", "map_region", "map_x", "map_y", "map_scale", "skills", "experience"):
@@ -6500,7 +6513,7 @@ class CommandGateway:
                 for row in mechanic_checks
             ],
             "proposals": [
-                {**dict(row), "changes": json.loads(row["changes_json"])}
+                {**row, "changes": json.loads(row["changes_json"])}
                 for row in proposals
             ],
         }
