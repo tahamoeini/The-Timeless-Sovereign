@@ -4107,7 +4107,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                     {turn.context_manifest.story.world_reference && <>
                       <small>Imported lorebook · {turn.context_manifest.story.world_reference.included.length} selected · {turn.context_manifest.story.world_reference.excluded_count} not selected. Narrator reference only; this does not establish what the hero knows.</small>
                       {turn.context_manifest.story.world_reference.narrative_vibe && <small>Imported narrative style · {turn.context_manifest.story.world_reference.narrative_vibe}</small>}
-                      {turn.context_manifest.story.world_reference.included.map((entry) => <details key={entry.source_index}>
+                      {turn.context_manifest.story.world_reference.included.map((entry, index) => <details key={entry.source_index ?? `${entry.title}-${index}`}>
                         <summary>World lore · {entry.title} · {entry.selection_reason === "always" ? "always included" : "keyword match"}</summary>
                         <p dir="auto">{entry.content}</p>
                       </details>)}

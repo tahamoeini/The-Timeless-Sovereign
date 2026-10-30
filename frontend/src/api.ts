@@ -228,14 +228,14 @@ export type ContextManifest = {
       authority: string;
       narrative_vibe: string;
       included: Array<{
-        source_index: number;
+        source_index?: number;
         title: string;
         type: string;
         content: string;
         selection_reason: "always" | "query_or_location_keyword";
       }>;
       excluded_count: number;
-    };
+    } | null;
     public_npcs: Array<{ entity_id: string; name: string; aliases: string[]; profile: Record<string, unknown> }>;
     approved_locations: string[];
   };
