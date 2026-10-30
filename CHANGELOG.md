@@ -2,6 +2,14 @@
 
 This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v18 results.
 
+## 2026-10-30 — Simplify automatic check feedback
+
+- Automatic adventures now show a short note that risky actions are checked during play instead of presenting an extra manual-roll form. Adventures with legacy manual rules keep their check form.
+- A check result shows its plain-language outcome, skill or stat, and difficulty. Dice and arithmetic remain available in a collapsed **Show dice and math** disclosure.
+- Simplify automatic XP guidance to explain that XP is earned as turns are completed. Manual XP actions remain available only when the pinned rules allow them.
+- Validation: `npm run build` passed (TypeScript and Vite; main JavaScript chunk 516.43 kB, above Vite's 500 kB advisory). Rendered-browser, novice, keyboard, screen-reader, and installed-desktop review remain open.
+- Conventional commits: `feat(ui): simplify automatic check feedback` and `docs(ux): clarify automatic check presentation`.
+
 ## 2026-10-30 — Align backup support with schema 18
 
 - Set the supported schema version to 18, matching the latest migration. Fresh databases, migration checks, backup creation, and restore validation now agree on the current version.

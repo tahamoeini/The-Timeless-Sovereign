@@ -37,7 +37,7 @@ Keep the ordinary path short: continue an adventure or create/import a world, pr
 - For MNO imports, preserve narrator, NPC, action, check, thought, and meta roles. Thoughts and meta remain author-only and out of future model context and reader output. NPC secrets and life records remain private; old check narration is not a verified die result. World-cast NPCs enter an adventure only after explicit selection; simulation stays off by default.
 - Preserve audit history, idempotency, optimistic revision checks, branch isolation, and full backup/restore.
 
-Current schema is v17. See docs/contracts/DATA_MODEL.md and docs/contracts/COMMAND_CONTRACTS.md for exact contracts. Code presence does not imply release readiness.
+Current schema is v18. See docs/contracts/DATA_MODEL.md and docs/contracts/COMMAND_CONTRACTS.md for exact contracts. Code presence does not imply release readiness.
 
 ## Validation and evaluation
 
