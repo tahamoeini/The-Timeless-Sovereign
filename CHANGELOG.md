@@ -1,6 +1,53 @@
 # Changelog
 
-This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v17 results.
+This file is the readable change history for Lorethra. The 2026-10-29 and 2026-10-30 sections describe this implementation branch relative to its master base. The earlier section moves dated implementation notes that previously lived in the acceptance matrix; test counts there refer to historical source snapshots and are not current schema-v18 results.
+
+## 2026-10-30 — Align backup support with schema 18
+
+- Set the supported schema version to 18, matching the latest migration. Fresh databases, migration checks, backup creation, and restore validation now agree on the current version.
+- This fixes backup rejection for valid schema-18 databases. The Windows temporary-file lock errors in the supplied run followed the backup exception and were cleanup fallout.
+- Focused local validation passed all 8 database migration tests and all 5 backup/restore tests. The full suite and isolated API download/restore test stalled at ASGI requests in this local Python environment, so no full-suite or current-head API result is claimed.
+
+## 2026-10-30 — Calmer first use and clearer Codex feedback
+
+- Keep adventure setup closed when the library first loads. The primary **Start your first adventure** action opens the existing guided flow; returning users still see their resume choices first.
+- Reset that collapsed state as the workspace loads, before the library request completes, so a quick start click is not overridden by a late response.
+- If a local Lorethra service returns model names without Codex effort metadata, preserve the chosen model, explain how to refresh the service, and use the model's default instead of sending a stale effort. Show effort choices only when the current selected model supports them.
+- Include a bounded Codex app-server reason/status when a request is rejected or a turn fails. Redact common token-like values and local filesystem paths before showing the detail.
+- Lorethra's automatic checks and per-turn XP already apply to new worlds and MNO imports; immutable legacy rules still govern older adventures.
+- Validation: all 18 `test_story_providers.py` tests pass; `npm run build` and `git diff --check` pass. Vite reports the main JavaScript chunk at 516.68 kB, above its 500 kB advisory threshold. The local preview timed out in the in-app browser, so first-use browser/novice review remains open; live Codex generation was not exercised.
+
+## 2026-10-30 — Three-step setup and optional world details
+
+- Shorten adventure setup to **World → Hero → Review**. A deterministic, balanced character sheet is prepared when the selected immutable world's point rules allow one, so a new player can start without allocating points by hand. Attribute tuning and randomization remain optional under a disclosure; impossible legacy/imported rules show a prompt to adjust before starting.
+- Simplify world creation to name, style, and an optional idea, followed by a suggested starting place. The starting place is added to the map automatically. Extra map places, opening-scene writing, cover art, and custom mechanics stay optional and collapsed until requested.
+- Prevent saving a new world through the UI when its point total and attribute limits cannot produce a legal starting sheet; show the author which rule group needs adjustment.
+- Make the final review start-ready by default; adventure naming and saved hero notes are optional disclosures. No provider or model choice is required before play.
+- Validation: `npm run build` passed (TypeScript and Vite; main JavaScript bundle 516.43 kB); direct Node checks of the allocation helper passed for exact budgets, allowed unspent points, and unreachable totals; `git diff --check` passed. This slice has no unit/API or rendered-browser run. The in-app browser could not reach Lorethra's local preview, so novice, keyboard, narrow-window, and installed-desktop acceptance remain open.
+
+## 2026-10-30 — Readable story text and keyboard targets
+
+- Add shared type tokens and raise core text sizes: story and reader text is 18px at normal widths and 16px on narrow screens; secondary text is at least 14px; form controls use 16px text.
+- Set buttons, text fields, and disclosures to 44px minimum targets; checkbox/radio rows receive 44px hit areas. Add a consistent visible keyboard focus outline and let the setup indicator wrap into two columns on narrow screens.
+- Keep the existing responsive layout and 320px minimum viewport. This source change does not establish visual or accessibility acceptance: the in-app browser could not reach the local Vite preview, so screenshot, keyboard, zoom, contrast, RTL, screen-reader, and installed Windows webview checks remain open.
+
+## 2026-10-30 — Focus active story play
+
+- When an adventure is open, collapse the full worlds/adventures library and setup behind the section heading. Group character, mechanics, memory, NPC, map, and context tools under **Adventure details & tools**, with a visible count when RPG or memory suggestions need review.
+- Fold repeated saved/context provenance under **Turn details** and put older-conversation import behind a separate disclosure. The story transcript and next-action composer remain the main path.
+- Keep automatic checks and per-turn XP as defaults for new worlds and MNO imports. Preserve manual rules in older pinned worlds; their extra check and XP actions remain available in the detail panel.
+- `npm run build` (TypeScript plus Vite) and `git diff --check` passed. Vite reports a 515.96 kB main JavaScript chunk, above its 500 kB advisory threshold. No unit/API tests or rendered-browser/desktop acceptance were run for this UI slice.
+- Conventional commit: `feat(ui): simplify play and improve accessibility`.
+
+## 2026-10-30 — Simpler play and automatic story checks
+
+- Compared the supplied Lorethra and MNO snapshots with the live MNO entry path. MNO puts **Begin Your Adventure**, **Create world**, and import first; its hero setup still has four tabs and many optional fields. The Lorethra snapshot showed backup/search/filter/export/setup controls together. This is useful direction, not evidence that MNO is perfect or that either saved HTML file's scripts work.
+- Keep the story transcript and next-action composer central. Move each turn's edit/retry/hide actions into a small **Turn options** disclosure, hide the large character/RPG panel behind one **Character details** disclosure, surface pending review counts, and remove revision identifiers and model names from ordinary turn labels.
+- New worlds default to local automatic checks and one XP per completed player turn. MNO world imports explicitly pin Lorethra's d20 defaults and automatic XP; the adapter does not execute or claim parity with MNO formulas, roll logic, or reward rules. Existing worlds without explicit mechanics retain their previous manual behavior.
+- For an uncertain action, the provider may request a check and return success/failure narration together in one response. Lorethra generates dice locally; the command gateway validates the chosen rule IDs, dice range, modifiers, target, and outcome against the pinned world and selects the matching branch. It stores only the selected story text and the linked check atomically, so there is no second provider call and a replay cannot add another turn, check, or XP.
+- Add schema v18 nullable source-turn provenance for configured mechanic checks. Adventure packages preserve the link when available and accept older records without it; selecting a check for export also carries its outcome turn and preceding action. Checks from edited or hidden source turns are excluded from current RPG context.
+- Validation: bundled-Python `python -m compileall -q backend/lke`, `npm run build` (TypeScript plus Vite production build; 514.74 kB main JavaScript chunk), and `git diff --check` passed. Vite reports the existing 500 kB chunk-size advisory. No unit/API tests or rendered-browser interaction were run. A local API session could not start because FastAPI is not installed in the available Python runtime; live-provider behavior and installed Windows desktop acceptance remain open.
+- Conventional commits: `feat(story): add automatic pinned-rule checks and XP`, `feat(ui): simplify active play controls`, and `docs(ux): record MNO comparison and acceptance gaps`.
 
 ## 2026-10-30 — Codex generation recovery and a simpler play path
 

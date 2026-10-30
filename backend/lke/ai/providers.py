@@ -74,6 +74,24 @@ def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
         raise StoryProviderError("The story request was stopped.")
 
 
+def _safe_codex_error_suffix(error: Any) -> str:
+    if not isinstance(error, dict):
+        return ""
+    details: list[str] = []
+    code = error.get("code")
+    if type(code) is int:
+        details.append(f"error {code}")
+    message = error.get("message")
+    if isinstance(message, str):
+        message = " ".join(message.split())
+        message = re.sub(r"(?i)\b(?:Bearer\s+)?(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b", "[redacted]", message)
+        message = re.sub(r"(?i)(?:[A-Z]:\\|/home/|/Users/|/tmp/|/private/)[^\s,;]+", "[local path]", message)
+        message = "".join(character for character in message if character.isprintable())[:240].strip()
+        if message:
+            details.append(message)
+    return f" ({'; '.join(details)})" if details else ""
+
+
 def _read_json_response(response: Any, cancel_event: threading.Event | None = None) -> dict[str, Any]:
     _raise_if_cancelled(cancel_event)
     raw = response.read(_MAX_RESPONSE_BYTES + 1)
@@ -493,9 +511,7 @@ class _CodexAppServer:
                         continue
                     if event.get("id") == response_id:
                         if "error" in event:
-                            error = event.get("error")
-                            code = error.get("code") if isinstance(error, dict) else None
-                            suffix = f" (error {code})" if type(code) is int else ""
+                            suffix = _safe_codex_error_suffix(event.get("error"))
                             raise StoryProviderError(f"Codex app-server rejected {method}{suffix}.")
                         result = event.get("result")
                         return result if isinstance(result, dict) else {}
@@ -598,9 +614,7 @@ class _CodexAppServer:
                         continue
                     if event.get("id") == 13:
                         if "error" in event:
-                            error = event.get("error")
-                            code = error.get("code") if isinstance(error, dict) else None
-                            suffix = f" (error {code})" if type(code) is int else ""
+                            suffix = _safe_codex_error_suffix(event.get("error"))
                             raise StoryProviderError(f"Codex app-server rejected turn/start{suffix}.")
                         continue
                     if event.get("method") == "item/agentMessage/delta":
@@ -610,7 +624,17 @@ class _CodexAppServer:
                     elif event.get("method") == "turn/completed":
                         turn = event.get("params", {}).get("turn", {})
                         if not isinstance(turn, dict) or turn.get("status") != "completed":
-                            raise StoryProviderError("Codex app-server did not complete the turn.")
+                            status = turn.get("status") if isinstance(turn, dict) else None
+                            failure = turn.get("error") if isinstance(turn, dict) else None
+                            failure_object = failure if isinstance(failure, dict) else {"message": failure}
+                            failure_suffix = _safe_codex_error_suffix(failure_object)
+                            details = []
+                            if isinstance(status, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", status):
+                                details.append(status)
+                            if failure_suffix:
+                                details.append(failure_suffix[2:-1])
+                            suffix = f" ({'; '.join(details)})" if details else ""
+                            raise StoryProviderError(f"Codex app-server did not complete the turn{suffix}.")
                         result = "".join(chunks).strip()
                         if not result:
                             raise StoryProviderError("Codex app-server returned no story text.")

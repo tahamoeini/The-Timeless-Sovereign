@@ -14,7 +14,7 @@ function normalizeRuleId(value: string): string {
   return value.toLocaleLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
 }
 
-export function defaultStoryMechanics(mode: StoryMechanicsProfile["mode"] = "d20"): StoryMechanicsProfile {
+function mechanicsDefaults(mode: StoryMechanicsProfile["mode"], automatedRewards: boolean): StoryMechanicsProfile {
   return {
     mode,
     dice: { count: 1, sides: 20, resolution: "sum", success_threshold: null, include_attribute: true },
@@ -31,12 +31,19 @@ export function defaultStoryMechanics(mode: StoryMechanicsProfile["mode"] = "d20
       { encounter_type: "other", label: "Other" },
     ],
     skills: [],
-    experience: { mode: "manual", starting_xp: 0, per_completed_turn: 0, allow_manual_awards: true, maximum_xp: 1_000_000 },
+    experience: automatedRewards
+      ? { mode: "automatic", starting_xp: 0, per_completed_turn: 1, allow_manual_awards: false, maximum_xp: 1_000_000 }
+      : { mode: "manual", starting_xp: 0, per_completed_turn: 0, allow_manual_awards: true, maximum_xp: 1_000_000 },
   };
 }
 
+export function defaultStoryMechanics(mode: StoryMechanicsProfile["mode"] = "d20"): StoryMechanicsProfile {
+  return mechanicsDefaults(mode, true);
+}
+
 export function readStoryMechanics(value: unknown, fallbackMode: StoryMechanicsProfile["mode"] = "d20"): StoryMechanicsProfile {
-  const base = defaultStoryMechanics(fallbackMode);
+  // Existing immutable world versions keep their original manual-award behavior.
+  const base = mechanicsDefaults(fallbackMode, false);
   if (!value || typeof value !== "object" || Array.isArray(value)) return base;
   const source = value as Partial<StoryMechanicsProfile>;
   const dice = source.dice && typeof source.dice === "object" ? source.dice : {};

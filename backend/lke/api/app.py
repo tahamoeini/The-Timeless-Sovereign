@@ -27,6 +27,11 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from lke.ai import OllamaClient, OllamaError, StoryProviderError, StoryProviderRegistry
+from lke.ai.story_mechanics import (
+    AutomaticCheckProtocolError,
+    automatic_check_protocol,
+    extract_automatic_check,
+)
 from lke.core import CommandGateway, Database
 from lke.core.errors import ConflictError, IdempotencyConflictError, LKEError, NotFoundError, ValidationError
 from lke.extraction import EXTRACTOR_VERSION, OUTPUT_SCHEMA_VERSION, PROMPT_VERSION, extraction_messages, validate_candidates
@@ -928,6 +933,18 @@ def create_app(
             context = _external_provider_context(context)
 
         messages = _story_messages(conversation, context, prompt)
+        automatic_mechanics = None
+        if story_context and story_context.get("automatic_checks_enabled") is True:
+            pinned_mechanics = story_context.get("game_mechanics")
+            character_sheet = story_context.get("character_sheet")
+            if (isinstance(pinned_mechanics, dict)
+                    and pinned_mechanics.get("mode") != "narrative_only"
+                    and isinstance(character_sheet, dict)
+                    and isinstance(character_sheet.get("stats"), dict)):
+                automatic_mechanics = pinned_mechanics
+                messages[0]["content"] += "\n\n" + automatic_check_protocol(
+                    pinned_mechanics, character_sheet["stats"],
+                )
         try:
             assistant_content = await _provider_call_with_disconnect(
                 request, story_provider_registry.generate, body.provider, model, messages,
@@ -939,12 +956,39 @@ def create_app(
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="Story generation was stopped before it could be saved")
 
+        automatic_check_request = None
+        automatic_story_variants = None
+        if automatic_mechanics:
+            try:
+                assistant_content, check_intent, automatic_story_variants = extract_automatic_check(assistant_content)
+            except AutomaticCheckProtocolError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            if check_intent is not None:
+                adventure = next((item for item in gateway.list_story_adventures(workspace_id, body.branch_id)
+                                  if item["conversation_id"] == body.conversation_id), None)
+                if not adventure:
+                    raise ValidationError("Automatic checks require a world-based adventure")
+                dice_rules = automatic_mechanics["dice"]
+                automatic_check_request = {
+                    **check_intent,
+                    "dice_rolls": [secrets.randbelow(dice_rules["sides"]) + 1
+                                   for _ in range(dice_rules["count"])],
+                }
+                if not automatic_story_variants:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="The provider requested a check without outcome narration. Please retry the turn.",
+                    )
+
         command_payload = {
             **stable_payload,
             "assistant_content": assistant_content,
             "context_manifest_id": context["manifest_id"],
             "context_manifest": context,
         }
+        if automatic_check_request is not None:
+            command_payload["automatic_mechanic_check"] = automatic_check_request
+            command_payload["automatic_story_variants"] = automatic_story_variants
         result = gateway.execute(
             workspace_id=workspace_id,
             branch_id=body.branch_id,
@@ -1513,6 +1557,7 @@ def _story_adventure_context(
             "abilities": sheet["abilities"],
         },
         "game_mechanics": state["mechanics"],
+        "automatic_checks_enabled": state["automatic_checks_enabled"],
         "recent_checks": [
             {key: check[key] for key in ("stat_name", "die_roll", "modifier", "total", "target", "outcome")}
             for check in state["checks"][:5]

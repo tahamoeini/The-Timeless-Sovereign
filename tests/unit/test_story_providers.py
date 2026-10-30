@@ -170,6 +170,51 @@ class StoryProviderTests(unittest.TestCase):
         self.assertNotIn("runtimeWorkspaceRoots", requests["thread/start"]["params"])
         self.assertEqual(requests["turn/start"]["params"]["effort"], "high")
 
+    def test_codex_generation_exposes_safe_app_server_error_details(self):
+        class CapturingInput(io.StringIO):
+            def close(self):
+                self.sent = self.getvalue()
+                super().close()
+
+        writer = CapturingInput()
+        responses = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": [{"model": "model-a", "supportedReasoningEfforts": []}], "nextCursor": None}},
+            {"id": 12, "result": {"thread": {"id": "thread-1"}}},
+            {"id": 13, "error": {"code": -32600, "message": r"Unknown model at C:\Users\Taha\.codex\secret.json (token sk-abcdef1234567890)"}},
+        ]
+        process = Mock(stdin=writer, stdout=io.StringIO("".join(json.dumps(item) + "\n" for item in responses)))
+        process.poll.return_value = None
+        with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch(
+            "lke.ai.providers.subprocess.Popen", return_value=process,
+        ):
+            directory.return_value.__enter__.return_value = "scratch"
+            with self.assertRaisesRegex(StoryProviderError, r"rejected turn/start \(error -32600; Unknown model at \[local path\] \(token \[redacted\]\)\)") as caught:
+                _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"}).generate(
+                    "model-a", [{"role": "user", "content": "Continue the scene."}],
+                )
+        self.assertNotIn("C:\\Users", str(caught.exception))
+        self.assertNotIn("sk-abcdef1234567890", str(caught.exception))
+
+    def test_codex_failed_turn_includes_safe_failure_reason(self):
+        responses = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": [{"model": "model-a", "supportedReasoningEfforts": []}], "nextCursor": None}},
+            {"id": 12, "result": {"thread": {"id": "thread-1"}}},
+            {"id": 13, "result": {}},
+            {"method": "turn/completed", "params": {"turn": {"status": "failed", "error": {"message": "No active Codex account"}}}},
+        ]
+        process = Mock(stdin=io.StringIO(), stdout=io.StringIO("".join(json.dumps(item) + "\n" for item in responses)))
+        process.poll.return_value = None
+        with patch("lke.ai.providers.tempfile.TemporaryDirectory") as directory, patch(
+            "lke.ai.providers.subprocess.Popen", return_value=process,
+        ):
+            directory.return_value.__enter__.return_value = "scratch"
+            with self.assertRaisesRegex(StoryProviderError, r"did not complete the turn \(failed; No active Codex account\)"):
+                _CodexAppServer({"LKE_CODEX_APP_SERVER_EXECUTABLE": "codex"}).generate(
+                    "model-a", [{"role": "user", "content": "Continue the scene."}],
+                )
+
     def test_codex_generation_rejects_an_effort_the_selected_model_does_not_support(self):
         class CapturingInput(io.StringIO):
             def close(self):

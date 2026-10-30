@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 class Database:
@@ -97,6 +97,9 @@ class Database:
                 current = 16
             if current < 17:
                 self._apply_migration(17, _SCHEMA_V17)
+                current = 17
+            if current < 18:
+                self._apply_migration(18, _SCHEMA_V18)
 
     def _apply_migration(self, version: int, schema: str) -> None:
         try:
@@ -1072,4 +1075,11 @@ CREATE INDEX story_worlds_library_idx
     ON story_worlds(workspace_id,archived_at,updated_at DESC,name COLLATE NOCASE);
 CREATE INDEX story_adventures_library_archive_idx
     ON story_adventures(workspace_id,archived_at,updated_at DESC,adventure_id);
+"""
+
+
+_SCHEMA_V18 = """
+ALTER TABLE rpg_mechanic_checks ADD COLUMN source_turn_id TEXT;
+CREATE INDEX rpg_mechanic_checks_source_turn_idx
+    ON rpg_mechanic_checks(workspace_id,branch_id,source_turn_id);
 """

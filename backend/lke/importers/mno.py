@@ -161,6 +161,27 @@ def convert_mno_world(source: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         "text_trackers": text_trackers,
         "public_lore": description,
         "locations": [],
+        "game_mechanics": {
+            "mode": "d20",
+            "dice": {"count": 1, "sides": 20, "resolution": "sum",
+                     "success_threshold": None, "include_attribute": True},
+            "difficulties": [
+                {"difficulty_id": "easy", "label": "Easy", "target": 8},
+                {"difficulty_id": "standard", "label": "Standard", "target": 12},
+                {"difficulty_id": "hard", "label": "Hard", "target": 16},
+                {"difficulty_id": "very-hard", "label": "Very hard", "target": 20},
+            ],
+            "encounter_types": [
+                {"encounter_type": "combat", "label": "Combat"},
+                {"encounter_type": "social", "label": "Social"},
+                {"encounter_type": "exploration", "label": "Exploration"},
+                {"encounter_type": "other", "label": "Other"},
+            ],
+            "skills": [],
+            "experience": {"mode": "automatic", "starting_xp": 0,
+                           "per_completed_turn": 1, "allow_manual_awards": False,
+                           "maximum_xp": 1_000_000},
+        },
         "mno_source": source,
         "mno_import": {
             "format": "mno-world",
@@ -186,6 +207,7 @@ def convert_mno_world(source: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         "lore_entry_count": len(lorebook), "npc_template_count": len(npcs),
         "conversion_notes": [
             "MNO formulas and instructions are preserved as text; no imported formula or script is executed.",
+            "New play uses Lorethra's automatic d20 rolls with deterministic gateway arithmetic and one experience point per completed player turn; this does not reproduce MNO's unverified roll or reward logic.",
             "Imported world lore is narrator reference. It does not automatically become a character's knowledge.",
             "Text trackers and all original settings remain in the preserved MNO source; Lorethra initializes numeric RPG trackers only.",
         ],

@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { buildStoryExport } from "./storyExport";
-import { allocatedCreationPoints, randomizeCharacterAllocation } from "./storyCreation";
+import { allocatedCreationPoints, balancedCharacterAllocation, randomizeCharacterAllocation } from "./storyCreation";
 import type { CharacterCreationStat } from "./storyCreation";
 import { defaultStoryMechanics, readStoryMechanics, StoryMechanicsEditor } from "./storyMechanics";
 import { Branch, Claim, CodexModelOption, ContextManifest, downloadBackup, Entity, ExternalExchange, ExtractionBatch, ExtractionCandidate, JournalEvent, JournalEventVersion, newId, OllamaModelStatus, Relation, request, Revision, RuleEvaluation, RpgState, Scenario, ScenarioAssumption, ScenarioOption, Source, SourceDetails, StoryAbilityDefinition, StoryAdventure, StoryAdventureExportMode, StoryAdventureExportPreview, StoryAdventureExportSelection, StoryConversation, StoryConversationSummary, StoryGenerationResult, StoryHistoryPreview, StoryMapLocation, StoryMechanicsProfile, StoryMemory, StoryProvider, StoryStudioData, StoryThread, StoryWorld, TemporalQueryResult, Workspace } from "./api";
@@ -1502,6 +1502,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [usingCustomModel, setUsingCustomModel] = useState(false);
   const [modelDiscoveryBusy, setModelDiscoveryBusy] = useState(false);
   const [modelDiscoveryError, setModelDiscoveryError] = useState("");
+  const [modelDiscoveryNotice, setModelDiscoveryNotice] = useState("");
   const [title, setTitle] = useState("");
   const [actorIsUserControlled, setActorIsUserControlled] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -1519,8 +1520,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [storyWorldStatusFilter, setStoryWorldStatusFilter] = useState<"active" | "archived" | "all">("active");
   const [renamingAdventureId, setRenamingAdventureId] = useState("");
   const [renamingAdventureName, setRenamingAdventureName] = useState("");
-  const [setupExpanded, setSetupExpanded] = useState(true);
-  const [setupStep, setSetupStep] = useState<1 | 2 | 3 | 4>(1);
+  const [setupExpanded, setSetupExpanded] = useState(false);
+  const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
   const [showWorldCreation, setShowWorldCreation] = useState(false);
   const [worldCreationStep, setWorldCreationStep] = useState<1 | 2 | 3>(1);
   const [showHeroCreation, setShowHeroCreation] = useState(false);
@@ -1537,7 +1538,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [worldName, setWorldName] = useState("");
   const [worldPremise, setWorldPremise] = useState("");
   const [worldStartingLocation, setWorldStartingLocation] = useState("The Crossroads");
-  const [worldLocations, setWorldLocations] = useState("The Crossroads");
+  const [worldLocations, setWorldLocations] = useState("");
   const [worldOpeningSituation, setWorldOpeningSituation] = useState("");
   const [worldOpeningHook, setWorldOpeningHook] = useState("");
   const [worldArchitectBrief, setWorldArchitectBrief] = useState("");
@@ -1641,6 +1642,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const availableCodexEfforts = model === "auto"
     ? automaticCodexEfforts
     : selectedCodexModel?.supported_reasoning_efforts ?? [];
+  const effectiveCodexReasoningEffort = providerId === "codex" && availableCodexEfforts.includes(reasoningEffort)
+    ? reasoningEffort
+    : "";
   const localStoryProvider = storyProviders.find((provider) => provider.id === "ollama");
   const localStoryModels = localStoryProvider?.models ?? [];
   const selectedWorldArchitectModel = localStoryModels.includes(worldArchitectModel)
@@ -1688,9 +1692,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   function codexReasoningControl(label: string, disabled = false) {
     if (providerId !== "codex") return null;
     if (!codexModelOptions.length) {
-      return <p className="provider-note">{modelDiscoveryBusy ? "Loading Codex model choices…" : "Choose an effort after refreshing the Codex model list. Automatic uses Codex’s own default."}</p>;
+      return <p className="provider-note">{modelDiscoveryBusy ? "Loading Codex model choices…" : "Codex will use its model default until reasoning choices are available."}</p>;
     }
-    return <label className="field-label">Reasoning effort<select aria-label={label} value={reasoningEffort}
+    if (!availableCodexEfforts.length) {
+      return <p className="provider-note">{model === "auto" ? "Codex chooses the model and reasoning default. Choose a specific model to see its supported effort levels." : "This model does not list adjustable reasoning levels. Codex will use its default."}</p>;
+    }
+    return <label className="field-label">Reasoning effort<select aria-label={label} value={effectiveCodexReasoningEffort}
       disabled={disabled || !availableCodexEfforts.length}
       onChange={(event) => setReasoningEffort(event.target.value)}>
       <option value="">Automatic · model default</option>
@@ -1703,28 +1710,39 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     setProviderId(nextId);
     setUsingCustomModel(false);
     setModelDiscoveryError("");
+    setModelDiscoveryNotice("");
     setModel(nextId === "codex" ? "auto" : next?.default_model || next?.models[0] || "");
     setReasoningEffort("");
     setStoryError("");
   }
   async function loadProviderModels(requestedProvider: StoryProvider["id"] = providerId) {
     setModelDiscoveryError("");
+    setModelDiscoveryNotice("");
     setModelDiscoveryBusy(true);
     try {
       const response = await request<{ models: string[]; model_options?: CodexModelOption[] }>(`/api/v1/providers/story/${encodeURIComponent(requestedProvider)}/models`, { method: "POST" });
       if (storyMounted.current) setStoryProviders((providers) => providers.map((provider) => provider.id === requestedProvider ? { ...provider, models: response.models } : provider));
       if (storyMounted.current && requestedProvider === "codex") {
-        const options = response.model_options ?? [];
+        const hasReasoningMetadata = Array.isArray(response.model_options);
+        const options: CodexModelOption[] = Array.isArray(response.model_options) ? response.model_options : [];
+        const discoveredModels = Array.isArray(response.models) ? response.models : [];
         setCodexModelOptions(options);
+        if (!hasReasoningMetadata) {
+          setModelDiscoveryNotice(discoveredModels.length
+            ? "Lorethra received model names without reasoning details. Restart or update Lorethra to enable effort choices; Codex will use its default for now."
+            : "Lorethra could not read Codex reasoning details. Restart or update Lorethra, then refresh the model list.");
+        }
         if (storyProviderRef.current === "codex") {
           const currentModel = storyModelRef.current;
-          setReasoningEffort((current) => {
-            const optionSets = options.map((option) => option.supported_reasoning_efforts);
-            const automaticEfforts = optionSets.length ? optionSets[0].filter((effort) => optionSets.every((supported) => supported.includes(effort))) : [];
-            const selectedEfforts = currentModel === "auto" ? automaticEfforts : options.find((option) => option.model === currentModel)?.supported_reasoning_efforts ?? [];
-            return selectedEfforts.includes(current) ? current : "";
-          });
-          if (currentModel !== "auto" && !options.some((option) => option.model === currentModel)) setModel("auto");
+          if (hasReasoningMetadata) {
+            setReasoningEffort((current) => {
+              const optionSets = options.map((option) => option.supported_reasoning_efforts);
+              const automaticEfforts = optionSets.length ? optionSets[0].filter((effort) => optionSets.every((supported) => supported.includes(effort))) : [];
+              const selectedEfforts = currentModel === "auto" ? automaticEfforts : options.find((option) => option.model === currentModel)?.supported_reasoning_efforts ?? [];
+              return selectedEfforts.includes(current) ? current : "";
+            });
+            if (currentModel !== "auto" && !discoveredModels.includes(currentModel)) setModel("auto");
+          }
         }
       }
     } catch (error) {
@@ -1760,6 +1778,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }, [providerId, model, reasoningEffort]);
   useEffect(() => {
     let active = true;
+    setSetupExpanded(false);
     setShowHeroProfileEditor(false);
     setHeroProfileDraft({ ...EMPTY_HERO_PROFILE });
     Promise.all([
@@ -1771,7 +1790,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setWorlds(worldRows);
       setAdventures(adventureRows);
       const activeWorldRows = worldRows.filter((item) => !item.archived_at);
-      setSetupExpanded(!adventureRows.some((item) => item.parent_branch_id === "main"));
       setSetupStep(1);
       setShowWorldCreation(activeWorldRows.length === 0);
       setMainCharacters(characterRows.filter((item) => ["character", "person"].includes(item.entity_type)));
@@ -1803,10 +1821,23 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const baselines = updatedLatest?.content.stats && typeof updatedLatest.content.stats === "object" && !Array.isArray(updatedLatest.content.stats)
         ? updatedLatest.content.stats as Record<string, number>
         : {};
+      const allocationStats = creation
+        ? Object.entries(creation.stats).map(([key, rule]) => ({
+          key,
+          ...rule,
+          baseline: baselines[key],
+          minimum: creation.allow_below_baseline ? rule.minimum : Math.max(rule.minimum, baselines[key]),
+        }))
+        : [];
+      const balancedAllocation = creation
+        ? balancedCharacterAllocation(allocationStats, creation.point_budget, creation.allow_unspent_points)
+        : null;
       setAdventureAllocation(creation
-        ? Object.fromEntries(Object.keys(creation.stats).map((key) => [key, baselines[key]]))
+        ? balancedAllocation || Object.fromEntries(Object.keys(creation.stats).map((key) => [key, baselines[key]]))
         : {});
-      setAdventureAllocationMessage("");
+      setAdventureAllocationMessage(creation
+        ? balancedAllocation ? "Balanced starting attributes are ready. You can customize them before you start." : "Customize the attributes to meet this world's point rules before you start."
+        : "");
       setEditWorldName(detail.name);
       setEditWorldDescription(updatedLatest?.description || "");
       setEditWorldPremise(typeof updatedLatest?.content.public_lore === "string" ? updatedLatest.content.public_lore : "");
@@ -2125,7 +2156,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setStoryError("No story data was sent. Your direction is still here; choose a local provider or approve this provider first.");
       return;
     }
-    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, reasoningEffort, prompt, order]);
+    const fingerprint = JSON.stringify([workspaceId, branchId, conversation.conversation_id, providerId, model, effectiveCodexReasoningEffort, prompt, order]);
     if (pendingStoryRequest.current?.fingerprint !== fingerprint) {
       pendingStoryRequest.current = {
         fingerprint,
@@ -2137,7 +2168,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           provider: providerId,
           external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null,
           model,
-          ...(providerId === "codex" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+          ...(effectiveCodexReasoningEffort ? { reasoning_effort: effectiveCodexReasoningEffort } : {}),
           prompt,
           narrative_order: order,
         }),
@@ -2257,7 +2288,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       const result = await request<StoryGenerationResult>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/story/retry`,
         { method: "POST", signal: controller.signal,
-          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model, ...(providerId === "codex" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }) },
+          body: JSON.stringify({ branch_id: branchId, conversation_id: conversation.conversation_id, turn_id: turn.turn_id, expected_revision: revision, idempotency_key: newId("retry-turn"), provider: providerId, external_provider_consent: EXTERNAL_STORY_PROVIDERS.includes(providerId) ? providerId : null, model, ...(effectiveCodexReasoningEffort ? { reasoning_effort: effectiveCodexReasoningEffort } : {}) }) },
       );
       setConversation(result.conversation);
       onRevisionChange(result.revision);
@@ -2381,8 +2412,18 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   }
 
   function resetAdventureAllocation() {
-    setAdventureAllocation(Object.fromEntries(selectedSetupStatDefinitions.map((stat) => [stat.key, stat.baseline])));
-    setAdventureAllocationMessage("Allocation reset to the world baselines.");
+    if (!selectedSetupCreation) return;
+    const balanced = balancedCharacterAllocation(
+      selectedSetupStatDefinitions,
+      selectedSetupCreation.point_budget,
+      selectedSetupCreation.allow_unspent_points,
+    );
+    if (!balanced) {
+      setAdventureAllocationMessage("This world has no valid balanced starting sheet. Adjust the attributes to meet its rules.");
+      return;
+    }
+    setAdventureAllocation(balanced);
+    setAdventureAllocationMessage("Balanced starting attributes restored.");
   }
 
   function randomizeAdventureAllocation() {
@@ -2552,7 +2593,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (!worldArchitectDraft) return;
     setWorldPremise(worldArchitectDraft.public_lore);
     setWorldStartingLocation(worldArchitectDraft.starting_location);
-    setWorldLocations(worldArchitectDraft.locations.join("\n"));
+    const startingKey = worldArchitectDraft.starting_location.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+    setWorldLocations(worldArchitectDraft.locations.filter((location) =>
+      location.trim().replace(/\s+/g, " ").toLocaleLowerCase() !== startingKey,
+    ).join("\n"));
     setWorldOpeningSituation(worldArchitectDraft.opening_scene.situation);
     setWorldOpeningHook(worldArchitectDraft.opening_scene.hook);
     setWorldArchitectDraft(null);
@@ -2573,15 +2617,21 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setCreationError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
       return;
     }
-    const locations = parseStoryWorldLocations(worldLocations);
-    if (!locations) {
-      setCreationError("Use up to 100 unique location names, each no longer than 150 characters.");
+    const additionalLocations = parseStoryWorldLocations(worldLocations);
+    if (!additionalLocations) {
+      setCreationError("Use up to 100 unique additional places, each no longer than 150 characters.");
       return;
     }
     const requestedStartingLocation = worldStartingLocation.trim();
-    const startingLocation = locations.find((location) => location.toLocaleLowerCase() === requestedStartingLocation.toLocaleLowerCase()) || "";
-    if (requestedStartingLocation && !startingLocation) {
-      setCreationError("Choose a starting location from the world’s location list, or leave it blank.");
+    const startingLocation = additionalLocations.find((location) =>
+      location.toLocaleLowerCase() === requestedStartingLocation.toLocaleLowerCase(),
+    ) || requestedStartingLocation;
+    const locations = [
+      ...(startingLocation ? [startingLocation] : []),
+      ...additionalLocations.filter((location) => location.toLocaleLowerCase() !== startingLocation.toLocaleLowerCase()),
+    ];
+    if (locations.length > 100) {
+      setCreationError("Keep the starting place and map to 100 places or fewer.");
       return;
     }
     const openingSituation = worldOpeningSituation.trim();
@@ -2636,7 +2686,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       setWorldPremise("");
       const defaultStartingLocation = typeof template.content.starting_location === "string" ? template.content.starting_location : "";
       setWorldStartingLocation(defaultStartingLocation);
-      setWorldLocations(defaultStartingLocation);
+      setWorldLocations("");
       setWorldOpeningSituation("");
       setWorldOpeningHook("");
       setWorldArchitectBrief("");
@@ -3050,10 +3100,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       return;
     }
     setLibraryError("");
-    if (setupStep === 3) {
-      setSetupStep(4);
-      return;
-    }
     try {
       await onCreateAdventure({
         idempotency_key: newId("start-adventure"),
@@ -3526,7 +3572,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     ? selectedSetupContent.stats as Record<string, number>
     : {};
   const selectedSetupStatDefinitions: CharacterCreationStat[] = selectedSetupCreation
-    ? Object.entries(selectedSetupCreation.stats).map(([key, rule]) => ({ key, ...rule, baseline: selectedSetupBaselines[key] }))
+    ? Object.entries(selectedSetupCreation.stats).map(([key, rule]) => ({
+      key,
+      ...rule,
+      baseline: selectedSetupBaselines[key],
+      minimum: selectedSetupCreation.allow_below_baseline ? rule.minimum : Math.max(rule.minimum, selectedSetupBaselines[key]),
+    }))
     : [];
   const adventurePointsSpent = allocatedCreationPoints(selectedSetupStatDefinitions, adventureAllocation);
   const adventurePointsRemaining = (selectedSetupCreation?.point_budget || 0) - adventurePointsSpent;
@@ -3579,8 +3630,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       && (ability.cooldown_turns === null || (Number.isInteger(ability.cooldown_turns)
         && ability.cooldown_turns >= 0 && ability.cooldown_turns <= 1_000_000))
       && [ability.duration, ability.range].every((value) => value === null || value.length <= 200));
-  const creationWorldValid = Number.isInteger(creationPointBudget) && creationPointBudget >= 0 && creationPointBudget <= 200
-    && creationStatDefinitions.length > 0 && creationStatDefinitions.length <= 20
+  const creationPointBudgetValid = Number.isInteger(creationPointBudget) && creationPointBudget >= 0 && creationPointBudget <= 200;
+  const creationStatsValid = creationStatDefinitions.length > 0 && creationStatDefinitions.length <= 20
     && creationKeys.every((key, index) => !!key && creationKeys.indexOf(key) === index)
     && creationStatDefinitions.every((stat) => !!stat.key.trim() && stat.key.trim().length <= 40
       && !!stat.label.trim() && stat.label.trim().length <= 80
@@ -3588,21 +3639,41 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       && Number.isInteger(stat.point_cost) && stat.minimum >= -10 && stat.maximum <= 10
       && stat.minimum <= stat.baseline && stat.baseline <= stat.maximum
       && (creationAllowBelowBaseline || stat.minimum === stat.baseline)
-      && stat.point_cost >= 1 && stat.point_cost <= 20)
-    && creationAbilitiesValid;
-  const creationLocationNames = parseStoryWorldLocations(worldLocations);
+       && stat.point_cost >= 1 && stat.point_cost <= 20);
+  const creationHasValidStartingAllocation = creationPointBudgetValid && creationStatsValid
+    && !!balancedCharacterAllocation(creationStatDefinitions.map((stat) => ({
+      ...stat,
+      minimum: creationAllowBelowBaseline ? stat.minimum : Math.max(stat.minimum, stat.baseline),
+    })), creationPointBudget, creationAllowUnspentPoints);
+  const creationWorldValid = creationPointBudgetValid && creationStatsValid
+    && creationHasValidStartingAllocation && creationAbilitiesValid;
+  const additionalCreationLocations = parseStoryWorldLocations(worldLocations);
   const creationStartingLocation = worldStartingLocation.trim();
+  const creationLocationNames = additionalCreationLocations === null ? null : (() => {
+    const matchingStartingPlace = additionalCreationLocations.find((location) =>
+      location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase(),
+    );
+    const startingPlace = matchingStartingPlace || creationStartingLocation;
+    const locations = [
+      ...(startingPlace ? [startingPlace] : []),
+      ...additionalCreationLocations.filter((location) => location.toLocaleLowerCase() !== startingPlace.toLocaleLowerCase()),
+    ];
+    return locations.length <= 100 ? locations : null;
+  })();
   const creationPlacesValid = creationLocationNames !== null
-    && (!creationStartingLocation || creationLocationNames.some((location) => location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase()))
     && Boolean(worldOpeningSituation.trim()) === Boolean(worldOpeningHook.trim());
+  const lastManualMechanicCheck = rpgState?.mechanic_checks.find((check) => check.source_turn_id === null);
+  const pendingRpgReviewCount = rpgState?.proposals.filter((item) => item.review_status === "proposed").length ?? 0;
+  const pendingMemoryReviewCount = studioData?.memories.memories.filter((memory) => memory.review_status === "proposed").length ?? 0;
 
   return <>
-    <PageHeader kicker="Play and create" title="Your stories" summary="Pick up where you left off, or make a new world and hero." />
-    <section className="panel story-hub">
-      <div className="panel-heading">
-        <div><h2>Worlds & adventures</h2><p>Create a world once, then start separate adventures from its pinned version.</p></div>
+    <PageHeader kicker="Play and create" title="Your stories" summary={activeAdventure ? "Your open adventure is below. You can switch stories or start another when you need to." : "Pick up where you left off, or make a new world and hero."} />
+    <details className="panel story-hub story-hub-disclosure" open={!activeAdventure}>
+      <summary className="panel-heading story-hub-summary">
+        <div><h2>Worlds & adventures</h2><p>{activeAdventure ? "Switch stories, create a world, or start another adventure." : "Create a world once, then start separate adventures from its pinned version."}</p></div>
         <span className="privacy-tag">LOCAL</span>
-      </div>
+      </summary>
+      <div className="story-hub-content">
       <div className="story-library-tools">
         <div className="story-library-search-row">
           <input aria-label="Search worlds and adventures" value={storyLibraryQuery} onChange={(event) => setStoryLibraryQuery(event.target.value)} placeholder="Search worlds and adventures" />
@@ -3635,7 +3706,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <div><strong>{mainAdventures.length ? "Continue playing" : "Start your first adventure"}</strong>
             <small role="status" aria-live="polite">{visibleAdventures.length === mainAdventures.length ? `${mainAdventures.length} saved` : `Showing ${visibleAdventures.length} of ${mainAdventures.length} adventures`}</small></div>
           <button className="primary-button story-new-adventure" type="button" disabled={busy} aria-controls="story-adventure-setup" aria-expanded={setupExpanded} onClick={openAdventureSetup}>
-            {mainAdventures.length ? "New adventure" : "Create first adventure"}
+            {mainAdventures.length ? "New adventure" : "Start your first adventure"}
           </button>
         </div>
         {visibleMostRecentAdventure && <div className="story-most-recent"><div><strong>Pick up where you left off</strong><small>{visibleMostRecentAdventure.name} · {visibleMostRecentAdventure.world_name} v{visibleMostRecentAdventure.world_version} · {visibleMostRecentAdventure.actor_label}</small></div><button className="secondary-button" type="button" disabled={busy} onClick={() => onSelectBranch(visibleMostRecentAdventure.branch_id)}>Resume</button></div>}
@@ -3664,9 +3735,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </article>) : <div className="story-library-empty"><p className="empty-hint">{worlds.length ? "No worlds match this search and these filters." : "Create or import a world to begin."}</p>{worlds.length > 0 && hasStoryLibraryRefinements && <button className="quiet-button" type="button" onClick={clearStoryLibraryRefinements}>Clear search and filters</button>}</div>}</div>
       </details>
       <details id="story-adventure-setup" className="story-world-editor story-hub-setup" open={setupExpanded} onToggle={(event) => setSetupExpanded(event.currentTarget.open)}>
-        <summary>Adventure setup · step {setupStep} of 4</summary>
+        <summary>Set up an adventure · step {setupStep} of 3</summary>
         <ol className="story-setup-progress" aria-label="Adventure setup progress">
-          {(["World", "Hero", "Build", "Review"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
+          {(["World", "Hero", "Review"] as const).map((label, index) => <li key={label} aria-current={setupStep === index + 1 ? "step" : undefined} className={setupStep > index + 1 ? "complete" : ""}>
             <span>{index + 1}</span><small>{label}</small>
           </li>)}
         </ol>
@@ -3687,7 +3758,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {showWorldCreation && <form className="story-hub-form story-hub-create-world" onSubmit={(event) => void createWorld(event)}>
           <div className="story-hub-title"><span>＋</span><div><strong>Create a world</strong><small>Start with a small template. Advanced rules stay optional.</small></div></div>
           <ol className="world-creation-progress" aria-label="World creation progress">
-            {(["Setting", "Places & opening", "Rules & review"] as const).map((label, index) => <li key={label}
+            {(["Name & idea", "Beginning", "Review & create"] as const).map((label, index) => <li key={label}
               aria-current={worldCreationStep === index + 1 ? "step" : undefined}
               className={worldCreationStep > index + 1 ? "complete" : ""}>
               <span>{index + 1}</span><small>{label}</small>
@@ -3695,17 +3766,17 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </ol>
           <div className="world-creation-stage">
           {worldCreationStep === 1 && <>
-          <div className="world-creation-step-heading"><h3>Set the foundation</h3><p>Give your world a name and choose a starting style. The optional local draft can fill in editable details for you.</p></div>
+          <div className="world-creation-step-heading"><h3>Name your world</h3><p>Choose a style and add a short idea. You can keep it simple and add more details later.</p></div>
           {worldArchitectBusy && <button className="quiet-button full-button" type="button" onClick={cancelWorldDraft}>Cancel local draft</button>}
           <label className="field-label">World name<input value={worldName} disabled={worldArchitectBusy} onChange={(event) => { setWorldName(event.target.value); setWorldArchitectDraft(null); setWorldArchitectMessage(""); setCreationError(""); }} placeholder="The Shattered Coast" maxLength={200} required /><small className="field-note">Required before continuing. Changes stay in this form until you save the world.</small></label>
-          <label className="field-label">Starting style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
+          <label className="field-label">World style<select value={worldTemplate} disabled={worldArchitectBusy} onChange={(event) => {
             const nextTemplate = event.target.value;
             const nextTemplateContent = STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content;
             const defaultStartingLocation = typeof nextTemplateContent?.starting_location === "string" ? nextTemplateContent.starting_location : "";
             const nextStats = defaultCharacterCreationStats(nextTemplate);
             setWorldTemplate(nextTemplate);
             setWorldStartingLocation(defaultStartingLocation);
-            setWorldLocations(defaultStartingLocation);
+            setWorldLocations("");
             setCreationStatDefinitions(nextStats);
             setCreationTrackerText(trackerDefinitionsText(
               STORY_WORLD_TEMPLATES[nextTemplate as keyof typeof STORY_WORLD_TEMPLATES]?.content.trackers,
@@ -3715,7 +3786,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             setWorldArchitectDraft(null);
             setWorldArchitectMessage("");
           }}>{Object.entries(STORY_WORLD_TEMPLATES).map(([key, template]) => <option key={key} value={key}>{template.label}</option>)}</select></label>
-          <label className="field-label">Public setting premise<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="Share setting details that are safe for the hero to know." /></label>
+          <label className="field-label">World idea (optional)<textarea value={worldPremise} onChange={(event) => setWorldPremise(event.target.value)} rows={3} maxLength={4000} placeholder="A floating city where people trade memories" /><small className="field-note">A sentence is enough. This helps the storyteller understand your world.</small></label>
           <details className="character-creation-rules">
             <summary>Draft with the local World Architect (optional)</summary>
             <p className="field-note">Uses only the local Ollama model selected here. It receives the world name, style, and brief. Drafts are not saved or canonical until you review, apply, edit, and save the world.</p>
@@ -3743,22 +3814,24 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </details>
           </>}
           {worldCreationStep === 2 && <>
-          <div className="world-creation-step-heading"><h3>Choose places and an opening</h3><p>Map locations and the opening scene are optional. The starting location must match one of the places you list.</p></div>
-          <section className="world-creation-fields" aria-labelledby="world-places-heading">
-            <h4 id="world-places-heading">Starting place and map locations</h4>
-            <label className="field-label">Starting location<input value={worldStartingLocation} onChange={(event) => { setWorldStartingLocation(event.target.value); setCreationError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
-            <label className="field-label">World locations<textarea value={worldLocations} onChange={(event) => { setWorldLocations(event.target.value); setCreationError(""); }} rows={3} maxLength={16000} placeholder="One location per line" /><small className="field-note">Use unique names; if a starting location is set, it must appear in this list.</small></label>
-          </section>
-          <section className="world-creation-fields" aria-labelledby="world-opening-heading">
-            <h4 id="world-opening-heading">Opening scene <span>Optional</span></h4>
-            <p className="field-note">This public scene seed is included with the first generated reply. Describe the situation and its hook; the player still chooses what their hero says and does.</p>
-            <label className="field-label">Opening situation<textarea value={worldOpeningSituation} onChange={(event) => { setWorldOpeningSituation(event.target.value); setCreationError(""); }} rows={3} maxLength={4000} placeholder="Where the scene begins and what is already happening" /></label>
-            <label className="field-label">Immediate hook<textarea value={worldOpeningHook} onChange={(event) => { setWorldOpeningHook(event.target.value); setCreationError(""); }} rows={2} maxLength={2000} placeholder="A question, pressure, or opportunity for the hero" /></label>
-          </section>
-          <label className="field-label">Optional world cover<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Stored in the local world version and portable package. Lorethra compresses it to a small JPEG, up to 64 KiB.</small></label>
+          <div className="world-creation-step-heading"><h3>Choose a starting place</h3><p>Keep the suggested place and continue, or add a few details if you like.</p></div>
+          <label className="field-label">Starting place<input value={worldStartingLocation} onChange={(event) => { setWorldStartingLocation(event.target.value); setCreationError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
+          <details className="character-creation-rules">
+            <summary>Add places to the map (optional)</summary>
+            <label className="field-label">Other places<textarea value={worldLocations} onChange={(event) => { setWorldLocations(event.target.value); setCreationError(""); }} rows={3} maxLength={16000} placeholder="One place per line" /><small className="field-note">The starting place is added to the map automatically.</small></label>
+          </details>
+          <details className="character-creation-rules">
+            <summary>Add an opening scene (optional)</summary>
+            <p className="field-note">Describe what is happening and a hook for the hero. The player still chooses what their hero says and does.</p>
+            <label className="field-label">What is happening?<textarea value={worldOpeningSituation} onChange={(event) => { setWorldOpeningSituation(event.target.value); setCreationError(""); }} rows={3} maxLength={4000} placeholder="The harbor bells ring as a storm rolls in" /></label>
+            <label className="field-label">What draws the hero in?<textarea value={worldOpeningHook} onChange={(event) => { setWorldOpeningHook(event.target.value); setCreationError(""); }} rows={2} maxLength={2000} placeholder="A missing ship sends a familiar signal" /></label>
+          </details>
+          <details className="character-creation-rules">
+            <summary>Add a world cover (optional)</summary>
+            <label className="field-label">Choose an image<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Optional world cover image" disabled={coverPreparing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void prepareWorldCover(file, false); }} /><small className="field-note">Saved on this device and included in exported world packages.</small></label>
+          </details>
           {worldCover && <div className="story-world-cover-preview"><img src={storyWorldCoverUrl(worldCover)} alt={worldCover.alt_text || "World cover preview"} /><label className="field-label">Cover description<input maxLength={300} value={worldCover.alt_text} onChange={(event) => setWorldCover((cover) => cover ? { ...cover, alt_text: event.target.value } : cover)} /></label><button className="quiet-button" type="button" onClick={() => setWorldCover(null)}>Remove cover</button></div>}
           {creationLocationNames === null && <p className="inline-error" role="alert">Use no more than 100 unique locations, each up to 150 characters.</p>}
-          {creationLocationNames !== null && creationStartingLocation && !creationLocationNames.some((location) => location.toLocaleLowerCase() === creationStartingLocation.toLocaleLowerCase()) && <p className="inline-error" role="alert">Choose the starting location from your location list, or leave it blank.</p>}
           {Boolean(worldOpeningSituation.trim()) !== Boolean(worldOpeningHook.trim()) && <p className="inline-error" role="alert">Add both opening-scene fields, or leave both empty.</p>}
           </>}
           {worldCreationStep === 3 && <>
@@ -3834,7 +3907,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             {!creationAbilitiesValid && <p className="field-note" role="status">Complete each ability definition, use a unique lowercase ID, and enter positive resource costs.</p>}
           </details>
           </details>
-          {!creationWorldValid && <p className="inline-error" role="alert">Review the custom stat and ability definitions. Use distinct stat keys, valid baseline bounds, and point costs from 1 to 20.</p>}
+          {!creationWorldValid && <p className="inline-error" role="alert">{!creationStatsValid || !creationPointBudgetValid
+            ? "Review the point budget and attribute rules. Use distinct names, valid bounds, and point costs from 1 to 20."
+            : !creationHasValidStartingAllocation
+              ? "These rules cannot make a valid starting sheet. Adjust the available points or attribute limits."
+              : "Review the ability definitions, costs, and unique IDs."}</p>}
           </>}
           {creationError && <p className="inline-error" role="alert">{creationError}</p>}
           <div className="wizard-actions world-creation-actions">
@@ -3901,59 +3978,19 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <p className="field-note">Reusing a hero starts a new isolated adventure branch with a fresh sheet from the selected world. Other adventures, checks, and trackers are not copied.</p>
           <div className="wizard-actions">
             <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(1)}>Back</button>
-            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Build your hero <span>→</span></button>
+            <button className="primary-button" type="button" disabled={busy || !selectedSetupHero} onClick={() => { setLibraryError(""); setSetupStep(3); }}>Review adventure <span>→</span></button>
           </div>
         </section>}
-        {setupStep === 3 && <form className="story-hub-form story-start-adventure" onSubmit={(event) => void startAdventure(event)}>
-          <div className="story-hub-title"><span>03</span><div><strong>Build your hero and choose a story model</strong><small>Set starting attributes here. Setup does not send anything to a model.</small></div></div>
-          {selectedSetupWorld && selectedSetupHero && <p className="story-start-summary">{selectedSetupHero.label} · {selectedSetupWorld.name} · pinned world version {selectedSetupWorld.latest_version}</p>}
-            {selectedSetupCreation && <section className="character-creation-allocation" aria-labelledby="character-creation-heading">
-              <div className="story-hub-title"><span>03</span><div><strong id="character-creation-heading">Allocate starting attributes</strong><small>World-defined baselines, limits, and point costs.</small></div></div>
-              <div className="character-creation-allocation-list">
-                {selectedSetupStatDefinitions.map((stat) => {
-                  const value = adventureAllocation[stat.key] ?? stat.baseline;
-                  return <div className="character-creation-allocation-row" key={stat.key}>
-                    <span><strong>{stat.label}</strong><small>{stat.baseline} baseline · {stat.minimum}–{stat.maximum} · {stat.point_cost} point{stat.point_cost === 1 ? "" : "s"} per increase</small></span>
-                    <div><button type="button" className="secondary-button" aria-label={`Decrease ${stat.label}`} disabled={busy || value <= stat.minimum} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value - 1 }))}>−</button>
-                      <output aria-label={`${stat.label} allocation`}>{value}</output>
-                      <button type="button" className="secondary-button" aria-label={`Increase ${stat.label}`} disabled={busy || value >= stat.maximum || adventurePointsRemaining < stat.point_cost} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value + 1 }))}>+</button></div>
-                  </div>;
-                })}
-              </div>
-              <div className="character-creation-allocation-actions">
-                <button type="button" className="link-button" disabled={busy} onClick={resetAdventureAllocation}>Reset to baseline</button>
-                <button type="button" className="link-button" disabled={busy} onClick={randomizeAdventureAllocation}>Randomize</button>
-                <strong aria-live="polite">{adventurePointsRemaining} / {selectedSetupCreation.point_budget} points remaining</strong>
-              </div>
-              {adventureAllocationMessage && <p className="field-note" role="status">{adventureAllocationMessage}</p>}
-              <details className="character-creation-review">
-                <summary>Review final character sheet</summary>
-                <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {stat.baseline} baseline → {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
-              </details>
-              <p className="field-note" role="status" aria-live="polite">{adventurePointsRemaining < 0
-                ? "This allocation exceeds the world’s point budget. Reduce an attribute before continuing."
-                : adventurePointsRemaining > 0 && selectedSetupCreation.allow_unspent_points
-                  ? `You may leave these ${adventurePointsRemaining} point${adventurePointsRemaining === 1 ? "" : "s"} unspent or use them before starting.`
-                  : adventurePointsRemaining > 0
-                    ? `Spend all ${adventurePointsRemaining} remaining point${adventurePointsRemaining === 1 ? "" : "s"} before continuing.`
-                    : "All creation points are allocated."}</p>
-            </section>}
-            <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={selectedSetupWorld?.name || "First adventure"} maxLength={200} /></label>
-            <p className="story-start-summary" aria-live="polite">{selectedSetupWorld && selectedSetupHero
-              ? `Ready to play “${adventureName.trim() || selectedSetupWorld.name}” as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
-              : "Choose a world and protagonist to review your adventure."}</p>
-            <p className="field-note">You can choose or change the story-writing model after the adventure starts, under <strong>Writing settings</strong>.</p>
-            <div className="wizard-actions">
-              <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(2)}>Back</button>
-              <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Review and continue <span>→</span></button>
-            </div>
-        </form>}
-        {setupStep === 4 && <section className="story-hub-form">
-          <div className="story-hub-title"><span>04</span><div><strong>Review and start this adventure</strong><small>Confirm the world, hero, and starting sheet before play.</small></div></div>
+        {setupStep === 3 && <section className="story-hub-form story-start-adventure">
+          <div className="story-hub-title"><span>03</span><div><strong>Review and start</strong><small>Your world and hero are ready. You can customize starting attributes if you want.</small></div></div>
           <p className="story-start-summary" role="status">{selectedSetupWorld && selectedSetupHero
             ? `“${adventureName.trim() || selectedSetupWorld.name}” starts as ${selectedSetupHero.label} in ${selectedSetupWorld.name} · world v${selectedSetupWorld.latest_version}.`
             : "Choose a world and hero before starting."}</p>
-          {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review" open>
+          <details className="character-creation-rules">
+            <summary>Change adventure name (optional)</summary>
+            <label className="field-label">Adventure name<input value={adventureName} onChange={(event) => setAdventureName(event.target.value)} placeholder={selectedSetupWorld?.name || "First adventure"} maxLength={200} /></label>
+          </details>
+          {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review">
             <summary>Review hero identity · {selectedHeroProfileEntries.length} notes</summary>
             <dl>{selectedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
             <p className="field-note">Identity notes guide style only; you choose what the hero says and does. Hosted providers do not receive them.</p>
@@ -3968,14 +4005,44 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <p><strong>Immediate hook:</strong> {selectedSetupOpeningScene.hook}</p>
             <small className="field-note">This guides the first generated reply. You choose your hero’s response when you begin play.</small>
           </details>}
-          {selectedSetupCreation && <details className="character-creation-review" open>
-            <summary>Starting attributes · {adventurePointsSpent} / {selectedSetupCreation.point_budget} points spent</summary>
-            <ul>{selectedSetupStatDefinitions.map((stat) => <li key={stat.key}>{stat.label}: {adventureAllocation[stat.key] ?? stat.baseline}</li>)}</ul>
-          </details>}
+          {selectedSetupCreation && <>
+            <p className="field-note" role="status" aria-live="polite">{adventureAllocationValid
+              ? "Balanced starting attributes are ready. Open the option below only if you want to customize them."
+              : "This world needs a valid starting attribute allocation. Open the option below to adjust it."}</p>
+            <details className="character-creation-review">
+              <summary>Customize starting attributes · {adventurePointsSpent} of {selectedSetupCreation.point_budget} points used</summary>
+              <section className="character-creation-allocation" aria-labelledby="character-creation-heading">
+                <div className="story-hub-title"><div><strong id="character-creation-heading">Starting attributes</strong><small>World rules set the limits and point costs.</small></div></div>
+                <div className="character-creation-allocation-list">
+                  {selectedSetupStatDefinitions.map((stat) => {
+                    const value = adventureAllocation[stat.key] ?? stat.baseline;
+                    return <div className="character-creation-allocation-row" key={stat.key}>
+                      <span><strong>{stat.label}</strong><small>{stat.baseline} baseline · {stat.minimum}–{stat.maximum} · {stat.point_cost} point{stat.point_cost === 1 ? "" : "s"} per increase</small></span>
+                      <div><button type="button" className="secondary-button" aria-label={`Decrease ${stat.label}`} disabled={busy || value <= stat.minimum} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value - 1 }))}>−</button>
+                        <output aria-label={`${stat.label} allocation`}>{value}</output>
+                        <button type="button" className="secondary-button" aria-label={`Increase ${stat.label}`} disabled={busy || value >= stat.maximum || adventurePointsRemaining < stat.point_cost} onClick={() => setAdventureAllocation((current) => ({ ...current, [stat.key]: value + 1 }))}>+</button></div>
+                    </div>;
+                  })}
+                </div>
+                <div className="character-creation-allocation-actions">
+                  <button type="button" className="link-button" disabled={busy} onClick={resetAdventureAllocation}>Restore balanced defaults</button>
+                  <button type="button" className="link-button" disabled={busy} onClick={randomizeAdventureAllocation}>Try random attributes</button>
+                  <strong aria-live="polite">{adventurePointsRemaining} points remaining</strong>
+                </div>
+                {adventureAllocationMessage && <p className="field-note" role="status">{adventureAllocationMessage}</p>}
+                <p className="field-note" role="status" aria-live="polite">{adventurePointsRemaining < 0
+                  ? "This allocation exceeds the world’s point budget. Reduce an attribute before continuing."
+                  : adventurePointsRemaining > 0 && selectedSetupCreation.allow_unspent_points
+                    ? `You may leave these ${adventurePointsRemaining} point${adventurePointsRemaining === 1 ? "" : "s"} unspent or use them before starting.`
+                    : adventurePointsRemaining > 0
+                      ? `Spend all ${adventurePointsRemaining} remaining point${adventurePointsRemaining === 1 ? "" : "s"} before starting.`
+                      : "All creation points are allocated."}</p>
+              </section>
+            </details>
+          </>}
           <p className="field-note">Each start creates a fresh adventure branch and world-specific character sheet. Reusing a hero does not copy another adventure’s turns, checks, trackers, or memories.</p>
-          <p className="provider-note">Story model: {selectedStoryProvider?.label || providerId} · {model.trim() || "not selected"}{!storyProviderAvailable ? " · unavailable until configured" : ""}</p>
           <form className="wizard-actions" onSubmit={(event) => void startAdventure(event)}>
-            <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(3)}>Back to review</button>
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => setSetupStep(2)}>Back</button>
             <button className="primary-button" disabled={busy || !selectedSetupWorld || !selectedSetupContent || !selectedSetupHero || (!!selectedSetupCreation && !adventureAllocationValid)}>Start adventure <span>↗</span></button>
           </form>
         </section>}
@@ -4135,7 +4202,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       </details>}
       {libraryError && <p className="inline-error" role="alert">{libraryError}</p>}
       {branchId !== "main" && <p className="story-branch-note">This adventure is isolated from the main world. New adventures start from the latest main-workspace snapshot.</p>}
-    </section>
+      </div>
+    </details>
     <div className="story-grid">
       <section className="panel story-canvas">
         <div className="scene-topline"><span className="scene-indicator">WORLD</span><span>{activeAdventure ? `Adventure: ${activeAdventure.name}` : branchId === "main" ? "Main story" : "Legacy story"}</span></div>
@@ -4145,10 +4213,20 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             {conversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title} · {item.actor_label}</option>)}
           </select></label>
           {conversation && <span className="privacy-tag">{conversation.actor_is_user_controlled ? "PLAYER CONTROL" : "MODEL MAY NARRATE"}</span>}
-          {conversation && <button className="secondary-button" type="button" onClick={exportStory}>Export story JSON ↓</button>}
-          {conversation && <button className="secondary-button" type="button" onClick={() => setReaderOpen((open) => !open)}>{readerOpen ? "Close reader" : "Reader / print"}</button>}
         </div>
-        {conversation && <label className="control-choice story-history-toggle"><input type="checkbox" checked={showTurnHistory} onChange={(event) => setShowTurnHistory(event.target.checked)} /><span>Show edited, hidden, and superseded turn history</span></label>}
+        {conversation && <details className="story-session-options">
+          <summary>More story options</summary>
+          <div className="story-session-options-content">
+            <div className="story-session-actions">
+              <button className="secondary-button" type="button" onClick={() => setReaderOpen((open) => !open)}>{readerOpen ? "Close reader" : "Open reader / print"}</button>
+              <button className="secondary-button" type="button" onClick={exportStory}>Export story JSON ↓</button>
+            </div>
+            <label className="control-choice story-history-toggle"><input type="checkbox" checked={showTurnHistory} onChange={(event) => setShowTurnHistory(event.target.checked)} /><span>Show earlier versions and hidden turns</span></label>
+            <label className="control-choice"><input type="checkbox" checked={exportIncludesPrompts} onChange={(event) => setExportIncludesPrompts(event.target.checked)} /><span>Include my prompts in export</span></label>
+            <label className="control-choice"><input type="checkbox" checked={exportIncludesContext} onChange={(event) => setExportIncludesContext(event.target.checked)} /><span>Include character context details in export</span></label>
+            <small className="field-note">Story exports can contain private details. Review the file before sharing.</small>
+          </div>
+        </details>}
         {conversation && readerOpen && <section className="story-reader is-open" dir="auto">
           <div className="reader-toolbar"><span>Private local reader</span><button className="secondary-button" type="button" onClick={() => window.print()}>Print / save PDF</button></div>
           <h1>{conversation.title}</h1>
@@ -4161,11 +4239,6 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           </article>)}
           <small>Export preview contains active story turns and attached images. Imported author-only thoughts and metadata, context manifests, and private NPC notes are excluded.</small>
         </section>}
-        {conversation && <div className="story-export-options">
-          <label className="control-choice"><input type="checkbox" checked={exportIncludesPrompts} onChange={(event) => setExportIncludesPrompts(event.target.checked)} /><span>Include my prompts in export</span></label>
-          <label className="control-choice"><input type="checkbox" checked={exportIncludesContext} onChange={(event) => setExportIncludesContext(event.target.checked)} /><span>Include character context manifests in export</span></label>
-          <small className="field-note">Generated prose may repeat details from prompts even when prompts are omitted. Context manifests can reveal private character knowledge. Review the file before sharing.</small>
-        </div>}
         {!conversation && <form className="story-start-form" onSubmit={(event) => void startConversation(event)}>
           <div className="story-placeholder"><div className="story-sigil">✳</div><h2>Start a persistent story.</h2><p>Each turn is saved locally with its branch revision and the character context used to generate it.</p></div>
           {characters.length ? <>
@@ -4178,7 +4251,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         {conversation && <>
           <div className="story-turn-list" aria-live="polite">
             {conversation.turns.filter((turn) => showTurnHistory || turn.status === "active").length ? conversation.turns.filter((turn) => showTurnHistory || turn.status === "active").map((turn) => <article className={`story-turn ${turn.role} ${turn.status} ${turn.metadata?.context_excluded === true ? "author-only-turn" : ""}`} key={turn.turn_id}>
-              <div className="story-turn-label">{turn.role === "user" ? "You" : turn.metadata?.source_role === "npc" ? `NPC · ${String(turn.metadata.speaker || "Unknown")}` : turn.metadata?.source_role === "narrator" ? "MNO narrator" : turn.metadata?.source_role === "check" ? "MNO check narration" : turn.metadata?.context_excluded === true ? "Author-only MNO note" : `Story · ${turn.model || "local model"}`}<span>Order {turn.narrative_order}{turn.status !== "active" ? ` · ${turn.status}` : ""}</span></div>
+              <div className="story-turn-label">{turn.role === "user" ? "You" : turn.metadata?.source_role === "npc" ? `NPC · ${String(turn.metadata.speaker || "Unknown")}` : turn.metadata?.source_role === "narrator" ? "Narrator" : turn.metadata?.source_role === "check" ? "Check" : turn.metadata?.context_excluded === true ? "Author note" : "Story"}<span>{turn.status === "deleted" ? "Hidden" : turn.status === "superseded" ? "Earlier version" : ""}</span></div>
               {editingTurnId === turn.turn_id ? <form className="story-turn-edit" onSubmit={(event) => { event.preventDefault(); void saveTurnEdit(turn); }}>
                 <label className="field-label">Edit {turn.role === "user" ? "your direction" : "the saved response"}<textarea value={editedTurnText} onChange={(event) => setEditedTurnText(event.target.value)} rows={5} maxLength={20000} required /></label>
                 {turn.role === "user" && <small className="field-note">Saving a changed direction moves later active turns to history. You can continue from the corrected prompt.</small>}
@@ -4186,19 +4259,33 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </form> : turn.metadata?.context_excluded === true
                 ? <details className="story-private-turn"><summary>Show imported author-only content · excluded from future model context</summary><p dir="auto">{turn.content}</p></details>
                 : <p dir="auto">{turn.content}</p>}
-              {turn.status === "active" && <div className="story-turn-actions">
-                <button type="button" disabled={busy || generating} onClick={() => { setEditingTurnId(turn.turn_id); setEditedTurnText(turn.content); }}>Edit</button>
-                {turn.role === "assistant" && <button type="button" disabled={busy || generating || !model.trim() || !storyProviderAvailable} onClick={() => void retryStoryTurn(turn)}>Retry</button>}
-                <button type="button" disabled={busy || generating} onClick={() => void deleteStoryTurn(turn)}>Hide</button>
-                {turn.role === "assistant" && activeAdventure && studioData?.memories.memories.some((memory) => memory.kind === "event" && memory.source_turn_id === turn.turn_id) && <small>Scene memory proposal is available in the Memories panel.</small>}
-              </div>}
+              {turn.role === "assistant" && rpgState?.mechanic_checks.filter((check) => check.source_turn_id === turn.turn_id).map((check) => {
+                const skill = rpgState.mechanics.skills.find((item) => item.skill_id === check.skill_id);
+                const difficulty = rpgState.mechanics.difficulties.find((item) => item.difficulty_id === check.difficulty_id);
+                const subject = skill?.label || activeStatLabel(check.stat_name);
+                const modifier = check.modifier >= 0 ? `+${check.modifier}` : String(check.modifier);
+                return <div className={`story-check-result ${check.outcome}`} key={check.check_id} role="group"
+                  aria-label={`Automatic check ${check.outcome}: ${subject}, ${difficulty?.label || "difficulty"}`}>
+                  <strong>{check.outcome === "success" ? "Success" : "Failure"} · {subject} · {difficulty?.label || "Check"}</strong>
+                  <small>Dice {check.dice.join(", ")} · modifier {modifier} · total {check.total} · target {check.target}</small>
+                </div>;
+              })}
+              {turn.status === "active" && <details className="story-turn-options">
+                <summary>Turn options</summary>
+                <div className="story-turn-actions">
+                  <button type="button" disabled={busy || generating} onClick={() => { setEditingTurnId(turn.turn_id); setEditedTurnText(turn.content); }}>Edit</button>
+                  {turn.role === "assistant" && <button type="button" disabled={busy || generating || !model.trim() || !storyProviderAvailable} onClick={() => void retryStoryTurn(turn)}>Try again</button>}
+                  <button type="button" disabled={busy || generating} onClick={() => void deleteStoryTurn(turn)}>Hide</button>
+                  {turn.role === "assistant" && activeAdventure && studioData?.memories.memories.some((memory) => memory.kind === "event" && memory.source_turn_id === turn.turn_id) && <small>A story memory suggestion is ready to review in Adventure details &amp; tools.</small>}
+                </div>
+              </details>}
               {studioData?.assets.filter((asset) => asset.target_kind === "scene" && asset.target_id === turn.turn_id).map((asset) => assetData[asset.asset_id] && <img className="story-turn-art" key={asset.asset_id} src={assetData[asset.asset_id]} alt={asset.display_name} />)}
-              {turn.role === "assistant" && <>
-                {turn.metadata?.source_format === "mno-adv"
-                  ? <small>Imported MNO message · preserved as story text; it is not a verified world-state change.</small>
-                  : <small>Generated from revision {turn.context_revision}; prose is saved, world facts are unchanged.</small>}
-                {turn.context_manifest && <details className="story-context-details">
-                  <summary>Context used · {turn.context_manifest.included.length} reviewed facts · {turn.context_manifest.excluded.length} excluded</summary>
+              {turn.role === "assistant" && <details className="story-context-details">
+                  <summary>{turn.metadata?.source_format === "mno-adv" ? "Imported turn details" : "Turn details"}{turn.context_manifest ? ` · ${turn.context_manifest.included.length} reviewed facts · ${turn.context_manifest.excluded.length} excluded` : ""}</summary>
+                  <p>{turn.metadata?.source_format === "mno-adv"
+                    ? "Imported story text. It does not change the adventure state."
+                    : "Saved story text. World facts change only after you review a suggestion."}</p>
+                  {turn.context_manifest && <>
                   {turn.context_manifest.included.map((fact) => <div className="story-context-fact" key={fact.claim_id}>
                     <strong>{fact.subject} · {fact.predicate} {fact.object}</strong>
                     <small>{fact.actor_stance} · {fact.evidence_ids.length} linked sources</small>
@@ -4223,14 +4310,14 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                     {(turn.context_manifest.story.public_npcs ?? []).map((npc) => <small key={npc.entity_id}>Approved NPC · {npc.name} · {JSON.stringify(npc.profile)}</small>)}
                   </div>}
                   {turn.context_manifest.excluded.length === 0 && <small className="story-context-exclusions">Manifest {turn.context_manifest.manifest_id}</small>}
+                  </>}
                 </details>}
-              </>}
             </article>) : <div className="story-placeholder compact"><div className="story-sigil">✳</div><h2>Your story is ready.</h2><p>Describe what happens next, and Lorethra will continue the scene.</p></div>}
           </div>
           <form className="story-compose-form" onSubmit={(event) => void generateStoryTurn(event)}>
             <label className="field-label story-direction-label">What happens next?<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={4000} placeholder="Describe a moment, a question, or what your hero does." required /></label>
             <details className="story-writing-settings">
-              <summary><span>Writing settings</span><small>{selectedStoryProvider?.label || "Choose a model"} · {model === "auto" ? "Default model" : model || "Model not selected"}{reasoningEffort ? ` · ${reasoningEffort} reasoning` : ""}</small></summary>
+              <summary><span>Writing settings</span><small>{selectedStoryProvider?.label || "Choose a model"} · {model === "auto" ? "Default model" : model || "Model not selected"}{effectiveCodexReasoningEffort ? ` · ${effectiveCodexReasoningEffort} reasoning` : ""}</small></summary>
               <div className="story-writing-settings-body">
                 <div className="story-provider-fields">
                   <label className="field-label">AI provider<select aria-label="AI provider" value={providerId} onChange={(event) => changeStoryProvider(event.target.value as StoryProvider["id"])} disabled={generating || memoryQuerying}>
@@ -4250,6 +4337,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   <button className="secondary-button" type="button" disabled={modelDiscoveryBusy || generating || memoryQuerying} onClick={() => void loadProviderModels()}>{modelDiscoveryBusy ? "Loading models…" : providerId === "codex" ? "Refresh Codex models" : "Load available models"}</button>
                   <small className="provider-note">{providerId === "codex" ? "Reads the Codex model list without sending story text." : "Requests the provider model list using its configured API key."}</small>
                   {modelDiscoveryError && <p className="inline-error" role="alert">{modelDiscoveryError}</p>}
+                  {modelDiscoveryNotice && <p className="provider-note" role="status" aria-live="polite">{modelDiscoveryNotice}</p>}
                 </div>}
                 {codexReasoningControl("Reasoning effort", generating || memoryQuerying)}
                 {selectedStoryProvider && <p className="provider-note">{selectedStoryProvider.setup} {selectedStoryProvider.local ? "Story requests stay on this device." : "Before sending, Lorethra asks what story details will leave this device. Provider terms and charges may apply."}</p>}
@@ -4268,11 +4356,21 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </>}
         {storyError && <p className="inline-error" role="alert">{storyError}</p>}
       </section>
+      <details className="story-adventure-tools">
+        <summary className="story-adventure-tools-summary">
+          <span><strong>Adventure details &amp; tools</strong><small>{activeAdventure
+            ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} · ${rpgState?.sheet?.current_location || "Location not set"} · ${rpgState?.sheet?.experience.total_xp.toLocaleString() ?? 0} XP${rpgState?.sheet?.experience.mode === "manual" ? " · manual rules" : " · automatic rewards"}`
+            : "Character, memory, map, and story details"}</small></span>
+          {pendingRpgReviewCount + pendingMemoryReviewCount > 0 && <span className="story-review-count" role="status" aria-live="polite">{pendingRpgReviewCount + pendingMemoryReviewCount} to review</span>}
+        </summary>
       <div className="story-side-panels">
       <section className="panel rpg-state-panel">
-        <div className="panel-heading"><div><h2>Character & game state</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name} v${activeAdventure.world_version}` : "State appears here when you play a world-based adventure."}</p></div><span className="privacy-tag">{rpgState?.mechanics.mode.replaceAll("_", " ") || "RPG"}</span></div>
+        <div className="panel-heading"><div><h2>Your adventure</h2><p>{activeAdventure ? `${activeAdventure.actor_label} · ${activeAdventure.world_name}` : "Start an adventure to see your character here."}</p></div></div>
         {activeAdventure && rpgState?.sheet ? <>
           <div className="rpg-location"><small>Current location</small><strong dir="auto">{rpgState.sheet.current_location || "Not set"}</strong></div>
+          <details className="rpg-character-details">
+            <summary><span>Character details</span><small>{rpgState.sheet.experience.total_xp.toLocaleString()} XP · {rpgState.sheet.experience.mode === "manual" ? "manual" : "automatic"}{pendingRpgReviewCount ? ` · ${pendingRpgReviewCount} ${pendingRpgReviewCount === 1 ? "suggestion" : "suggestions"} to review` : ""}</small></summary>
+            <div className="rpg-character-details-content">
           {activeAdventureHero && <details className="rpg-edit-stats rpg-hero-identity">
             <summary>Hero identity</summary>
             <p className="field-note">Notes guide local identity and voice without overriding story controls. This adventure keeps its own copy; edits do not affect your reusable hero or other adventures. Hosted providers do not receive these notes.</p>
@@ -4311,8 +4409,8 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {rpgState.mechanics.skills.length > 0 && <details className="rpg-edit-stats"><summary>Skills and proficiency · {rpgState.mechanics.skills.length}</summary>
             <form onSubmit={(event) => void saveRpgSkills(event)}>{rpgState.mechanics.skills.map((skill) => <label className="field-label" key={skill.skill_id}>{skill.label} · {skill.attribute || "no governing stat"}<input type="number" min={0} max={skill.max_rank} value={editableSkills[skill.skill_id] ?? skill.starting_rank} onChange={(event) => setEditableSkills((ranks) => ({ ...ranks, [skill.skill_id]: Number(event.target.value) }))} /><small>Rank {editableSkills[skill.skill_id] ?? skill.starting_rank} · +{skill.rank_bonus} per rank</small></label>)}<button className="secondary-button full-button" disabled={busy}>Save skill ranks</button></form>
           </details>}
-          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "Manual awards" : `${rpgState.sheet.experience.automatic_xp.toLocaleString()} automatic XP · ${rpgState.sheet.experience.per_completed_turn} per completed player turn`}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} manual` : ""}</small>
-            {rpgState.mechanics.experience.allow_manual_awards && <form className="rpg-check-fields" onSubmit={(event) => void awardExperience(event)}><label className="field-label">Manual XP award<input type="number" min={1} max={1_000_000} step={1} value={experienceAward} onChange={(event) => setExperienceAward(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy || rpgState.sheet.experience.total_xp >= rpgState.sheet.experience.maximum_xp}>Award XP</button></form>}
+          <section className="rpg-experience-card"><div><strong>Experience</strong><b>{rpgState.sheet.experience.total_xp.toLocaleString()} / {rpgState.sheet.experience.maximum_xp.toLocaleString()} XP</b></div><small>{rpgState.sheet.experience.mode === "manual" ? "This world version keeps its original manual XP rules." : `${rpgState.sheet.experience.automatic_xp.toLocaleString()} XP awarded automatically · ${rpgState.sheet.experience.per_completed_turn} per completed player turn`}{rpgState.sheet.experience.manual_awards ? ` · ${rpgState.sheet.experience.manual_awards} added manually` : ""}</small>
+            {rpgState.mechanics.experience.allow_manual_awards && <form className="rpg-check-fields" onSubmit={(event) => void awardExperience(event)}><label className="field-label">Add XP manually<input type="number" min={1} max={1_000_000} step={1} value={experienceAward} onChange={(event) => setExperienceAward(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy || rpgState.sheet.experience.total_xp >= rpgState.sheet.experience.maximum_xp}>Add XP</button></form>}
           </section>
           {rpgState.sheet.abilities.length > 0 && <section className="rpg-ability-list" aria-labelledby="rpg-abilities-heading">
             <strong id="rpg-abilities-heading">Exceptional abilities</strong>
@@ -4345,20 +4443,23 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </article>;
             })}
           </section>}
-          {rpgState.mechanics.mode === "narrative_only" ? <div className="rpg-check-form"><strong>Narrative-only resolution</strong><p>Checks are resolved through the scene. No dice or hidden numerical roll is added.</p></div> : <form className="rpg-check-form" onSubmit={(event) => void rollMechanicsCheck(event)}>
-            <div className="story-hub-title"><span>🎲</span><div><strong>Resolve a check</strong><small>{rpgState.mechanics.mode === "hybrid" ? "Roll with the pinned rules or continue narratively." : `${rpgState.mechanics.dice.count}d${rpgState.mechanics.dice.sides} · ${rpgState.mechanics.dice.resolution.replaceAll("_", " ")}`}</small></div></div>
-            <div className="rpg-check-fields">
-              <label className="field-label">Encounter<select value={rpgState.mechanics.encounter_types.some((item) => item.encounter_type === checkEncounter) ? checkEncounter : rpgState.mechanics.encounter_types[0]?.encounter_type || ""} onChange={(event) => setCheckEncounter(event.target.value)}>{rpgState.mechanics.encounter_types.map((item) => <option key={item.encounter_type} value={item.encounter_type}>{item.label}</option>)}</select></label>
-              <label className="field-label">Skill<select value={checkSkill} onChange={(event) => setCheckSkill(event.target.value)}><option value="">No skill</option>{rpgState.mechanics.skills.map((item) => <option key={item.skill_id} value={item.skill_id}>{item.label} · rank {rpgState.sheet!.skills[item.skill_id] ?? item.starting_rank}</option>)}</select></label>
-              <label className="field-label">Attribute<select value={rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute || checkStat || (rpgState.mechanics.dice.include_attribute ? Object.keys(rpgState.sheet.stats)[0] : "")} disabled={!!rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute} onChange={(event) => setCheckStat(event.target.value)}>
-                {(!rpgState.mechanics.dice.include_attribute || (checkSkill && !rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute)) && <option value="">None</option>}{Object.keys(rpgState.sheet.stats).map((name) => <option key={name} value={name}>{activeStatLabel(name)}</option>)}
-              </select></label>
-              <label className="field-label">Difficulty<select value={rpgState.mechanics.difficulties.some((item) => item.difficulty_id === checkDifficulty) ? checkDifficulty : rpgState.mechanics.difficulties[0]?.difficulty_id || ""} onChange={(event) => setCheckDifficulty(event.target.value)}>{rpgState.mechanics.difficulties.map((item) => <option key={item.difficulty_id} value={item.difficulty_id}>{item.label} · {item.target}</option>)}</select></label>
-            </div>
-            <button className="secondary-button full-button" disabled={busy || generating}>Roll using pinned rules</button>
-          </form>}
-          {rpgState.mechanic_checks[0] && <div className={`rpg-last-check ${rpgState.mechanic_checks[0].outcome}`}><strong>Last world-rule check · {rpgState.mechanic_checks[0].outcome}</strong><span>{rpgState.mechanic_checks[0].dice.join(", ")} · {rpgState.mechanic_checks[0].resolution.replaceAll("_", " ")} · +{rpgState.mechanic_checks[0].modifier} = {rpgState.mechanic_checks[0].total} vs {rpgState.mechanic_checks[0].target}</span></div>}
-          {rpgState.checks[0] && <div className={`rpg-last-check ${rpgState.checks[0].outcome}`}><strong>Legacy d20 result · {rpgState.checks[0].outcome}</strong><span>{rpgState.checks[0].die_roll} + {rpgState.checks[0].modifier} = {rpgState.checks[0].total} vs {rpgState.checks[0].target}</span></div>}
+          {rpgState.mechanics.mode === "narrative_only" ? <p className="field-note">This adventure resolves uncertain moments through the story.</p> : <details className="manual-check-details">
+            <summary>Roll a separate check (advanced)</summary>
+            <p className="field-note">{rpgState.automatic_checks_enabled ? "Lorethra rolls for risky actions automatically. Use this only when you want an additional check." : "This world version keeps its original check rules. Use this when you want a separate check."}</p>
+            <form className="rpg-check-form" onSubmit={(event) => void rollMechanicsCheck(event)}>
+              <div className="rpg-check-fields">
+                <label className="field-label">Encounter<select value={rpgState.mechanics.encounter_types.some((item) => item.encounter_type === checkEncounter) ? checkEncounter : rpgState.mechanics.encounter_types[0]?.encounter_type || ""} onChange={(event) => setCheckEncounter(event.target.value)}>{rpgState.mechanics.encounter_types.map((item) => <option key={item.encounter_type} value={item.encounter_type}>{item.label}</option>)}</select></label>
+                <label className="field-label">Skill<select value={checkSkill} onChange={(event) => setCheckSkill(event.target.value)}><option value="">No skill</option>{rpgState.mechanics.skills.map((item) => <option key={item.skill_id} value={item.skill_id}>{item.label} · rank {rpgState.sheet!.skills[item.skill_id] ?? item.starting_rank}</option>)}</select></label>
+                <label className="field-label">Attribute<select value={rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute || checkStat || (rpgState.mechanics.dice.include_attribute ? Object.keys(rpgState.sheet.stats)[0] : "")} disabled={!!rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute} onChange={(event) => setCheckStat(event.target.value)}>
+                  {(!rpgState.mechanics.dice.include_attribute || (checkSkill && !rpgState.mechanics.skills.find((item) => item.skill_id === checkSkill)?.attribute)) && <option value="">None</option>}{Object.keys(rpgState.sheet.stats).map((name) => <option key={name} value={name}>{activeStatLabel(name)}</option>)}
+                </select></label>
+                <label className="field-label">Difficulty<select value={rpgState.mechanics.difficulties.some((item) => item.difficulty_id === checkDifficulty) ? checkDifficulty : rpgState.mechanics.difficulties[0]?.difficulty_id || ""} onChange={(event) => setCheckDifficulty(event.target.value)}>{rpgState.mechanics.difficulties.map((item) => <option key={item.difficulty_id} value={item.difficulty_id}>{item.label} · {item.target}</option>)}</select></label>
+              </div>
+              <button className="secondary-button full-button" disabled={busy || generating}>Roll using pinned rules</button>
+            </form>
+          </details>}
+          {lastManualMechanicCheck && <div className={`rpg-last-check ${lastManualMechanicCheck.outcome}`}><strong>Last manual check · {lastManualMechanicCheck.outcome}</strong><span>{lastManualMechanicCheck.dice.join(", ")} · bonus {lastManualMechanicCheck.modifier >= 0 ? "+" : ""}{lastManualMechanicCheck.modifier} · total {lastManualMechanicCheck.total} · target {lastManualMechanicCheck.target}</span></div>}
+          {rpgState.checks[0] && <div className={`rpg-last-check ${rpgState.checks[0].outcome}`}><strong>Last manual check · {rpgState.checks[0].outcome}</strong><span>Roll {rpgState.checks[0].die_roll} · bonus {rpgState.checks[0].modifier >= 0 ? "+" : ""}{rpgState.checks[0].modifier} · total {rpgState.checks[0].total} · target {rpgState.checks[0].target}</span></div>}
           <details className="rpg-proposal-section">
             <summary>State changes for review · {rpgState.proposals.filter((item) => item.review_status === "proposed").length} pending</summary>
             <form className="rpg-proposal-form" onSubmit={(event) => void proposeRpgChange(event)}>
@@ -4384,11 +4485,15 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               </>}
             </article>)}
           </details>
+            </div>
+          </details>
         </> : <p className="empty-hint">Start an adventure from a world to get a character sheet, trackers, and checks using its pinned mechanics.</p>}
         {rpgError && <p className="inline-error" role="alert">{rpgError}</p>}
       </section>
       {activeAdventure && studioData && <details className="panel story-detail-panel">
-        <summary><strong>Memories</strong><small>Notes, reviewed event memories, current situation, and open threads</small></summary>
+          <summary><strong>Memories</strong><small>{pendingMemoryReviewCount
+            ? `${pendingMemoryReviewCount} ${pendingMemoryReviewCount === 1 ? "suggestion" : "suggestions"} to review`
+            : "Save details and open questions"}</small></summary>
         <div className="story-detail-content">
           <form className="story-mini-form" onSubmit={(event) => void saveMemoryNote(event)}>
             <label className="field-label">Player note<textarea value={memoryNote} onChange={(event) => setMemoryNote(event.target.value)} rows={2} maxLength={4000} placeholder="A detail you want to keep for this adventure" /></label>
@@ -4512,7 +4617,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </div>
       </details>}
       {activeAdventure && rpgState?.sheet && <details className="panel story-detail-panel">
-        <summary><strong>Map & travel</strong><small>{rpgState.sheet.current_location || "Location not set"} · pinned world version {activeAdventure.world_version}</small></summary>
+        <summary><strong>Map & travel</strong><small>{rpgState.sheet.current_location || "Location not set"}</small></summary>
         <div className="story-detail-content">
           <p className="field-note">Travel changes the current location only when you choose an approved map point. Model-suggested locations remain proposals.</p>
           {approvedMapLocations.length
@@ -4594,8 +4699,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         </div>}
       </section>
       </div>
+      </details>
     </div>
-    <ExternalExchangePanel workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onCommit={onCommit} />
+    <details className="story-secondary-import">
+      <summary>Import an older conversation</summary>
+      <ExternalExchangePanel workspaceId={workspaceId} branchId={branchId} revision={revision} busy={busy} onCommit={onCommit} />
+    </details>
   </>;
 }
 

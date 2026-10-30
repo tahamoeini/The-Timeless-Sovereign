@@ -323,8 +323,10 @@ def _command_request_hash(request: dict[str, Any]) -> str:
     if stable_request["command_type"] == "append_story_turn":
         stable_payload = dict(stable_request["payload"])
         stable_payload.pop("assistant_content", None)
+        stable_payload.pop("automatic_story_variants", None)
         stable_payload.pop("context_manifest_id", None)
         stable_payload.pop("context_manifest", None)
+        stable_payload.pop("automatic_mechanic_check", None)
         stable_request["payload"] = stable_payload
     if stable_request["command_type"] == "edit_story_turn" and stable_request["payload"].get("provider") == "ollama":
         stable_payload = dict(stable_request["payload"])
@@ -943,7 +945,7 @@ def _resolve_story_mechanics_check(
 def _validated_story_mechanic_check(check: Any, mechanics: dict[str, Any]) -> dict[str, Any]:
     fields = {"check_id", "encounter_type", "stat_name", "skill_id", "dice_rolls", "resolution",
               "modifier", "total", "target", "difficulty_id", "outcome", "rules", "created_at"}
-    if not isinstance(check, dict) or set(check) != fields:
+    if not isinstance(check, dict) or frozenset(check) not in {frozenset(fields), frozenset(fields | {"source_turn_id"})}:
         raise ValidationError("Mechanic check contains unsupported or missing fields")
     check_id = _required_text(check["check_id"], "check_id", 100)
     payload = {
@@ -989,6 +991,8 @@ def _validated_story_mechanic_check(check: Any, mechanics: dict[str, Any]) -> di
         raise ValidationError("Mechanic check math does not match its recorded rules snapshot")
     return {
         "check_id": check_id, "encounter_type": expected["encounter_type"],
+        "source_turn_id": _required_text(check["source_turn_id"], "source_turn_id", 100)
+        if check.get("source_turn_id") is not None else None,
         "stat_name": expected["stat_name"], "skill_id": expected["skill_id"],
         "dice_rolls": expected["dice_rolls"], "resolution": expected["resolution"],
         "modifier": expected["modifier"], "total": expected["total"],
@@ -1354,6 +1358,11 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
     mechanic_check_ids: set[str] = set()
     for check in raw_mechanic_checks:
         clean_check = _validated_story_mechanic_check(check, mechanics)
+        if clean_check["source_turn_id"] is not None:
+            source_turn = next((turn for turn in clean_turns
+                                if turn["turn_id"] == clean_check["source_turn_id"]), None)
+            if source_turn is None or source_turn["role"] != "assistant":
+                raise ValidationError("Mechanic check source must reference an assistant turn in this adventure")
         if clean_check["check_id"] in check_ids or clean_check["check_id"] in mechanic_check_ids:
             raise ValidationError("Mechanic check IDs must be unique across an adventure")
         mechanic_check_ids.add(clean_check["check_id"])
@@ -1759,6 +1768,16 @@ def _selected_adventure_export(package: dict[str, Any], selection: Any) -> dict[
         "thread_ids": ("threads", "thread_id"), "npc_entity_ids": ("npcs", "npc_entity_id"),
         "asset_ids": ("assets", "asset_id"), "location_ids": ("locations", "location_id"),
     }
+    selected_mechanic_ids = selected_ids["mechanic_check_ids"]
+    if selected_mechanic_ids:
+        selected_mechanics = [check for check in adventure["mechanic_checks"]
+                              if check["check_id"] in selected_mechanic_ids]
+        needed_turn_ids = {check["source_turn_id"] for check in selected_mechanics
+                           if check.get("source_turn_id") is not None}
+        for index, turn in enumerate(adventure["turns"]):
+            if turn["turn_id"] in needed_turn_ids and index > 0 and adventure["turns"][index - 1]["role"] == "user":
+                needed_turn_ids.add(adventure["turns"][index - 1]["turn_id"])
+        selected_ids["turn_ids"].update(needed_turn_ids)
     for selection_key, (record_key, id_key) in table_keys.items():
         available = {row[id_key] for row in adventure[record_key]}
         unknown = selected_ids[selection_key] - available
@@ -2106,10 +2125,10 @@ def _import_adventure_records(
           check["outcome"], revision, check["created_at"]) for check in data["checks"]],
     )
     connection.executemany(
-        "INSERT INTO rpg_mechanic_checks(workspace_id,branch_id,check_id,adventure_id,conversation_id,actor_entity_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO rpg_mechanic_checks(workspace_id,branch_id,check_id,adventure_id,conversation_id,actor_entity_id,source_turn_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(workspace_id, branch_id, check["check_id"], adventure_id, conversation_id, actor_entity_id,
-          check["encounter_type"], check["stat_name"], check["skill_id"], _json(check["dice_rolls"]),
+          check["source_turn_id"], check["encounter_type"], check["stat_name"], check["skill_id"], _json(check["dice_rolls"]),
           check["resolution"], check["modifier"], check["total"], check["target"], check["difficulty_id"],
           check["outcome"], _json(check["rules"]), revision, check["created_at"])
          for check in data["mechanic_checks"]],
@@ -2232,7 +2251,7 @@ _BRANCH_SNAPSHOT_TABLES = (
     ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at"),
     ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at,location_type,description,icon,x,y"),
     ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at"),
-    ("rpg_mechanic_checks", "check_id,adventure_id,conversation_id,actor_entity_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at"),
+    ("rpg_mechanic_checks", "check_id,adventure_id,conversation_id,actor_entity_id,source_turn_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at"),
     ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at"),
     ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at"),
     ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at"),
@@ -2338,7 +2357,7 @@ def _promote_branch_snapshot(
         ("story_assets", "adventure_id,asset_id,target_kind,target_id,display_name,mime_type,content,provenance_json,created_revision,created_at", None, (), ("created_revision",), "adventure_id,asset_id"),
         ("story_map_locations", "adventure_id,location_id,name,status,source_proposal_id,created_revision,reviewed_revision,created_at,location_type,description,icon,x,y", "adventure_id,location_id", ("name", "status", "source_proposal_id", "reviewed_revision", "location_type", "description", "icon", "x", "y"), ("created_revision", "reviewed_revision"), "adventure_id,location_id"),
         ("rpg_checks", "check_id,adventure_id,conversation_id,actor_entity_id,stat_name,die_roll,modifier,total,target,outcome,created_revision,created_at", None, (), ("created_revision",), "check_id"),
-        ("rpg_mechanic_checks", "check_id,adventure_id,conversation_id,actor_entity_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at", None, (), ("created_revision",), "check_id"),
+        ("rpg_mechanic_checks", "check_id,adventure_id,conversation_id,actor_entity_id,source_turn_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at", None, (), ("created_revision",), "check_id"),
         ("rpg_state_proposals", "proposal_id,adventure_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at", "proposal_id", ("review_status", "reviewed_revision"), ("created_revision", "reviewed_revision"), "proposal_id"),
         ("external_exchanges", "exchange_id,transcript_id,context_manifest_id,base_revision,from_turn,to_turn,transcript_total_turns,transcript_hash,context_manifest_json,turns_json,proposed_change_ids_json,created_revision,created_at", None, (), ("created_revision",), "exchange_id"),
         ("journal_events", "event_id,version,title,details,participants_json,temporal_kind,occurred_from,occurred_to,time_note,source_id,source_quote,supersedes_version,created_revision,created_at", None, (), ("created_revision",), "event_id,version"),
@@ -4793,7 +4812,6 @@ class CommandGateway:
         if command_type == "append_story_turn":
             conversation_id = _required_text(payload.get("conversation_id"), "conversation_id", 100)
             user_content = _required_text(payload.get("user_content"), "user_content", 4000)
-            assistant_content = _required_text(payload.get("assistant_content"), "assistant_content", 20000)
             provider = payload.get("provider")
             if provider not in _ALLOWED_STORY_PROVIDERS:
                 raise ValidationError("The story turn uses an unsupported provider")
@@ -4825,6 +4843,52 @@ class CommandGateway:
                 raise NotFoundError("Story conversation does not exist in this branch")
             if context_manifest["actor"].get("entity_id") != conversation["actor_entity_id"]:
                 raise ValidationError("Story context manifest does not match the conversation character")
+            automatic_check_request = payload.get("automatic_mechanic_check")
+            automatic_story_variants = payload.get("automatic_story_variants")
+            resolved_automatic_check = None
+            if automatic_check_request is not None:
+                check_fields = {"encounter_type", "difficulty_id", "stat_name", "skill_id", "dice_rolls"}
+                if not isinstance(automatic_check_request, dict) or set(automatic_check_request) != check_fields:
+                    raise ValidationError("Automatic mechanic check contains unsupported or missing fields")
+                if not isinstance(automatic_story_variants, dict) or set(automatic_story_variants) != {"success", "failure"}:
+                    raise ValidationError("Automatic mechanic check needs success and failure story text")
+                automatic_story_variants = {
+                    outcome: _required_text(automatic_story_variants[outcome], f"{outcome} story text", 20000)
+                    for outcome in ("success", "failure")
+                }
+                adventure = connection.execute(
+                    "SELECT adventure_id,world_id,world_version,conversation_id,actor_entity_id "
+                    "FROM story_adventures WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
+                    (workspace_id, branch_id, conversation_id),
+                ).fetchone()
+                if not adventure:
+                    raise ValidationError("Automatic mechanic checks require a world-based adventure")
+                sheet = connection.execute(
+                    "SELECT stats_json,skills_json FROM rpg_sheets "
+                    "WHERE workspace_id=? AND branch_id=? AND adventure_id=?",
+                    (workspace_id, branch_id, adventure["adventure_id"]),
+                ).fetchone()
+                world = connection.execute(
+                    "SELECT content_json FROM story_world_versions "
+                    "WHERE workspace_id=? AND world_id=? AND version=?",
+                    (workspace_id, adventure["world_id"], adventure["world_version"]),
+                ).fetchone()
+                if not sheet or not world:
+                    raise ValidationError("Automatic mechanic check is missing its pinned sheet or world rules")
+                world_content = json.loads(world["content_json"])
+                mechanics = _validated_story_mechanics(world_content)
+                if not isinstance(world_content.get("game_mechanics"), dict) or mechanics["mode"] == "narrative_only":
+                    raise ValidationError("Automatic checks are not enabled by this pinned world version")
+                resolved_automatic_check = _resolve_story_mechanics_check(
+                    mechanics, json.loads(sheet["stats_json"]),
+                    _validated_story_skill_ranks(world_content, json.loads(sheet["skills_json"])),
+                    automatic_check_request,
+                )
+                assistant_content = automatic_story_variants[resolved_automatic_check["outcome"]]
+            else:
+                if automatic_story_variants is not None:
+                    raise ValidationError("Story branches require an automatic mechanic check")
+                assistant_content = _required_text(payload.get("assistant_content"), "assistant_content", 20000)
             turn_order = connection.execute(
                 "SELECT COALESCE(MAX(turn_order)+1,0) AS next_order FROM story_turns "
                 "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
@@ -4840,6 +4904,26 @@ class CommandGateway:
                     (workspace_id, branch_id, conversation_id, assistant_turn_id, turn_order + 1, "assistant", narrative_order, assistant_content, provider, model, context_manifest_id, _json(context_manifest), context_revision, revision, now),
                 ],
             )
+            mechanic_check_record = None
+            if resolved_automatic_check is not None:
+                check_id = str(uuid4())
+                connection.execute(
+                    "INSERT INTO rpg_mechanic_checks(workspace_id,branch_id,check_id,adventure_id,conversation_id,actor_entity_id,source_turn_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (workspace_id, branch_id, check_id, adventure["adventure_id"], conversation_id,
+                     adventure["actor_entity_id"], assistant_turn_id, resolved_automatic_check["encounter_type"],
+                     resolved_automatic_check["stat_name"], resolved_automatic_check["skill_id"],
+                     _json(resolved_automatic_check["dice_rolls"]), resolved_automatic_check["resolution"],
+                     resolved_automatic_check["modifier"], resolved_automatic_check["total"],
+                     resolved_automatic_check["target"], resolved_automatic_check["difficulty_id"],
+                     resolved_automatic_check["outcome"], _json(resolved_automatic_check["rules"]), revision, now),
+                )
+                mechanic_check_record = {
+                    **resolved_automatic_check, "check_id": check_id,
+                    "adventure_id": adventure["adventure_id"], "conversation_id": conversation_id,
+                    "actor_entity_id": adventure["actor_entity_id"], "source_turn_id": assistant_turn_id,
+                    "created_revision": revision, "created_at": now,
+                }
             connection.execute(
                 "UPDATE story_conversations SET updated_revision=?,updated_at=? "
                 "WHERE workspace_id=? AND branch_id=? AND conversation_id=?",
@@ -4868,6 +4952,7 @@ class CommandGateway:
                 "model": model,
                 "context_manifest_id": context_manifest_id,
                 "context_revision": context_revision,
+                "mechanic_check": mechanic_check_record,
             }, "story.turn_recorded", True
 
         if command_type == "import_exchange":
@@ -5972,7 +6057,7 @@ class CommandGateway:
                 (workspace_id, branch_id, adventure_id),
             ).fetchall()
             mechanic_checks = self.db.connection.execute(
-                "SELECT check_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_at "
+                "SELECT check_id,source_turn_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_at "
                 "FROM rpg_mechanic_checks WHERE workspace_id=? AND branch_id=? AND adventure_id=? "
                 "ORDER BY created_revision,check_id",
                 (workspace_id, branch_id, adventure_id),
@@ -6083,7 +6168,7 @@ class CommandGateway:
                           for row in turns], "turn_edits": [dict(row) for row in edits],
                 "checks": [dict(row) for row in checks],
                 "mechanic_checks": [
-                    {**{key: row[key] for key in ("check_id", "encounter_type", "stat_name", "skill_id", "resolution", "modifier", "total", "target", "difficulty_id", "outcome", "created_at")},
+                    {**{key: row[key] for key in ("check_id", "source_turn_id", "encounter_type", "stat_name", "skill_id", "resolution", "modifier", "total", "target", "difficulty_id", "outcome", "created_at")},
                      "dice_rolls": json.loads(row["dice_json"]), "rules": json.loads(row["rules_json"])}
                     for row in mechanic_checks
                 ],
@@ -6575,13 +6660,43 @@ class CommandGateway:
                 check_query + " ORDER BY created_revision DESC LIMIT 50", check_parameters,
             ).fetchall()
             mechanic_check_query = (
-                "SELECT check_id,conversation_id,actor_entity_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at "
+                "SELECT check_id,conversation_id,actor_entity_id,source_turn_id,encounter_type,stat_name,skill_id,dice_json,resolution,modifier,total,target,difficulty_id,outcome,rules_json,created_revision,created_at "
                 "FROM rpg_mechanic_checks WHERE workspace_id=? AND branch_id=? AND adventure_id=?"
             )
+            mechanic_check_parameters: tuple[Any, ...] = (workspace_id, branch_id, adventure_id)
             if as_of_revision is not None:
                 mechanic_check_query += " AND created_revision<=?"
+                mechanic_check_parameters += (as_of_revision,)
+            mechanic_check_query += (
+                " AND (source_turn_id IS NULL OR (EXISTS (SELECT 1 FROM story_turns t "
+                "WHERE t.workspace_id=rpg_mechanic_checks.workspace_id "
+                "AND t.branch_id=rpg_mechanic_checks.branch_id "
+                "AND t.conversation_id=rpg_mechanic_checks.conversation_id "
+                "AND t.turn_id=rpg_mechanic_checks.source_turn_id) "
+                "AND COALESCE((SELECT e.status FROM story_turn_edits e "
+                "WHERE e.workspace_id=rpg_mechanic_checks.workspace_id "
+                "AND e.branch_id=rpg_mechanic_checks.branch_id "
+                "AND e.conversation_id=rpg_mechanic_checks.conversation_id "
+                "AND e.turn_id=rpg_mechanic_checks.source_turn_id"
+            )
+            if as_of_revision is not None:
+                mechanic_check_query += " AND e.created_revision<=?"
+                mechanic_check_parameters += (as_of_revision,)
+            mechanic_check_query += (
+                " ORDER BY e.version DESC LIMIT 1),'active')='active' "
+                "AND NOT EXISTS (SELECT 1 FROM story_turn_edits e "
+                "WHERE e.workspace_id=rpg_mechanic_checks.workspace_id "
+                "AND e.branch_id=rpg_mechanic_checks.branch_id "
+                "AND e.conversation_id=rpg_mechanic_checks.conversation_id "
+                "AND e.turn_id=rpg_mechanic_checks.source_turn_id "
+                "AND e.created_revision>rpg_mechanic_checks.created_revision"
+            )
+            if as_of_revision is not None:
+                mechanic_check_query += " AND e.created_revision<=?"
+                mechanic_check_parameters += (as_of_revision,)
+            mechanic_check_query += ")))"
             mechanic_checks = self.db.connection.execute(
-                mechanic_check_query + " ORDER BY created_revision DESC LIMIT 50", check_parameters,
+                mechanic_check_query + " ORDER BY created_revision DESC LIMIT 50", mechanic_check_parameters,
             ).fetchall()
             proposal_query = (
                 "SELECT proposal_id,conversation_id,source_turn_id,changes_json,review_status,created_revision,reviewed_revision,created_at "
@@ -6636,6 +6751,10 @@ class CommandGateway:
                 "ability_states": ability_states,
             } if sheet else None,
             "mechanics": mechanics,
+            "automatic_checks_enabled": (
+                isinstance(world_content.get("game_mechanics"), dict)
+                and mechanics["mode"] != "narrative_only"
+            ),
             "checks": [dict(row) for row in checks],
             "mechanic_checks": [
                 {**dict(row), "dice": json.loads(row["dice_json"]), "rules": json.loads(row["rules_json"])}
