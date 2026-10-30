@@ -1286,3 +1286,18 @@
 .hero-profile-review-list dd{margin:0;color:#d0dbd4;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
 .rpg-hero-identity>.field-note{line-height:1.5}
 .rpg-edit-stats .hero-identity-form{grid-template-columns:minmax(0,1fr)}
+.mno-lorebook-editor{grid-column:1/-1;min-width:0}
+.mno-lorebook-editor>.field-note{line-height:1.55}
+.mno-lorebook-editor>label input{width:100%;border:1px solid #303a3c;background:#111719;color:var(--text);border-radius:7px;padding:9px 10px;font-size:10px}
+.mno-lorebook-entry{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.42fr);gap:5px 12px;margin:9px 0;padding:10px;border:1px solid #2b3735;border-radius:8px;background:#171f20}
+.mno-lorebook-entry-heading{display:grid;gap:3px;min-width:0;align-content:center}
+.mno-lorebook-entry-heading strong{overflow-wrap:anywhere;color:#d4e0d9;font-size:10px;font-weight:600}
+.mno-lorebook-entry-heading small{color:#84948b;font-size:8px}
+.mno-lorebook-reset{justify-self:start;padding:3px 0!important;font-size:8px}
+.mno-lorebook-entry>.field-label{min-width:0;margin:0}
+.mno-lorebook-entry select,.mno-lorebook-entry textarea{width:100%;border:1px solid #303a3c;background:#111719;color:var(--text);border-radius:7px;padding:8px;font-size:9px}
+.mno-lorebook-entry textarea{resize:vertical;line-height:1.5}
+.mno-lorebook-entry-preview{grid-column:1/-1;border-top:1px solid #2a3432;padding-top:6px}
+.mno-lorebook-entry-preview summary{cursor:pointer;color:#9db9a8;font-size:8px}
+.mno-lorebook-entry-preview p{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#b1bdb6;font-size:9px;line-height:1.55}
+@media(max-width:560px){.mno-lorebook-entry{grid-template-columns:minmax(0,1fr)}}

@@ -1331,7 +1331,11 @@ def _mno_world_reference(content: dict[str, Any], query: str, current_location: 
     always: list[dict[str, Any]] = []
     matched: list[tuple[int, dict[str, Any]]] = []
     excluded_count = 0
-    for entry in raw_lore:
+    metadata = content.get("mno_import")
+    configured_rules = metadata.get("lorebook_rules", {}) if isinstance(metadata, dict) else {}
+    if not isinstance(configured_rules, dict):
+        configured_rules = {}
+    for entry_index, entry in enumerate(raw_lore):
         if not isinstance(entry, dict):
             excluded_count += 1
             continue
@@ -1340,12 +1344,23 @@ def _mno_world_reference(content: dict[str, Any], query: str, current_location: 
         if not text:
             excluded_count += 1
             continue
-        activation = entry.get("activation")
-        item = {"title": title[:200], "type": str(entry.get("type", "lore"))[:60], "content": text[:4000]}
+        rule = configured_rules.get(str(entry_index))
+        if not isinstance(rule, dict):
+            rule = {}
+        activation = rule.get("activation", "always" if entry.get("activation") == "always" else "keywords")
+        item = {
+            "source_index": entry_index,
+            "title": title[:200],
+            "type": str(entry.get("type", "lore"))[:60],
+            "content": text[:4000],
+        }
+        if activation == "disabled":
+            excluded_count += 1
+            continue
         if activation == "always":
             always.append({**item, "selection_reason": "always"})
             continue
-        keywords = entry.get("keywords", [])
+        keywords = rule.get("keywords", entry.get("keywords", []))
         if not isinstance(keywords, list):
             keywords = []
         keyword_terms = {token for keyword in keywords if isinstance(keyword, str)

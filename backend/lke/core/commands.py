@@ -356,7 +356,7 @@ def _validated_world_content(value: Any, *, max_bytes: int | None = None, label:
     if max_bytes is None:
         source_archive = value.get("mno_source")
         if isinstance(source_archive, dict) and source_archive.get("format") == "mno-world" and source_archive.get("version") == 1:
-            max_bytes = 1_500_000
+            max_bytes = 1_950_000
         else:
             max_bytes = 200_000 if value.get("cover_image") is not None else 100_000
     try:
@@ -415,6 +415,46 @@ def _validated_story_opening_scene(content: dict[str, Any]) -> dict[str, str] | 
         "situation": _required_text(raw["situation"], "opening scene situation", 4000),
         "hook": _required_text(raw["hook"], "opening scene hook", 2000),
     }
+
+
+def _validated_mno_lorebook_rules(content: dict[str, Any]) -> None:
+    """Validate local activation overrides against the preserved MNO entry indexes."""
+    metadata = content.get("mno_import")
+    if not isinstance(metadata, dict) or "lorebook_rules" not in metadata:
+        return
+    source = content.get("mno_source")
+    if metadata.get("format") != "mno-world" or type(metadata.get("version")) is not int or metadata["version"] != 1 or not isinstance(source, dict):
+        raise ValidationError("lorebook rules require a preserved MNO world source")
+    entries = source.get("lorebook")
+    if not isinstance(entries, list) or len(entries) > 1000:
+        raise ValidationError("MNO lorebook rules require a source list of at most 1000 entries")
+    rules = metadata["lorebook_rules"]
+    if not isinstance(rules, dict) or len(rules) > len(entries):
+        raise ValidationError("MNO lorebook rules must map source entry indexes to settings")
+    clean: dict[str, dict[str, Any]] = {}
+    for source_index, rule in rules.items():
+        if not isinstance(source_index, str) or not source_index.isdecimal() or str(int(source_index)) != source_index:
+            raise ValidationError("MNO lorebook rule indexes must be canonical non-negative integers")
+        index = int(source_index)
+        if index >= len(entries) or source_index in clean:
+            raise ValidationError("MNO lorebook rule index is outside the preserved source list")
+        if not isinstance(entries[index], dict):
+            raise ValidationError("MNO lorebook rules can only target valid source entries")
+        if not isinstance(rule, dict) or set(rule) != {"activation", "keywords"}:
+            raise ValidationError("Each MNO lorebook rule must define activation and keywords")
+        activation = rule.get("activation")
+        if activation not in {"always", "keywords", "disabled"}:
+            raise ValidationError("MNO lorebook activation must be always, keywords, or disabled")
+        keywords = rule.get("keywords")
+        if not isinstance(keywords, list) or len(keywords) > 50:
+            raise ValidationError("MNO lorebook entries may define at most 50 keywords")
+        clean_keywords = [_required_text(value, "MNO lorebook keyword", 100) for value in keywords]
+        if len({keyword.casefold() for keyword in clean_keywords}) != len(clean_keywords):
+            raise ValidationError("MNO lorebook keywords must be unique regardless of letter case")
+        clean[source_index] = {"activation": activation, "keywords": clean_keywords}
+    metadata["lorebook_rules"] = clean
+    if len(_json(content).encode("utf-8")) > 1_500_000:
+        raise ValidationError("MNO world content including lorebook rules is limited to 1.95 MB")
 
 
 def _validated_story_world_locations(content: dict[str, Any]) -> None:
@@ -1014,6 +1054,7 @@ def validate_world_package(package: Any) -> dict[str, Any]:
         if not isinstance(description, str) or len(description.strip()) > 4000:
             raise ValidationError("World description must be text of at most 4000 characters")
         content = _validated_world_content(item.get("content"))
+        _validated_mno_lorebook_rules(content)
         opening_scene = _validated_story_opening_scene(content)
         if opening_scene is not None:
             content["opening_scene"] = opening_scene
@@ -3619,6 +3660,7 @@ class CommandGateway:
             if not isinstance(description, str) or len(description.strip()) > 4000:
                 raise ValidationError("description must be text of at most 4000 characters")
             content = _validated_world_content(payload.get("content", {}))
+            _validated_mno_lorebook_rules(content)
             opening_scene = _validated_story_opening_scene(content)
             if opening_scene is not None:
                 content["opening_scene"] = opening_scene

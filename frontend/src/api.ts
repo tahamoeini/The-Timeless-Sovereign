@@ -223,7 +223,19 @@ export type ContextManifest = {
     excluded_episode_count: number;
     open_threads?: Array<{ thread_id: string; title: string; detail: string }>;
     hero_profile?: Record<string, string> | null;
-    world_reference?: Record<string, unknown>;
+    world_reference?: {
+      source: string;
+      authority: string;
+      narrative_vibe: string;
+      included: Array<{
+        source_index: number;
+        title: string;
+        type: string;
+        content: string;
+        selection_reason: "always" | "query_or_location_keyword";
+      }>;
+      excluded_count: number;
+    };
     public_npcs: Array<{ entity_id: string; name: string; aliases: string[]; profile: Record<string, unknown> }>;
     approved_locations: string[];
   };

@@ -12,6 +12,12 @@ const EXTERNAL_STORY_PROVIDERS: StoryProvider["id"][] = ["openai", "claude", "co
 type StoryWorldCover = { mime_type: "image/jpeg" | "image/png" | "image/webp"; data_base64: string; alt_text: string };
 type StoryOpeningScene = { situation: string; hook: string };
 type StoryWorldArchitectDraft = { public_lore: string; starting_location: string; locations: string[]; opening_scene: StoryOpeningScene };
+type MnoLoreActivation = "always" | "keywords" | "disabled";
+type MnoLorebookDraft = {
+  index: number; title: string; type: string; content: string;
+  activation: MnoLoreActivation; keywords: string[];
+  originalActivation: MnoLoreActivation; originalKeywords: string[];
+};
 const HERO_PROFILE_FIELDS = [
   { key: "concept", label: "Character concept", maxLength: 200, rows: 2, placeholder: "A few words that capture the character." },
   { key: "background", label: "Background", maxLength: 4_000, rows: 3, placeholder: "Important history the hero already knows." },
@@ -76,6 +82,53 @@ function parseStoryWorldLocations(value: string): string[] | null {
   const keys = locations.map((item) => item.toLocaleLowerCase());
   return locations.length <= 100 && locations.every((item) => item.length <= 150)
     && new Set(keys).size === keys.length ? locations : null;
+}
+
+function readMnoLorebookDraft(content: Record<string, unknown> | undefined): MnoLorebookDraft[] {
+  const source = content?.mno_source;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return [];
+  const rawEntries = (source as Record<string, unknown>).lorebook;
+  if (!Array.isArray(rawEntries)) return [];
+  const metadata = content?.mno_import;
+  const rawRules = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>).lorebook_rules : undefined;
+  const rules = rawRules && typeof rawRules === "object" && !Array.isArray(rawRules)
+    ? rawRules as Record<string, unknown> : {};
+  return rawEntries.flatMap((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.content !== "string" || !entry.content.trim()) return [];
+    const originalActivation: MnoLoreActivation = entry.activation === "always" ? "always" : "keywords";
+    const originalKeywords = Array.isArray(entry.keywords)
+      ? entry.keywords.filter((keyword): keyword is string => typeof keyword === "string") : [];
+    const rawRule = rules[String(index)];
+    const rule = rawRule && typeof rawRule === "object" && !Array.isArray(rawRule)
+      ? rawRule as Record<string, unknown> : {};
+    const activation = rule.activation === "always" || rule.activation === "keywords" || rule.activation === "disabled"
+      ? rule.activation : originalActivation;
+    const keywords = Array.isArray(rule.keywords)
+      ? rule.keywords.filter((keyword): keyword is string => typeof keyword === "string") : originalKeywords;
+    return [{
+      index,
+      title: typeof entry.title === "string" && entry.title.trim() ? entry.title : "World reference",
+      type: typeof entry.type === "string" && entry.type.trim() ? entry.type : "lore",
+      content: entry.content,
+      activation,
+      keywords,
+      originalActivation,
+      originalKeywords,
+    }];
+  });
+}
+
+function buildMnoLorebookRules(entries: MnoLorebookDraft[]): Record<string, { activation: MnoLoreActivation; keywords: string[] }> {
+  return Object.fromEntries(entries.flatMap((entry) => {
+    const keywords = entry.keywords.map((keyword) => keyword.trim()).filter(Boolean);
+    const originalKeywords = entry.originalKeywords.map((keyword) => keyword.trim()).filter(Boolean);
+    const keywordsChanged = JSON.stringify(keywords) !== JSON.stringify(originalKeywords);
+    return entry.activation !== entry.originalActivation || keywordsChanged
+      ? [[String(entry.index), { activation: entry.activation, keywords }]] : [];
+  }));
 }
 
 function readStoryWorldCover(value: unknown): StoryWorldCover | null {
@@ -1444,6 +1497,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const [editWorldStartingLocation, setEditWorldStartingLocation] = useState("");
   const [editWorldOpeningSituation, setEditWorldOpeningSituation] = useState("");
   const [editWorldOpeningHook, setEditWorldOpeningHook] = useState("");
+  const [editMnoLorebook, setEditMnoLorebook] = useState<MnoLorebookDraft[]>([]);
+  const [editMnoLorebookSearch, setEditMnoLorebookSearch] = useState("");
+  const [editMnoLorebookVisibleCount, setEditMnoLorebookVisibleCount] = useState(20);
   const [worldTemplate, setWorldTemplate] = useState("fantasy");
   const [creationPointBudget, setCreationPointBudget] = useState(10);
   const [creationAllowUnspentPoints, setCreationAllowUnspentPoints] = useState(false);
@@ -1609,6 +1665,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (!selectedWorldId) {
       setSelectedWorldDetail(null);
       setAdventureAllocation({});
+      setEditMnoLorebook([]);
+      setEditMnoLorebookSearch("");
+      setEditMnoLorebookVisibleCount(20);
       return;
     }
     let active = true;
@@ -1640,6 +1699,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         updatedLatest?.content.game_mechanics,
         updatedLatest?.template_key === "narrative" ? "narrative_only" : "d20",
       ));
+      setEditMnoLorebook(readMnoLorebookDraft(updatedLatest?.content));
+      setEditMnoLorebookSearch("");
+      setEditMnoLorebookVisibleCount(20);
     }).catch((loadError) => {
       if (active) setLibraryError(loadError instanceof Error ? loadError.message : "The selected world could not be opened.");
     });
@@ -2762,6 +2824,18 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (!selectedWorldDetail) return;
     const latest = selectedWorldDetail.versions.find((item) => item.version === selectedWorldDetail.latest_version);
     if (!latest) return;
+    const invalidLorebookEntry = editMnoLorebook.find((entry) => {
+      const changed = entry.activation !== entry.originalActivation
+        || JSON.stringify(entry.keywords) !== JSON.stringify(entry.originalKeywords);
+      const keywords = entry.keywords.map((keyword) => keyword.trim()).filter(Boolean);
+      return changed && (keywords.length > 50
+        || keywords.some((keyword) => keyword.length > 100)
+        || new Set(keywords.map((keyword) => keyword.toLocaleLowerCase())).size !== keywords.length);
+    });
+    if (invalidLorebookEntry) {
+      setLibraryError(`Check the keywords for “${invalidLorebookEntry.title}”: use at most 50 unique keywords, each up to 100 characters.`);
+      return;
+    }
     const trackers = parseTrackerDefinitions(editTrackerText);
     if (!trackers) {
       setLibraryError("Enter trackers as one name=value/max pair per line, with a value no higher than its maximum.");
@@ -2794,6 +2868,13 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
       starting_location: startingLocation,
       locations,
     };
+    if (latest.content.mno_import && typeof latest.content.mno_import === "object" && !Array.isArray(latest.content.mno_import)) {
+      const importMetadata = { ...(latest.content.mno_import as Record<string, unknown>) };
+      const lorebookRules = buildMnoLorebookRules(editMnoLorebook);
+      if (Object.keys(lorebookRules).length) importMetadata.lorebook_rules = lorebookRules;
+      else delete importMetadata.lorebook_rules;
+      revisedContent.mno_import = importMetadata;
+    }
     if (openingSituation) revisedContent.opening_scene = { situation: openingSituation, hook: openingHook };
     else delete revisedContent.opening_scene;
     try {
@@ -2826,6 +2907,9 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
         refreshedVersion?.content.game_mechanics,
         refreshedVersion?.template_key === "narrative" ? "narrative_only" : "d20",
       ));
+      setEditMnoLorebook(readMnoLorebookDraft(refreshedVersion?.content));
+      setEditMnoLorebookSearch("");
+      setEditMnoLorebookVisibleCount(20);
     } catch (editError) {
       setLibraryError(editError instanceof Error ? editError.message : "The world revision could not be saved.");
     }
@@ -3304,6 +3388,12 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const selectedSetupContent = selectedWorldDetail?.world_id === selectedWorldId
     ? selectedWorldDetail.versions.find((item) => item.version === selectedSetupWorld?.latest_version)?.content || null
     : null;
+  const filteredEditMnoLorebook = useMemo(() => {
+    const query = editMnoLorebookSearch.trim().toLocaleLowerCase();
+    if (!query) return editMnoLorebook;
+    return editMnoLorebook.filter((entry) => `${entry.title} ${entry.type} ${entry.keywords.join(" ")} ${entry.content}`
+      .toLocaleLowerCase().includes(query));
+  }, [editMnoLorebook, editMnoLorebookSearch]);
   const selectedSetupCover = readStoryWorldCover(selectedSetupContent?.cover_image);
   const selectedSetupOpeningScene = readStoryOpeningScene(selectedSetupContent?.opening_scene);
   const hasSelectedSetupOpeningScene = !!selectedSetupOpeningScene.situation && !!selectedSetupOpeningScene.hook;
@@ -3904,6 +3994,37 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           <label className="field-label">Starting location<input value={editWorldStartingLocation} onChange={(event) => { setEditWorldStartingLocation(event.target.value); setLibraryError(""); }} maxLength={200} placeholder="Where the first scene begins" /></label>
           <label className="field-label">Map locations<textarea value={editWorldLocations} onChange={(event) => { setEditWorldLocations(event.target.value); setLibraryError(""); }} rows={3} maxLength={16000} placeholder="One approved location per line" /><small className="field-note">Use unique names; if a starting location is set, include it here. Adventures already started keep their pinned map.</small></label>
           <label className="field-label">World-specific trackers<textarea value={editTrackerText} onChange={(event) => setEditTrackerText(event.target.value)} rows={3} maxLength={4000} placeholder="health=10/10\nfocus=6/6" /><small className="field-note">One tracker per line as name=current/maximum. These rules affect new adventures from this version.</small></label>
+          {editMnoLorebook.length > 0 && <details className="character-creation-rules mno-lorebook-editor">
+            <summary>Imported lorebook · {editMnoLorebook.length} entries</summary>
+            <p className="field-note">Choose what the local narrator may reference. This lore is not proof that the hero knows it. Up to 4 always-on entries and 4 keyword matches are included per turn, within a 12,000-character limit. Hosted-provider requests omit imported lore. These changes create a new world version; existing adventures keep their pinned version.</p>
+            <label className="field-label">Search imported lore<input type="search" value={editMnoLorebookSearch} onChange={(event) => { setEditMnoLorebookSearch(event.target.value); setEditMnoLorebookVisibleCount(20); }} placeholder="Search titles, keywords, and entry text" /></label>
+            <small className="field-note">Showing {Math.min(editMnoLorebookVisibleCount, filteredEditMnoLorebook.length)} of {filteredEditMnoLorebook.length} matching entries.</small>
+            {filteredEditMnoLorebook.length === 0 && <p className="empty-hint">No lore entries match this search.</p>}
+            {filteredEditMnoLorebook.slice(0, editMnoLorebookVisibleCount).map((entry) => <article className="mno-lorebook-entry" key={entry.index}>
+              <div className="mno-lorebook-entry-heading"><strong>{entry.title}</strong><small>{entry.type} · source entry {entry.index + 1}</small></div>
+              {(entry.activation !== entry.originalActivation || JSON.stringify(entry.keywords) !== JSON.stringify(entry.originalKeywords)) && <button type="button" className="quiet-button mno-lorebook-reset" onClick={() => {
+                setEditMnoLorebook((current) => current.map((item) => item.index === entry.index
+                  ? { ...item, activation: item.originalActivation, keywords: item.originalKeywords } : item));
+                setLibraryError("");
+              }}>Restore imported settings</button>}
+              <label className="field-label">Activation<select aria-label={`Activation for ${entry.title}`} value={entry.activation} onChange={(event) => {
+                const activation = event.target.value as MnoLoreActivation;
+                setEditMnoLorebook((current) => current.map((item) => item.index === entry.index ? { ...item, activation } : item));
+                setLibraryError("");
+              }}>
+                <option value="always">Always include</option>
+                <option value="keywords">Match keywords</option>
+                <option value="disabled">Do not include</option>
+              </select></label>
+              {entry.activation === "keywords" && <label className="field-label">Keywords<textarea value={entry.keywords.join("\n")} rows={2} maxLength={6000} placeholder="One keyword or phrase per line" onChange={(event) => {
+                const keywords = event.target.value.split(/\r?\n/);
+                setEditMnoLorebook((current) => current.map((item) => item.index === entry.index ? { ...item, keywords } : item));
+                setLibraryError("");
+              }} /><small className="field-note">A keyword word in the player's prompt or current location can select this entry. Use up to 50 unique keywords, each up to 100 characters.</small></label>}
+              <details className="mno-lorebook-entry-preview"><summary>Preview lore text</summary><p dir="auto">{entry.content}</p></details>
+            </article>)}
+            {editMnoLorebookVisibleCount < filteredEditMnoLorebook.length && <button type="button" className="quiet-button" onClick={() => setEditMnoLorebookVisibleCount((count) => count + 20)}>Show next {Math.min(20, filteredEditMnoLorebook.length - editMnoLorebookVisibleCount)} entries</button>}
+          </details>}
           <StoryMechanicsEditor value={editMechanics}
             stats={Object.keys((selectedWorldDetail.versions.find((item) => item.version === selectedWorldDetail.latest_version)?.content.stats as Record<string, unknown>) || {})}
             onChange={setEditMechanics} />
@@ -3983,6 +4104,14 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
                   {turn.context_manifest.excluded.map((item) => <small className="story-context-exclusions" key={item.claim_id}>Excluded claim {item.claim_id} · {item.reason}</small>)}
                   {turn.context_manifest.story && <div className="story-context-fact"><strong>{turn.context_manifest.story.world_name} · world v{turn.context_manifest.story.world_version}</strong><small>{turn.context_manifest.story.description} {turn.context_manifest.story.public_lore}</small><small>Location: {turn.context_manifest.story.character_sheet.current_location || "Not set"} · {Object.keys(turn.context_manifest.story.character_sheet.stats).length} stats · {Object.keys(turn.context_manifest.story.character_sheet.trackers).length} trackers · {turn.context_manifest.story.recent_checks.length + turn.context_manifest.story.recent_mechanic_checks.length} recent checks · {turn.context_manifest.story.character_sheet.experience.total_xp} XP</small>
                     {turn.context_manifest.story.opening_scene && <small>Opening scene seed · {turn.context_manifest.story.opening_scene.situation} · Hook: {turn.context_manifest.story.opening_scene.hook}</small>}
+                    {turn.context_manifest.story.world_reference && <>
+                      <small>Imported lorebook · {turn.context_manifest.story.world_reference.included.length} selected · {turn.context_manifest.story.world_reference.excluded_count} not selected. Narrator reference only; this does not establish what the hero knows.</small>
+                      {turn.context_manifest.story.world_reference.narrative_vibe && <small>Imported narrative style · {turn.context_manifest.story.world_reference.narrative_vibe}</small>}
+                      {turn.context_manifest.story.world_reference.included.map((entry) => <details key={entry.source_index}>
+                        <summary>World lore · {entry.title} · {entry.selection_reason === "always" ? "always included" : "keyword match"}</summary>
+                        <p dir="auto">{entry.content}</p>
+                      </details>)}
+                    </>}
                     {(turn.context_manifest.story.memories ?? []).map((memory) => <small key={memory.memory_id}>Memory · {memory.kind} · relevance {memory.selection_score}: {memory.content}</small>)}
                     {(turn.context_manifest.story.author_notes ?? []).map((memory) => <small key={memory.memory_id}>Narrator-only guidance · importance {memory.importance}: {memory.content}</small>)}
                     {(turn.context_manifest.story.excluded_memories ?? []).map((memory) => <small className="story-context-exclusions" key={`${memory.memory_id}-${memory.reason}`}>Memory {memory.memory_id} excluded · {memory.reason}</small>)}
