@@ -135,10 +135,17 @@ def _required_text(value: Any, field: str, limit: int = 500) -> str:
 
 _CHARACTER_PROFILE_FIELD_LIMITS = {
     "concept": 200,
-    "background": 1_000,
+    "background": 4_000,
     "personality": 500,
     "goal": 400,
     "voice": 500,
+    "age": 4_000,
+    "gender": 4_000,
+    "race": 4_000,
+    "appearance": 4_000,
+    "job": 4_000,
+    "persona": 4_000,
+    "extra": 4_000,
 }
 
 
@@ -165,6 +172,8 @@ def _validated_entity_properties(value: Any) -> dict[str, Any]:
                 raise ValidationError(f"character_profile.{field} is limited to {limit} characters")
             if text:
                 clean_profile[field] = text
+        if sum(len(text) for text in clean_profile.values()) > 34_000:
+            raise ValidationError("character_profile text is limited to 34,000 characters total")
         if clean_profile:
             properties["character_profile"] = clean_profile
         else:

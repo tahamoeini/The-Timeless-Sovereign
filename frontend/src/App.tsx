@@ -14,35 +14,49 @@ type StoryOpeningScene = { situation: string; hook: string };
 type StoryWorldArchitectDraft = { public_lore: string; starting_location: string; locations: string[]; opening_scene: StoryOpeningScene };
 const HERO_PROFILE_FIELDS = [
   { key: "concept", label: "Character concept", maxLength: 200, rows: 2, placeholder: "A few words that capture the character." },
-  { key: "background", label: "Background", maxLength: 1_000, rows: 3, placeholder: "Important history the hero already knows." },
+  { key: "background", label: "Background", maxLength: 4_000, rows: 3, placeholder: "Important history the hero already knows." },
   { key: "personality", label: "Personality", maxLength: 500, rows: 2, placeholder: "Traits and tendencies, not fixed decisions." },
   { key: "goal", label: "Current goal", maxLength: 400, rows: 2, placeholder: "What the hero is pursuing right now." },
   { key: "voice", label: "Voice", maxLength: 500, rows: 2, placeholder: "Speech style, vocabulary, or language preferences." },
 ] as const;
-type HeroProfileKey = typeof HERO_PROFILE_FIELDS[number]["key"];
+const HERO_IMPORTED_PROFILE_FIELDS = [
+  { key: "age", label: "Age", maxLength: 4_000, rows: 1, placeholder: "Imported character age." },
+  { key: "gender", label: "Gender", maxLength: 4_000, rows: 1, placeholder: "Imported character gender." },
+  { key: "race", label: "Species or race", maxLength: 4_000, rows: 1, placeholder: "Imported species or race." },
+  { key: "appearance", label: "Appearance", maxLength: 4_000, rows: 2, placeholder: "Imported appearance details." },
+  { key: "job", label: "Occupation", maxLength: 4_000, rows: 1, placeholder: "Imported occupation." },
+  { key: "persona", label: "Persona", maxLength: 4_000, rows: 2, placeholder: "Imported persona notes." },
+  { key: "extra", label: "Additional details", maxLength: 4_000, rows: 2, placeholder: "Other imported character details." },
+] as const;
+type HeroProfileKey = typeof HERO_PROFILE_FIELDS[number]["key"] | typeof HERO_IMPORTED_PROFILE_FIELDS[number]["key"];
 type HeroProfileDraft = Record<HeroProfileKey, string>;
 const EMPTY_HERO_PROFILE: HeroProfileDraft = {
   concept: "", background: "", personality: "", goal: "", voice: "",
+  age: "", gender: "", race: "", appearance: "", job: "", persona: "", extra: "",
 };
 
 function readHeroProfile(entity: Entity | null | undefined): HeroProfileDraft {
   const value = entity?.properties.character_profile;
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ...EMPTY_HERO_PROFILE };
   const profile = value as Record<string, unknown>;
-  return Object.fromEntries(HERO_PROFILE_FIELDS.map(({ key }) => [
+  return Object.fromEntries([...HERO_PROFILE_FIELDS, ...HERO_IMPORTED_PROFILE_FIELDS].map(({ key }) => [
     key, typeof profile[key] === "string" ? profile[key] as string : "",
   ])) as HeroProfileDraft;
 }
 
-function buildHeroProfile(profile: HeroProfileDraft): Partial<HeroProfileDraft> {
-  return Object.fromEntries(HERO_PROFILE_FIELDS.flatMap(({ key }) => {
+function buildHeroProfile(profile: HeroProfileDraft, includeImportedFields = false): Partial<HeroProfileDraft> {
+  const fields = includeImportedFields
+    ? [...HERO_PROFILE_FIELDS, ...HERO_IMPORTED_PROFILE_FIELDS]
+    : HERO_PROFILE_FIELDS;
+  return Object.fromEntries(fields.flatMap(({ key }) => {
     const value = profile[key].trim();
     return value ? [[key, value]] : [];
   })) as Partial<HeroProfileDraft>;
 }
 
-function heroProfileEntries(profile: HeroProfileDraft) {
-  return HERO_PROFILE_FIELDS.flatMap(({ key, label }) => {
+function heroProfileEntries(profile: HeroProfileDraft, imported = false) {
+  const fields = imported ? HERO_IMPORTED_PROFILE_FIELDS : HERO_PROFILE_FIELDS;
+  return fields.flatMap(({ key, label }) => {
     const value = profile[key].trim();
     return value ? [{ key, label, value }] : [];
   });
@@ -2675,7 +2689,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
     if (!selectedSetupHero) return;
     try {
       const properties = { ...selectedSetupHero.properties };
-      const characterProfile = buildHeroProfile(heroProfileDraft);
+      const characterProfile = buildHeroProfile(heroProfileDraft, true);
       if (Object.keys(characterProfile).length) properties.character_profile = characterProfile;
       else delete properties.character_profile;
       await onMainCommit("update_entity", {
@@ -3241,6 +3255,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
   const selectedSetupHero = mainCharacters.find((item) => item.entity_id === adventureHeroId);
   const selectedHeroProfile = readHeroProfile(selectedSetupHero);
   const selectedHeroProfileEntries = heroProfileEntries(selectedHeroProfile);
+  const selectedImportedHeroProfileEntries = heroProfileEntries(selectedHeroProfile, true);
   const selectedSetupContent = selectedWorldDetail?.world_id === selectedWorldId
     ? selectedWorldDetail.versions.find((item) => item.version === selectedSetupWorld?.latest_version)?.content || null
     : null;
@@ -3585,7 +3600,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               <label className="field-label">Hero name<input value={heroName} onChange={(event) => setHeroName(event.target.value)} placeholder="Protagonist name" maxLength={200} required /></label>
               <details className="hero-profile-details">
                 <summary>Character details (optional)</summary>
-                <p className="field-note">These notes guide local story context and stay on this device. Hosted providers do not receive them.</p>
+                <p className="field-note">These notes guide identity and voice, not your hero's decisions. They stay on this device; hosted providers do not receive them.</p>
                 <div className="hero-profile-fields">
                   {HERO_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={heroProfileDraft[key]} onChange={(event) => setHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
                 </div>
@@ -3599,14 +3614,25 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               <summary>Review saved identity · {selectedHeroProfileEntries.length} notes</summary>
               <dl>{selectedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
             </details>}
+            {selectedImportedHeroProfileEntries.length > 0 && <details className="hero-profile-review">
+              <summary>Imported MNO details · {selectedImportedHeroProfileEntries.length}</summary>
+              <dl>{selectedImportedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+            </details>}
             {!showHeroProfileEditor
               ? <button className="link-button" type="button" disabled={busy} onClick={() => { setHeroProfileDraft(selectedHeroProfile); setShowHeroProfileEditor(true); }}>Edit saved identity</button>
               : <form className="hero-identity-form" onSubmit={(event) => void saveHeroProfile(event)}>
                   <strong>Edit {selectedSetupHero.label}</strong>
-                  <p className="field-note">These notes guide local story context and stay on this device. Hosted providers do not receive them.</p>
+                  <p className="field-note">These notes guide identity and voice, not your hero's decisions. They stay on this device; hosted providers do not receive them.</p>
                   <div className="hero-profile-fields">
                     {HERO_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={heroProfileDraft[key]} onChange={(event) => setHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
                   </div>
+                  {selectedImportedHeroProfileEntries.length > 0 && <details className="hero-profile-details">
+                    <summary>Edit imported MNO details · {selectedImportedHeroProfileEntries.length}</summary>
+                    <p className="field-note">These source fields are preserved from the adventure package. Clear a field and save to remove it.</p>
+                    <div className="hero-profile-fields">
+                      {HERO_IMPORTED_PROFILE_FIELDS.map(({ key, label, maxLength, rows, placeholder }) => <label className="field-label" key={key}>{label}<textarea value={heroProfileDraft[key]} onChange={(event) => setHeroProfileDraft((current) => ({ ...current, [key]: event.target.value }))} maxLength={maxLength} rows={rows} placeholder={placeholder} /></label>)}
+                    </div>
+                  </details>}
                   <div className="wizard-actions">
                     <button className="primary-button" disabled={busy}>Save identity</button>
                     <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowHeroProfileEditor(false)}>Cancel</button>
@@ -3693,7 +3719,11 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           {selectedHeroProfileEntries.length > 0 && <details className="hero-profile-review" open>
             <summary>Review hero identity · {selectedHeroProfileEntries.length} notes</summary>
             <dl>{selectedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-            <p className="field-note">Identity notes are included in local story context and excluded from hosted-provider requests.</p>
+            <p className="field-note">Identity notes guide style only; you choose what the hero says and does. Hosted providers do not receive them.</p>
+          </details>}
+          {selectedImportedHeroProfileEntries.length > 0 && <details className="hero-profile-review">
+            <summary>Imported MNO details · {selectedImportedHeroProfileEntries.length}</summary>
+            <dl>{selectedImportedHeroProfileEntries.map(({ key, label, value }) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
           </details>}
           {hasSelectedSetupOpeningScene && <details className="character-creation-review">
             <summary>Review the opening scene</summary>
