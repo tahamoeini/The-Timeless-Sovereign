@@ -3229,6 +3229,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
           current_goal: String(data.get("current_goal") || "").trim(),
           whereabouts: String(data.get("whereabouts") || "").trim(),
           voice: String(data.get("voice") || "").trim(),
+          relationship_to_actor: String(data.get("relationship_to_actor") || "").trim(),
         },
         private_profile: { ...existingNpc?.private_profile, notes: String(data.get("private_notes") || "").trim() }, review_status: "accepted",
       }, "Save and approve an adventure NPC profile");
@@ -4299,7 +4300,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
               <button className="secondary-button full-button" disabled={busy || !rpgState.sheet}>Submit for review</button>
             </form>
             {rpgState.proposals.map((proposal) => <article className={`rpg-proposal ${proposal.review_status}`} key={proposal.proposal_id}>
-              <div><strong>{proposal.review_status === "proposed" ? "Needs your review" : `Proposal ${proposal.review_status}`}</strong><small>{proposal.changes.map((change) => change.operation === "tracker_delta" ? `${change.tracker_id} ${change.delta > 0 ? "+" : ""}${change.delta}` : change.operation === "set_location" ? `Location → ${change.location}` : change.operation === "npc_profile" ? `NPC profile → ${change.npc_entity_id}: ${Object.entries(change.updates).map(([key, value]) => `${key} ${value}`).join(", ")}` : `Event memory → ${change.content.slice(0, 100)}`).join(" · ")}</small></div>
+              <div><strong>{proposal.review_status === "proposed" ? "Needs your review" : `Proposal ${proposal.review_status}`}</strong><small>{proposal.changes.map((change) => change.operation === "tracker_delta" ? `${change.tracker_id} ${change.delta > 0 ? "+" : ""}${change.delta}` : change.operation === "set_location" ? `Location → ${change.location}` : change.operation === "npc_profile" ? `NPC profile → ${change.npc_entity_id}: ${Object.entries(change.updates).map(([key, value]) => `${key === "relationship_to_actor" ? "relationship to protagonist" : key.replaceAll("_", " ")} ${value}`).join(", ")}` : `Event memory → ${change.content.slice(0, 100)}`).join(" · ")}</small></div>
               {proposal.review_status === "proposed" && <>
                 {editingProposalId === proposal.proposal_id && <form className="rpg-proposal-edit" onSubmit={(event) => { event.preventDefault(); void reviewRpgProposal(proposal, "accepted", editedProposalChanges); }}>
                   {editedProposalChanges.map((change, index) => change.operation === "tracker_delta" ? <div className="rpg-check-fields" key={`${proposal.proposal_id}-${index}`}>
@@ -4394,10 +4395,10 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             return <article className="story-npc-card" key={npc.npc_entity_id}>
               <div className="story-npc-heading">
                 {portrait && assetData[portrait.asset_id] && <img src={assetData[portrait.asset_id]} alt={`${npc.label} portrait`} />}
-                <div><strong>{npc.label} · {npc.review_status}</strong><small>{npc.aliases.length ? `Also known as ${npc.aliases.join(", ")}` : "No aliases"}</small><p>{npc.public_profile.job || npc.public_profile.race || "Character"} · Goal: {npc.public_profile.current_goal || "not set"}</p></div>
+                <div><strong>{npc.label} · {npc.review_status}</strong><small>{npc.aliases.length ? `Also known as ${npc.aliases.join(", ")}` : "No aliases"}</small><p>{npc.public_profile.job || npc.public_profile.race || "Character"} · Goal: {npc.public_profile.current_goal || "not set"}</p>{npc.public_profile.relationship_to_actor && <p className="story-npc-relationship"><strong>Relationship to protagonist:</strong> <span dir="auto">{npc.public_profile.relationship_to_actor}</span></p>}</div>
               </div>
               <details><summary>Profile</summary><dl className="story-npc-details">
-                {(["age", "gender", "race", "job", "appearance", "persona", "motivation", "voice", "current_goal", "whereabouts", "extra"] as const).filter((key) => npc.public_profile[key]).map((key) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd dir="auto">{npc.public_profile[key]}</dd></div>)}
+                {(["age", "gender", "race", "job", "appearance", "persona", "motivation", "voice", "current_goal", "whereabouts", "relationship_to_actor", "extra"] as const).filter((key) => npc.public_profile[key]).map((key) => <div key={key}><dt>{key === "relationship_to_actor" ? "Relationship to protagonist" : key.replaceAll("_", " ")}</dt><dd dir="auto">{npc.public_profile[key]}</dd></div>)}
               </dl></details>
               <details><summary>Private notes and trackers · author-only</summary>
                 <p className="private-note">Only you can see these details. They are never included in story context or sent to a model.</p>
@@ -4433,6 +4434,7 @@ function StoryPage({ entities, claims, workspaceId, branchId, revision, busy, on
             <label className="field-label">Current goal<input name="current_goal" defaultValue={selectedNpcProfile?.public_profile.current_goal || ""} maxLength={500} /></label>
             <label className="field-label">Whereabouts<input name="whereabouts" defaultValue={selectedNpcProfile?.public_profile.whereabouts || ""} maxLength={500} /></label>
             <label className="field-label">Voice<input name="voice" defaultValue={selectedNpcProfile?.public_profile.voice || ""} maxLength={500} /></label>
+            <label className="field-label">Relationship to protagonist<textarea name="relationship_to_actor" defaultValue={selectedNpcProfile?.public_profile.relationship_to_actor || ""} rows={2} maxLength={500} /><small className="field-note">Describe the NPC's current stance as narrator guidance. The protagonist does not automatically know this; off-screen updates wait for your review.</small></label>
             <label className="field-label">Private author notes<textarea name="private_notes" defaultValue={typeof selectedNpcProfile?.private_profile.notes === "string" ? selectedNpcProfile.private_profile.notes : ""} rows={2} maxLength={4000} /><small className="field-note">Private notes are visible only in this panel and are never included in story context.</small></label>
             <button className="secondary-button full-button" disabled={busy}>Save approved NPC profile</button>
           </form>

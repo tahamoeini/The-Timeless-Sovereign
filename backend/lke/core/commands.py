@@ -1458,7 +1458,9 @@ def validate_adventure_package(package: Any) -> dict[str, Any]:
         clean_aliases = [_required_text(alias, "NPC alias", 100) for alias in aliases]
         npc_status = _package_choice(npc["review_status"], {"proposed", "accepted", "rejected"}, "NPC review status")
         clean_npcs.append({"npc_entity_id": npc_id, "aliases": clean_aliases,
-                           "public_profile": _validated_world_content(npc["public_profile"]),
+                           "public_profile": _validated_npc_public_profile(
+                               _validated_world_content(npc["public_profile"]), max_bytes=100_000,
+                           ),
                            "private_profile": _validated_world_content(npc["private_profile"]),
                            "review_status": npc_status,
                            "created_at": _package_time(npc["created_at"], "NPC created_at"),
@@ -1896,6 +1898,28 @@ def _validated_trackers(value: Any) -> dict[str, dict[str, int]]:
     return trackers
 
 
+def _validated_npc_public_profile(value: Any, *, max_bytes: int = 20_000) -> dict[str, Any]:
+    """Validate the optional story relationship note in a public NPC profile."""
+    if not isinstance(value, dict):
+        raise ValidationError("NPC public profile must be an object")
+    try:
+        serialized = _json(value)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("NPC public profile must contain JSON-compatible values") from error
+    if len(serialized.encode("utf-8")) > max_bytes:
+        raise ValidationError(f"NPC public profile is limited to {max_bytes // 1_000} KB")
+    profile = dict(value)
+    if "relationship_to_actor" in profile:
+        relationship = profile["relationship_to_actor"]
+        if relationship is None or (isinstance(relationship, str) and not relationship.strip()):
+            profile.pop("relationship_to_actor")
+        else:
+            profile["relationship_to_actor"] = _required_text(
+                relationship, "NPC relationship to protagonist", 500,
+            )
+    return profile
+
+
 def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value or len(value) > 20:
         raise ValidationError("changes must contain between 1 and 20 RPG state changes")
@@ -1915,10 +1939,13 @@ def _validated_rpg_changes(value: Any) -> list[dict[str, Any]]:
         elif operation == "npc_profile":
             npc_entity_id = _required_text(change.get("npc_entity_id"), "npc_entity_id", 100)
             updates = change.get("updates")
-            allowed_fields = {"motivation", "current_goal", "whereabouts", "memory"}
-            if not isinstance(updates, dict) or not updates or len(updates) > 4 or not set(updates) <= allowed_fields:
+            allowed_fields = {"motivation", "current_goal", "whereabouts", "memory", "relationship_to_actor"}
+            if not isinstance(updates, dict) or not updates or len(updates) > 5 or not set(updates) <= allowed_fields:
                 raise ValidationError("NPC simulation updates must use the supported public profile fields")
-            clean_updates = {key: _required_text(value, f"NPC {key}", 500) for key, value in updates.items()}
+            clean_updates = {
+                key: _required_text(value, f"NPC {key}", 500)
+                for key, value in updates.items()
+            }
             clean.append({"operation": operation, "npc_entity_id": npc_entity_id, "updates": clean_updates})
         elif operation == "add_event_memory":
             context_enabled = change.get("context_enabled", True)
@@ -4584,6 +4611,7 @@ class CommandGateway:
                     not isinstance(public_profile, dict) or not isinstance(private_profile, dict) or
                     status not in {"proposed", "accepted", "rejected"}):
                 raise ValidationError("NPC aliases, profiles, or review status are invalid")
+            public_profile = _validated_npc_public_profile(public_profile)
             if len(_json(public_profile).encode("utf-8")) > 20000 or len(_json(private_profile).encode("utf-8")) > 20000:
                 raise ValidationError("NPC profiles are limited to 20 KB each")
             old = connection.execute(
@@ -4625,6 +4653,7 @@ class CommandGateway:
                     not isinstance(public_profile, dict) or not isinstance(private_profile, dict) or
                     status not in {"proposed", "accepted", "rejected"}):
                 raise ValidationError("NPC aliases, profiles, or review status are invalid")
+            public_profile = _validated_npc_public_profile(public_profile)
             if len(_json(public_profile).encode("utf-8")) > 20_000 or len(_json(private_profile).encode("utf-8")) > 20_000:
                 raise ValidationError("NPC profiles are limited to 20 KB each")
             now = _now()
